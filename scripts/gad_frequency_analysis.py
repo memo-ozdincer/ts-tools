@@ -39,15 +39,16 @@ if __name__ == "__main__":
     torch.set_grad_enabled(False)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    project_root = os.path.dirname(os.path.dirname(__file__))
-    checkpoint_path = os.path.join(project_root, "ckpt/hesspred_v1.ckpt")
+    HOME = os.path.expanduser("~")
+    PROJECT = "/project/memo"    # THIS IS FOR THE CSLAB CLUSTER
 
+    checkpoint_path = os.path.join(PROJECT, "ts-tools/ckpt/hesspred_v1.ckpt")
+    dataset_path = os.path.join(PROJECT, "ts-tools/data/rgd1_minimal_val.lmdb")
     calculator = EquiformerTorchCalculator(
         checkpoint_path=checkpoint_path,
         hessian_method="predict",
     )
 
-    dataset_path = os.path.join(project_root, "data/rgd1/rgd1_minimal_val.lmdb")
     use_pos_tf = UsePos("pos_transition")
     hess_tf = HessianGraphTransform(
         cutoff=calculator.potential.cutoff,
