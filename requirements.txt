@@ -1,0 +1,29 @@
+# core
+torch>=2.2
+torchvision
+torchaudio
+
+# torch-geometric (compatible with torch>=2.2)
+torch-scatter==2.1.2
+torch-sparse==0.6.18
+torch-cluster==1.6.3
+torch-spline-conv==1.2.2
+torch-geometric>=2.5.3
+
+# ML framework
+pytorch-lightning>=2.3
+torchmetrics>=1.4
+pydantic>=2.11
+
+# general
+numpy
+scipy
+tqdm
+matplotlib
+pyyaml
+omegaconf
+einops
+h5py
+
+# local installs
+-e ../hip
