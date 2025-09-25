@@ -7,7 +7,7 @@ import numpy as np
 from torch_geometric.loader import DataLoader
 
 from hip.equiformer_torch_calculator import EquiformerTorchCalculator
-from hip.horm.ff_lmdb import LmdbDataset
+from hip.ff_lmdb import LmdbDataset
 from ocpmodels.hessian_graph_transform import HessianGraphTransform
 
 # --- frequency analysis utilities ---
