@@ -1,5 +1,3 @@
-# scripts/gad_frequency_analysis.py
-
 import os
 import json
 from typing import Dict, Any, List
@@ -9,13 +7,12 @@ import numpy as np
 from torch_geometric.loader import DataLoader
 
 from hip.equiformer_torch_calculator import EquiformerTorchCalculator
-from hip.ff_lmdb import LmdbDataset
+from hip.horm.ff_lmdb import LmdbDataset
 from ocpmodels.hessian_graph_transform import HessianGraphTransform
 
 # --- frequency analysis utilities ---
-from hip.frequency_analysis import (
-    analyze_frequencies_torch,  # Eckart projection, eigen-decomp
-)
+from hip.frequency_analysis import analyze_frequencies_torch  # Eckart projection + eigendecomp
+
 
 # -----------------------------
 # Pre-transform: use TS coords
@@ -32,23 +29,28 @@ class UsePos:
         return data
 
 
-# -----------------------------
-# Main
-# -----------------------------
 if __name__ == "__main__":
     torch.set_grad_enabled(False)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     HOME = os.path.expanduser("~")
-    PROJECT = "/project/memo"    # THIS IS FOR THE CSLAB CLUSTER
+    PROJECT = "/project/memo"  # CSLab project space (large, persistent)
 
+    # where big files live
     checkpoint_path = os.path.join(PROJECT, "ts-tools/ckpt/hesspred_v1.ckpt")
     dataset_path = os.path.join(PROJECT, "ts-tools/data/rgd1_minimal_val.lmdb")
+
+    # where to write results (small)
+    out_dir = os.path.join(HOME, "ts-tools", "out")
+    os.makedirs(out_dir, exist_ok=True)
+
+    # load model
     calculator = EquiformerTorchCalculator(
         checkpoint_path=checkpoint_path,
         hessian_method="predict",
     )
 
+    # transforms (use TS coordinates; build hessian graph)
     use_pos_tf = UsePos("pos_transition")
     hess_tf = HessianGraphTransform(
         cutoff=calculator.potential.cutoff,
@@ -57,12 +59,16 @@ if __name__ == "__main__":
     )
     composed_tf = lambda d: hess_tf(use_pos_tf(d))
 
+    # data
     dataset = LmdbDataset(dataset_path, transform=composed_tf)
     dataloader = DataLoader(dataset, batch_size=1, shuffle=False)
 
     MAX_SAMPLES = 30
     results_summary: List[Dict[str, Any]] = []
 
+    print(f"Checkpoint: {checkpoint_path}")
+    print(f"Dataset:    {dataset_path}")
+    print(f"Device:     {device}")
     print(f"Dataset size: {len(dataset)}")
     print(f"Analyzing up to {MAX_SAMPLES} samples for vibrational frequencies")
 
@@ -75,25 +81,24 @@ if __name__ == "__main__":
             pos = batch.pos
             atomic_nums = batch.z
 
-            # analyze_frequencies_torch handles Eckart projection + eigendecomp
+            # analyze_frequencies_torch does Eckart projection + eigendecomp
             freq_info = analyze_frequencies_torch(hess, pos, atomic_nums)
 
             out = {
                 "index": i,
                 "natoms": int(pos.shape[0]),
                 "neg_num": int(freq_info["neg_num"]),
-                "eigvals": freq_info["eigvals"].cpu().numpy().tolist(),
+                "eigvals": freq_info["eigvals"].detach().cpu().numpy().tolist(),
             }
-            if freq_info["eigvecs"] is not None:
-                out["eigvecs"] = freq_info["eigvecs"].cpu().numpy().tolist()
+            if freq_info.get("eigvecs", None) is not None:
+                out["eigvecs"] = freq_info["eigvecs"].detach().cpu().numpy().tolist()
 
             results_summary.append(out)
-
             print(f"[{i}] N={out['natoms']}, neg_num={out['neg_num']}")
         except Exception as e:
             print(f"[{i}] ERROR: {e}")
 
-    out_json = os.path.join(project_root, f"rgd1_frequency_{len(results_summary)}.json")
+    out_json = os.path.join(out_dir, f"rgd1_frequency_{len(results_summary)}.json")
     with open(out_json, "w") as f:
         json.dump(results_summary, f, indent=2)
     print(f"\nSaved frequency analysis summary for {len(results_summary)} samples → {out_json}")

@@ -1,5 +1,3 @@
-# scripts/gad_gad_euler_rmsd.py
-
 import os
 import json
 from typing import Any, Dict, List
@@ -9,10 +7,7 @@ import numpy as np
 from torch_geometric.data import Data as TGData, Batch
 from torch_geometric.loader import DataLoader
 
-# --- import the canonical calculator ---
 from hip.equiformer_torch_calculator import EquiformerTorchCalculator
-
-# --- repo-specific utilities ---
 from hip.horm.ff_lmdb import LmdbDataset
 from ocpmodels.hessian_graph_transform import HessianGraphTransform
 
@@ -21,7 +16,7 @@ from ocpmodels.hessian_graph_transform import HessianGraphTransform
 # Alignment + RMSD utilities
 # -----------------------------
 def find_rigid_alignment(A: np.ndarray, B: np.ndarray):
-    """Kabsch algorithm, no mass weighting, handles reflection."""
+    """Kabsch (no masses), handles reflection."""
     a_mean = A.mean(axis=0)
     b_mean = B.mean(axis=0)
     A_c = A - a_mean
@@ -58,7 +53,6 @@ def align_ordered_and_get_rmsd(A, B) -> float:
 # Pre-transform: use TS coords
 # -----------------------------
 class UsePos:
-    """Copy pos_transition into data.pos."""
     def __init__(self, attr: str = "pos_transition"):
         self.attr = attr
 
@@ -84,13 +78,11 @@ def run_gad_euler_on_batch(
     Returns dict with RMSD, forces, natoms.
     """
     assert int(batch.batch.max().item()) + 1 == 1, "Use batch_size=1."
-
-    # cache starting positions
     start_pos = batch.pos.detach().clone()
 
-    for step in range(n_steps):
+    for _ in range(n_steps):
         results = calculator.predict(batch, do_hessian=True)
-        forces = results["forces"]      # (N,3)
+        forces = results["forces"]  # (N,3)
         N = forces.shape[0]
         hess = results["hessian"]
 
@@ -108,7 +100,7 @@ def run_gad_euler_on_batch(
         v = evecs[:, 0]
         v = v / (v.norm() + 1e-12)
 
-        # GAD update: F + 2(-F·v)v
+        # GAD velocity: F + 2(-F·v)v   (since F = -∇V)
         f_flat = forces.reshape(-1)
         gad_flat = f_flat + 2.0 * torch.dot(-f_flat, v) * v
         gad = gad_flat.view(N, 3)
@@ -119,7 +111,7 @@ def run_gad_euler_on_batch(
     end_pos = batch.pos.detach().clone()
     rmsd_val = align_ordered_and_get_rmsd(start_pos, end_pos)
 
-    # diagnostics
+    # diagnostics at end
     res_end = calculator.predict(batch, do_hessian=False)
     F_end = res_end["forces"]
     rms_force = F_end.pow(2).mean().sqrt().item()
@@ -133,22 +125,24 @@ def run_gad_euler_on_batch(
     }
 
 
-# -----------------------------
-# Main
-# -----------------------------
 if __name__ == "__main__":
     torch.set_grad_enabled(False)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    project_root = os.path.dirname(os.path.dirname(__file__))
-    checkpoint_path = os.path.join(project_root, "ckpt/hesspred_v1.ckpt")
+    HOME = os.path.expanduser("~")
+    PROJECT = "/project/memo"  # big files here
+
+    # I/O layout
+    checkpoint_path = os.path.join(PROJECT, "ts-tools/ckpt/hesspred_v1.ckpt")
+    dataset_path = os.path.join(PROJECT, "ts-tools/data/rgd1_minimal_val.lmdb")
+    out_dir = os.path.join(HOME, "ts-tools", "out")
+    os.makedirs(out_dir, exist_ok=True)
 
     calculator = EquiformerTorchCalculator(
         checkpoint_path=checkpoint_path,
         hessian_method="predict",
     )
 
-    dataset_path = os.path.join(project_root, "data/rgd1/rgd1_minimal_val.lmdb")
     use_pos_tf = UsePos("pos_transition")
     hess_tf = HessianGraphTransform(
         cutoff=calculator.potential.cutoff,
@@ -167,6 +161,9 @@ if __name__ == "__main__":
 
     results_summary: List[Dict[str, Any]] = []
 
+    print(f"Checkpoint: {checkpoint_path}")
+    print(f"Dataset:    {dataset_path}")
+    print(f"Device:     {device}")
     print(f"Dataset size: {len(dataset)}")
     print(f"Processing up to {MAX_SAMPLES} samples with GAD-Euler (steps={N_STEPS}, dt={DT})")
 
@@ -183,7 +180,7 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"[{i}] ERROR: {e}")
 
-    out_json = os.path.join(project_root, f"rgd1_gad_rmsd_{len(results_summary)}.json")
+    out_json = os.path.join(out_dir, f"rgd1_gad_rmsd_{len(results_summary)}.json")
     with open(out_json, "w") as f:
         json.dump(results_summary, f, indent=2)
     print(f"\nSaved GAD RMSD summary for {len(results_summary)} samples → {out_json}")
