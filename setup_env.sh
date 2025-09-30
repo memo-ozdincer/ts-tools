@@ -12,7 +12,7 @@ set -e
 
 # Define the base directory for your project in /project space
 BASE_DIR="/project/memo"
-TS_TOOLS_DIR="${BASE_DIR}/ts-tools"
+TS_TOOLS_DIR="${BASE_DIR}/code/ts-tools"
 VENV_DIR="${TS_TOOLS_DIR}/.venv"
 PYTHON_VERSION="3.10" # As you requested
 
