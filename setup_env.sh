@@ -12,7 +12,7 @@ set -e
 
 # Define the base directory for your project in /project space
 BASE_DIR="/project/memo"
-TS_TOOLS_DIR="${BASE_DIR}/code/ts-tools"
+TS_TOOLS_DIR="${BASE_DIR}/code/gitts-tools"
 VENV_DIR="${TS_TOOLS_DIR}/.venv"
 PYTHON_VERSION="3.10" # As you requested
 
@@ -58,8 +58,6 @@ echo ">>> Installing 'hip' and 'ts-tools' dependencies..."
 # The path '../hip' is correct because we are inside the ts-tools directory.
 uv pip install -e ../hip
 
-# Install requirements for ts-tools itself (if it has any)
-# If you have a requirements.txt in your ts-tools folder, uncomment the next line:
-# uv pip install -r requirements.txt
+uv pip install -r requirements.txt
 
 echo "✅ Environment setup complete. You can now use the environment at ${VENV_DIR}"
