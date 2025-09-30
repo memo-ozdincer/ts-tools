@@ -10,7 +10,7 @@ cd ~/project/memo/ts-tools
 
 # Load Compute Canada stack
 source /cvmfs/soft.computecanada.ca/config/profile/bash.sh
-module load python/3.11
+module load python/3.10
 
 # Activate env
 PYTHONBIN=~/project/memo/ts-tools/.venv/bin
