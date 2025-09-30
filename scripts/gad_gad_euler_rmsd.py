@@ -133,9 +133,9 @@ if __name__ == "__main__":
     PROJECT = "/project/memo"  # big files here
 
     # I/O layout
-    checkpoint_path = os.path.join(PROJECT, "/project/memo/ts-tools/ckpt/hesspred_v1.ckpt")
-    dataset_path = os.path.join(PROJECT, "/project/memo/ts-tools/Transition1x/data/t1x_lmdb/t1x_test_ts.lmdb")
-    out_dir = os.path.join(HOME, "ts-tools", "out")
+    checkpoint_path = os.path.join(PROJECT, "/project/memo/large-files/ckpt/hesspred_v1.ckpt")
+    dataset_path = os.path.join(PROJECT, "/project/memo/large-files/Transition1x/data/t1x_lmdb/t1x_test_ts.lmdb")
+    out_dir = os.path.join(HOME, "large-files", "out")
     os.makedirs(out_dir, exist_ok=True)
 
     calculator = EquiformerTorchCalculator(
