@@ -34,6 +34,6 @@ source ${VENV_DIR}/bin/activate
 
 # 3. Run your Python script
 echo ">>> Running the data conversion script..."
-python scripts/convert_transition1x.py --limit 100
+python scripts/convert_t1x_to_lmdb.py --limit 100
 
 echo "✅ Job completed successfully."
