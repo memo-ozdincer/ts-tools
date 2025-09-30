@@ -133,8 +133,8 @@ if __name__ == "__main__":
     PROJECT = "/project/memo"  # big files here
 
     # I/O layout
-    checkpoint_path = os.path.join(PROJECT, "ts-tools/ckpt/hesspred_v1.ckpt")
-    dataset_path = os.path.join(PROJECT, "ts-tools/data/rgd1_minimal_val.lmdb")
+    checkpoint_path = os.path.join(PROJECT, "/project/memo/ts-tools/ckpt/hesspred_v1.ckpt")
+    dataset_path = os.path.join(PROJECT, "/project/memo/ts-tools/Transition1x/data/t1x_lmdb/t1x_test_ts.lmdb")
     out_dir = os.path.join(HOME, "ts-tools", "out")
     os.makedirs(out_dir, exist_ok=True)
 
