@@ -24,6 +24,7 @@ pyyaml
 omegaconf
 einops
 h5py
+lmdb
 
 # local installs
 -e ../hip
