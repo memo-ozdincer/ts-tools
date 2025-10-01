@@ -134,7 +134,7 @@ if __name__ == "__main__":
         if i >= MAX_SAMPLES:
             break
         try:
-            batch.natoms=torch.tensor([batch.pos.shape[1]], dtype=torch.long)
+            batch.natoms=torch.tensor([batch.pos.shape[0]], dtype=torch.long)
             batch = batch.to(device)
             results = calculator.predict(batch, do_hessian=True)
             hess = results["hessian"]
