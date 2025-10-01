@@ -104,19 +104,18 @@ if __name__ == "__main__":
 
     # transforms (use TS coordinates; build hessian graph)
     use_pos_tf = UsePos("pos_transition")
-    hess_tf = HessianGraphTransform(
-        cutoff=calculator.potential.cutoff,
-        max_neighbors=calculator.potential.max_neighbors,
-        use_pbc=getattr(calculator.potential, "use_pbc", False),
-    )
-    composed_tf = lambda d: hess_tf(use_pos_tf(d))
+    # hess_tf = HessianGraphTransform(
+    #     cutoff=calculator.potential.cutoff,
+    #     max_neighbors=calculator.potential.max_neighbors,
+    #     use_pbc=getattr(calculator.potential, "use_pbc", False),
+    # )
 
     # data
     dataset = Transition1xDataset(
         h5_path=h5_path,
         split=T1X_SPLIT,
         max_samples=MAX_SAMPLES,
-        transform=composed_tf,
+        transform=use_pos_tf,
     )
     dataloader = DataLoader(dataset, batch_size=1, shuffle=False)
 
@@ -135,6 +134,7 @@ if __name__ == "__main__":
         if i >= MAX_SAMPLES:
             break
         try:
+            batch.natoms=torch.tensor([batch.pos.shape[1]], dtype=torch.long)
             batch = batch.to(device)
             results = calculator.predict(batch, do_hessian=True)
             hess = results["hessian"]
