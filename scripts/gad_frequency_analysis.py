@@ -1,17 +1,61 @@
 import os
 import json
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 
 import torch
-import numpy as np
+from torch.utils.data import Dataset
+from torch_geometric.data import Data as TGDData
 from torch_geometric.loader import DataLoader
 
+from transition1x import Dataloader as T1xDataloader
+
 from hip.equiformer_torch_calculator import EquiformerTorchCalculator
-from hip.ff_lmdb import LmdbDataset
 from ocpmodels.hessian_graph_transform import HessianGraphTransform
 
 # --- frequency analysis utilities ---
 from hip.frequency_analysis import analyze_frequencies_torch  # Eckart projection + eigendecomp
+
+
+class Transition1xDataset(Dataset):
+    def __init__(
+        self,
+        h5_path: str,
+        split: str = "test",
+        max_samples: Optional[int] = None,
+        transform=None,
+    ):
+        self.transform = transform
+        self.samples: List[TGDData] = []
+
+        loader = T1xDataloader(h5_path, datasplit=split, only_final=True)
+
+        for idx, mol in enumerate(loader):
+            if max_samples is not None and len(self.samples) >= max_samples:
+                break
+            try:
+                ts = mol["transition_state"]
+
+                data = TGDData(
+                    z=torch.tensor(ts["atomic_numbers"], dtype=torch.long),
+                    pos_transition=torch.tensor(ts["positions"], dtype=torch.float),
+                    energy=torch.tensor(ts["wB97x_6-31G(d).energy"], dtype=torch.float),
+                    forces=torch.tensor(ts["wB97x_6-31G(d).forces"], dtype=torch.float),
+                    rxn=mol["rxn"],
+                    formula=mol["formula"],
+                )
+
+                self.samples.append(data)
+            except Exception as e:
+                print(f"[WARN] Skipping idx={idx} due to error: {e}")
+
+    def __len__(self) -> int:
+        return len(self.samples)
+
+    def __getitem__(self, idx: int) -> TGDData:
+        data = self.samples[idx]
+        if self.transform is not None:
+            data = self.transform(data)
+        return data
 
 
 # -----------------------------
@@ -34,11 +78,19 @@ if __name__ == "__main__":
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     HOME = os.path.expanduser("~")
-    PROJECT = "/project/memo"  # CSLab project space (large, persistent)
+    PROJECT = "/project/memo" 
+
+    MAX_SAMPLES = 30
+    T1X_SPLIT = "test"
 
     # where big files live
-    checkpoint_path = os.path.join(PROJECT, "/project/memo/large-files/ckpt/hesspred_v1.ckpt")
-    dataset_path = os.path.join(PROJECT, "/project/memo/large-files/Transition1x/data/t1x_lmdb/t1x_test_ts.lmdb")
+    checkpoint_path = os.path.join(PROJECT, "large-files", "ckpt", "hesspred_v1.ckpt")
+    h5_path = os.path.join(
+        PROJECT,
+        "large-files",
+        "data",
+        "transition1x.h5",
+    )
 
     # where to write results (small)
     out_dir = os.path.join(HOME, "large-files", "out")
@@ -60,22 +112,30 @@ if __name__ == "__main__":
     composed_tf = lambda d: hess_tf(use_pos_tf(d))
 
     # data
-    dataset = LmdbDataset(dataset_path, transform=composed_tf)
+    dataset = Transition1xDataset(
+        h5_path=h5_path,
+        split=T1X_SPLIT,
+        max_samples=MAX_SAMPLES,
+        transform=composed_tf,
+    )
     dataloader = DataLoader(dataset, batch_size=1, shuffle=False)
 
-    MAX_SAMPLES = 30
     results_summary: List[Dict[str, Any]] = []
 
     print(f"Checkpoint: {checkpoint_path}")
-    print(f"Dataset:    {dataset_path}")
+    print(f"Dataset:    {h5_path} (split={T1X_SPLIT})")
     print(f"Device:     {device}")
-    print(f"Dataset size: {len(dataset)}")
+    print(f"Loaded samples: {len(dataset)}")
     print(f"Analyzing up to {MAX_SAMPLES} samples for vibrational frequencies")
+
+    if len(dataset) == 0:
+        raise RuntimeError("No Transition1x samples loaded. Check h5 path and split.")
 
     for i, batch in enumerate(dataloader):
         if i >= MAX_SAMPLES:
             break
         try:
+            batch = batch.to(device)
             results = calculator.predict(batch, do_hessian=True)
             hess = results["hessian"]
             pos = batch.pos
