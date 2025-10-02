@@ -225,7 +225,6 @@ if __name__ == "__main__":
     h5_path = os.path.join(
         PROJECT,
         "large-files",
-        "Transition1x",
         "data",
         "transition1x.h5",
     )
