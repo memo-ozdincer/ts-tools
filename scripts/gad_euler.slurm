@@ -24,8 +24,8 @@ echo ">>> Project Directory: ${PROJECT_DIR}"
 cd ${PROJECT_DIR}
 
 # 1. Load the same Python module you used to build the environment
-# echo ">>> Loading Python ${PYTHON_VERSION} module..."
-# source /cvmfs/soft.computecanada.ca/config/profile/bash.sh
+echo ">>> Loading Python ${PYTHON_VERSION} module..."
+source /cvmfs/soft.computecanada.ca/config/profile/bash.sh
 module purge
 module load python/${PYTHON_VERSION}
 
