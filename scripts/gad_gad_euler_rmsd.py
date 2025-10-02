@@ -237,18 +237,18 @@ if __name__ == "__main__":
     )
 
     use_pos_tf = UsePos("pos_transition")
-    hess_tf = HessianGraphTransform(
-        cutoff=calculator.potential.cutoff,
-        max_neighbors=calculator.potential.max_neighbors,
-        use_pbc=getattr(calculator.potential, "use_pbc", False),
-    )
-    composed_tf = lambda d: hess_tf(use_pos_tf(d))
+    # hess_tf = HessianGraphTransform(
+    #     cutoff=calculator.potential.cutoff,
+    #     max_neighbors=calculator.potential.max_neighbors,
+    #     use_pbc=getattr(calculator.potential, "use_pbc", False),
+    # )
+    # composed_tf = lambda d: hess_tf(use_pos_tf(d))
 
     dataset = Transition1xDataset(
         h5_path=h5_path,
         split=T1X_SPLIT,
         max_samples=MAX_SAMPLES,
-        transform=composed_tf,
+        transform=use_pos_tf,
     )
     dataloader = DataLoader(dataset, batch_size=1, shuffle=False)
 
