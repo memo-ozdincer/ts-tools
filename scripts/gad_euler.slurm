@@ -14,7 +14,7 @@ set -e
 # Define project paths. Changing them here updates the whole script.
 PROJECT_DIR="/project/memo/code/ts-tools"
 VENV_DIR="${PROJECT_DIR}/.venv"
-PYTHON_VERSION="3.10" # Must match the version used in your setup script
+PYTHON_VERSION="3.11" # Must match the version used in your setup script
 
 # --- Script Start ---
 echo ">>> Starting job on node $(hostname)"
@@ -24,8 +24,8 @@ echo ">>> Project Directory: ${PROJECT_DIR}"
 cd ${PROJECT_DIR}
 
 # 1. Load the same Python module you used to build the environment
-echo ">>> Loading Python ${PYTHON_VERSION} module..."
-source /cvmfs/soft.computecanada.ca/config/profile/bash.sh
+# echo ">>> Loading Python ${PYTHON_VERSION} module..."
+# source /cvmfs/soft.computecanada.ca/config/profile/bash.sh
 module purge
 module load python/${PYTHON_VERSION}
 
