@@ -38,8 +38,8 @@ class Transition1xDataset(Dataset):
                     pos_transition=torch.tensor(ts["positions"], dtype=torch.float),
                     energy=torch.tensor(ts["wB97x_6-31G(d).energy"], dtype=torch.float),
                     forces=torch.tensor(ts["wB97x_6-31G(d).forces"], dtype=torch.float),
-                    rxn=mol["rxn"],
-                    formula=mol["formula"],
+                    rxn=ts["rxn"],
+                    formula=ts["formula"],
                 )
 
                 self.samples.append(data)
