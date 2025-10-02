@@ -100,7 +100,7 @@ class UsePos:
     def __init__(self, attr: str = "pos_transition"):
         self.attr = attr
 
-    def __call__(self, data: TGData) -> TGData:
+    def __call__(self, data: TGDData) -> TGDData:
         pos = getattr(data, self.attr, None)
         if pos is None:
             raise ValueError(f"Data missing '{self.attr}'. Keys: {list(data.keys())}")
