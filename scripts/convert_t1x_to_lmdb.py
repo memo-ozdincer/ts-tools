@@ -64,7 +64,7 @@ def convert_t1x_to_lmdb(h5_path: str, out_dir: str, split: str = "train", max_sa
 
 
 if __name__ == "__main__":
-    h5_file = "/project/memo/large-files/Transition1x/data/transition1x.h5"
+    h5_file = "/project/memo/large-files/Transitio≠n1x/data/transition1x.h5"
     out_dir = "/project/memo/large-files/Transition1x/data/t1x_lmdb"
 
     # small debug split (first 100 samples)

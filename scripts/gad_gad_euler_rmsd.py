@@ -1,6 +1,5 @@
 import os
 import json
-import re
 from typing import Any, Dict, List, Optional
 
 import torch
@@ -13,11 +12,6 @@ from transition1x import Dataloader as T1xDataloader
 
 from hip.equiformer_torch_calculator import EquiformerTorchCalculator
 from ocpmodels.hessian_graph_transform import HessianGraphTransform
-
-import matplotlib
-
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 
 
 class Transition1xDataset(Dataset):
@@ -142,13 +136,6 @@ def _prepare_hessian(hess: torch.Tensor, num_atoms: int) -> torch.Tensor:
     return hess
 
 
-def _mean_vector_magnitude(vec: torch.Tensor) -> float:
-    vec = vec.detach()
-    if vec.device.type != "cpu":
-        vec = vec.cpu()
-    return float(vec.norm(dim=1).mean().item())
-
-
 def run_gad_euler_on_batch(
     calculator: EquiformerTorchCalculator,
     batch: Batch,
@@ -164,40 +151,15 @@ def run_gad_euler_on_batch(
 
     results = calculator.predict(batch, do_hessian=True)
     energy_start = _scalar_from(results, "energy")
-
-    trajectory = {
-        "energy": [],
-        "force_mean": [],
-        "gad_mean": [],
-        "eig_min": [],
-        "eig_second": [],
-        "eig_product": [],
-    }
-
-    def _record_step(predictions: Dict[str, Any], gad_vec: Optional[torch.Tensor]):
-        trajectory["energy"].append(_scalar_from(predictions, "energy"))
-        trajectory["force_mean"].append(_mean_vector_magnitude(predictions["forces"]))
-        trajectory["gad_mean"].append(
-            None if gad_vec is None else _mean_vector_magnitude(gad_vec)
-        )
-        hess_local = _prepare_hessian(
-            predictions["hessian"], predictions["forces"].shape[0]
-        )
-        evals_local = torch.linalg.eigvalsh(hess_local)
-        evals_cpu = evals_local.detach().cpu()
-        trajectory["eig_min"].append(float(evals_cpu[0].item()))
-        if evals_cpu.numel() > 1:
-            trajectory["eig_second"].append(float(evals_cpu[1].item()))
-            trajectory["eig_product"].append(
-                float((evals_cpu[0] * evals_cpu[1]).item())
-            )
-        else:
-            trajectory["eig_second"].append(float("nan"))
-            trajectory["eig_product"].append(float("nan"))
-
-    _record_step(results, gad_vec=None)
-    min_eig_start = trajectory["eig_min"][0]
-    second_eig_start = trajectory["eig_second"][0]
+    forces_init = results["forces"]
+    min_eig_start = float(
+        torch.linalg.eigvalsh(
+            _prepare_hessian(results["hessian"], forces_init.shape[0])
+        )[0]
+        .detach()
+        .cpu()
+        .item()
+    )
 
     for _ in range(n_steps):
         forces = results["forces"]  # (N,3)
@@ -218,7 +180,6 @@ def run_gad_euler_on_batch(
         batch.pos = batch.pos + dt * gad
 
         results = calculator.predict(batch, do_hessian=True)
-        _record_step(results, gad)
 
     end_pos = batch.pos.detach().clone()
     rmsd_val = align_ordered_and_get_rmsd(start_pos, end_pos)
@@ -249,71 +210,7 @@ def run_gad_euler_on_batch(
         "eig_product_end": eig_product_end,
         "mean_displacement": float(displacement.mean().item()),
         "max_displacement": float(displacement.max().item()),
-        "trajectory": {
-            "energy": trajectory["energy"],
-            "force_mean": trajectory["force_mean"],
-            "gad_mean": trajectory["gad_mean"],
-            "eig_min": trajectory["eig_min"],
-            "eig_second": trajectory["eig_second"],
-            "eig_product": trajectory["eig_product"],
-        },
     }
-
-
-def _sanitize_formula(formula: str) -> str:
-    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", formula)
-    safe = safe.strip("_")
-    return safe or "sample"
-
-
-def plot_trajectory(
-    trajectory: Dict[str, List[Optional[float]]],
-    sample_index: int,
-    formula: str,
-    out_dir: str,
-    dt: float,
-) -> str:
-    """Create and save a 4-panel trajectory plot. Returns path to image."""
-    timesteps = np.arange(len(trajectory["energy"]))
-
-    def _nanify(values: List[Optional[float]]) -> np.ndarray:
-        return np.array([np.nan if v is None else v for v in values], dtype=float)
-
-    energies = _nanify(trajectory["energy"])
-    force_mean = _nanify(trajectory["force_mean"])
-    gad_mean = _nanify(trajectory["gad_mean"])
-    eig_product = _nanify(trajectory["eig_product"])
-
-    fig, axes = plt.subplots(4, 1, figsize=(8, 12), sharex=True)
-    dt_str = f"{dt:g}"
-
-    axes[0].plot(timesteps, energies, marker="o", linewidth=1.2)
-    axes[0].set_ylabel("Energy (eV)")
-    axes[0].set_title(f"Energy over time (dt={dt_str})")
-
-    axes[1].plot(timesteps, force_mean, marker="o", color="tab:orange", linewidth=1.2)
-    axes[1].set_ylabel("Mean |F| (eV/Å)")
-    axes[1].set_title("Force magnitude over time")
-
-    axes[2].plot(timesteps, gad_mean, marker="o", color="tab:green", linewidth=1.2)
-    axes[2].set_ylabel("Mean |GAD| (eV/Å)")
-    axes[2].set_xlabel("Step")
-    axes[2].set_title("GAD vector magnitude over time")
-
-    axes[3].plot(timesteps, eig_product, marker="o", color="tab:red", linewidth=1.2)
-    axes[3].set_ylabel("λ₀·λ₁")
-    axes[3].set_xlabel("Step")
-    axes[3].set_title("Product of two smallest Hessian eigenvalues")
-
-    fig.tight_layout()
-
-    safe_formula = _sanitize_formula(formula)
-    dt_token = dt_str.replace(".", "p")
-    filename = f"rgd1_gad_traj_{sample_index:03d}_dt{dt_token}_{safe_formula}.png"
-    out_path = os.path.join(out_dir, filename)
-    fig.savefig(out_path, dpi=200)
-    plt.close(fig)
-    return out_path
 
 
 if __name__ == "__main__":
@@ -323,10 +220,7 @@ if __name__ == "__main__":
     HOME = os.path.expanduser("~")
     PROJECT = "/project/memo"  # big files here
 
-    MAX_SAMPLES = 30  # number of unique samples to process
-    DATASET_LOAD_MULTIPLIER = 5  # load more candidates so we can pick unique formulas
-    DATASET_MAX_SAMPLES = MAX_SAMPLES * DATASET_LOAD_MULTIPLIER
-    SELECT_UNIQUE_FORMULAS = True
+    MAX_SAMPLES = 30
     T1X_SPLIT = "test"
     N_STEPS = 50
     DT_GRID = [0.005, 0.01, 0.15, 0.2]
@@ -358,10 +252,10 @@ if __name__ == "__main__":
     dataset = Transition1xDataset(
         h5_path=h5_path,
         split=T1X_SPLIT,
-        max_samples=DATASET_MAX_SAMPLES,
+        max_samples=MAX_SAMPLES,
         transform=use_pos_tf,
     )
-    dataloader = DataLoader(dataset, batch_size=1, shuffle=True)
+    dataloader = DataLoader(dataset, batch_size=1, shuffle=False)
 
     results_summary: List[Dict[str, Any]] = []
 
@@ -377,86 +271,34 @@ if __name__ == "__main__":
     if len(dataset) == 0:
         raise RuntimeError("No Transition1x samples loaded. Check h5 path and split.")
 
-    plot_dir = os.path.join(out_dir, "gad_trajectories")
-    os.makedirs(plot_dir, exist_ok=True)
-
-    seen_formulas = set()
-    processed = 0
-
-    for dataset_idx, batch in enumerate(dataloader):
-        if processed >= MAX_SAMPLES:
+    for i, batch in enumerate(dataloader):
+        if i >= MAX_SAMPLES:
             break
         try:
-            formula_attr = getattr(batch, "formula", "")
-            if isinstance(formula_attr, (list, tuple)):
-                formula = formula_attr[0]
-            elif isinstance(formula_attr, torch.Tensor):
-                if formula_attr.numel() == 1:
-                    formula = formula_attr.item()
-                else:
-                    formula = formula_attr[0].item()
-            else:
-                formula = formula_attr
-            if isinstance(formula, bytes):
-                formula = formula.decode("utf-8", errors="ignore")
-            formula = str(formula)
-
-            if SELECT_UNIQUE_FORMULAS and formula in seen_formulas:
-                continue
-            seen_formulas.add(formula)
-
-            batch.natoms = torch.tensor([batch.pos.shape[0]], dtype=torch.long)
+            batch.natoms=torch.tensor([batch.pos.shape[0]], dtype=torch.long)
             batch = batch.to(device)
-            start_pos = batch.pos.detach().clone()
-            sample_idx = processed
-
-            for dt_val in DT_GRID:
-                batch.pos = start_pos.clone()
-                out = run_gad_euler_on_batch(
-                    calculator, batch, n_steps=N_STEPS, dt=dt_val
-                )
-                plot_path = plot_trajectory(
-                    out["trajectory"], sample_idx, formula, plot_dir, dt=dt_val
-                )
-                plot_path_rel = os.path.relpath(plot_path, out_dir)
-
-                energy_start = out["energy_start"]
-                energy_end = out["energy_end"]
-                if energy_start is not None and energy_end is not None:
-                    delta_e_str = f"ΔE={energy_end - energy_start:.5f} eV"
-                else:
-                    delta_e_str = "ΔE=NA"
-
-                result = {
-                    "dataset_index": dataset_idx,
-                    "sample_order": sample_idx,
-                    "formula": formula,
-                    "dt": dt_val,
-                    "plot_path": plot_path_rel,
-                    **out,
-                }
-                results_summary.append(result)
-
-                print(
-                    f"[sample {sample_idx} dt={dt_val:g}] N={out['natoms']}, "
-                    f"RMSD={out['rmsd']:.4f} Å, {delta_e_str}, "
-                    f"RMS|F|_end={out['rms_force_end']:.3f} eV/Å, "
-                    f"max|F_i|_end={out['max_atom_force_end']:.3f} eV/Å, "
-                    f"λmin_start={out['min_hess_eig_start']:.5f}, "
-                    f"λmin_end={out['min_hess_eig_end']:.5f}, "
-                    f"mean disp={out['mean_displacement']:.4f} Å, "
-                    f"max disp={out['max_displacement']:.4f} Å, "
-                    f"formula={formula}"
-                )
-
-            processed += 1
+            out = run_gad_euler_on_batch(calculator, batch, n_steps=N_STEPS, dt=DT)
+            result = {"index": i, **out}
+            results_summary.append(result)
+            energy_start = out["energy_start"]
+            energy_end = out["energy_end"]
+            if energy_start is not None and energy_end is not None:
+                delta_e_str = f"ΔE={energy_end - energy_start:.5f} eV"
+            else:
+                delta_e_str = "ΔE=NA"
+            print(
+                f"[{i}] N={out['natoms']}, RMSD={out['rmsd']:.4f} Å, {delta_e_str}, "
+                f"RMS|F|_end={out['rms_force_end']:.3f} eV/Å, "
+                f"max|F_i|_end={out['max_atom_force_end']:.3f} eV/Å, "
+                f"λmin_start={out['min_hess_eig_start']:.5f}, "
+                f"λmin_end={out['min_hess_eig_end']:.5f}, "
+                f"mean disp={out['mean_displacement']:.4f} Å, "
+                f"max disp={out['max_displacement']:.4f} Å"
+            )
         except Exception as e:
-            print(f"[{dataset_idx}] ERROR: {e}")
+            print(f"[{i}] ERROR: {e}")
 
     out_json = os.path.join(out_dir, f"rgd1_gad_rmsd_{len(results_summary)}.json")
     with open(out_json, "w") as f:
         json.dump(results_summary, f, indent=2)
-    print(
-        f"\nSaved GAD RMSD summary for {processed} samples across {len(DT_GRID)} dt values "
-        f"({len(results_summary)} entries) → {out_json}"
-    )
+    print(f"\nSaved GAD RMSD summary for {len(results_summary)} samples → {out_json}")
