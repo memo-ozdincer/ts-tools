@@ -164,31 +164,40 @@ def run_gad_euler_on_batch(
 
     results = calculator.predict(batch, do_hessian=True)
     energy_start = _scalar_from(results, "energy")
-    forces_init = results["forces"]
-    min_eig_start = float(
-        torch.linalg.eigvalsh(
-            _prepare_hessian(results["hessian"], forces_init.shape[0])
-        )[0]
-        .detach()
-        .cpu()
-        .item()
-    )
 
     trajectory = {
         "energy": [],
         "force_mean": [],
         "gad_mean": [],
+        "eig_min": [],
+        "eig_second": [],
+        "eig_product": [],
     }
 
     def _record_step(predictions: Dict[str, Any], gad_vec: Optional[torch.Tensor]):
         trajectory["energy"].append(_scalar_from(predictions, "energy"))
         trajectory["force_mean"].append(_mean_vector_magnitude(predictions["forces"]))
-        if gad_vec is None:
-            trajectory["gad_mean"].append(None)
+        trajectory["gad_mean"].append(
+            None if gad_vec is None else _mean_vector_magnitude(gad_vec)
+        )
+        hess_local = _prepare_hessian(
+            predictions["hessian"], predictions["forces"].shape[0]
+        )
+        evals_local = torch.linalg.eigvalsh(hess_local)
+        evals_cpu = evals_local.detach().cpu()
+        trajectory["eig_min"].append(float(evals_cpu[0].item()))
+        if evals_cpu.numel() > 1:
+            trajectory["eig_second"].append(float(evals_cpu[1].item()))
+            trajectory["eig_product"].append(
+                float((evals_cpu[0] * evals_cpu[1]).item())
+            )
         else:
-            trajectory["gad_mean"].append(_mean_vector_magnitude(gad_vec))
+            trajectory["eig_second"].append(float("nan"))
+            trajectory["eig_product"].append(float("nan"))
 
     _record_step(results, gad_vec=None)
+    min_eig_start = trajectory["eig_min"][0]
+    second_eig_start = trajectory["eig_second"][0]
 
     for _ in range(n_steps):
         forces = results["forces"]  # (N,3)
@@ -219,8 +228,9 @@ def run_gad_euler_on_batch(
     max_atom_force = forces_end.norm(dim=1).max().item()
     energy_end = _scalar_from(results, "energy")
 
-    hess_end = _prepare_hessian(results["hessian"], forces_end.shape[0])
-    min_eig_end = float(torch.linalg.eigvalsh(hess_end)[0].detach().cpu().item())
+    min_eig_end = trajectory["eig_min"][-1]
+    second_eig_end = trajectory["eig_second"][-1]
+    eig_product_end = trajectory["eig_product"][-1]
 
     displacement = (end_pos - start_pos).norm(dim=1)
 
@@ -233,12 +243,19 @@ def run_gad_euler_on_batch(
         "energy_end": energy_end,
         "min_hess_eig_start": min_eig_start,
         "min_hess_eig_end": min_eig_end,
+        "second_hess_eig_start": second_eig_start,
+        "second_hess_eig_end": second_eig_end,
+        "eig_product_start": trajectory["eig_product"][0],
+        "eig_product_end": eig_product_end,
         "mean_displacement": float(displacement.mean().item()),
         "max_displacement": float(displacement.max().item()),
         "trajectory": {
             "energy": trajectory["energy"],
             "force_mean": trajectory["force_mean"],
             "gad_mean": trajectory["gad_mean"],
+            "eig_min": trajectory["eig_min"],
+            "eig_second": trajectory["eig_second"],
+            "eig_product": trajectory["eig_product"],
         },
     }
 
@@ -254,8 +271,9 @@ def plot_trajectory(
     sample_index: int,
     formula: str,
     out_dir: str,
+    dt: float,
 ) -> str:
-    """Create and save a 3-panel trajectory plot. Returns path to image."""
+    """Create and save a 4-panel trajectory plot. Returns path to image."""
     timesteps = np.arange(len(trajectory["energy"]))
 
     def _nanify(values: List[Optional[float]]) -> np.ndarray:
@@ -264,26 +282,34 @@ def plot_trajectory(
     energies = _nanify(trajectory["energy"])
     force_mean = _nanify(trajectory["force_mean"])
     gad_mean = _nanify(trajectory["gad_mean"])
+    eig_product = _nanify(trajectory["eig_product"])
 
-    fig, axes = plt.subplots(3, 1, figsize=(8, 9), sharex=True)
+    fig, axes = plt.subplots(4, 1, figsize=(8, 12), sharex=True)
+    dt_str = f"{dt:g}"
 
     axes[0].plot(timesteps, energies, marker="o", linewidth=1.2)
     axes[0].set_ylabel("Energy (eV)")
-    axes[0].set_title("Energy over time")
+    axes[0].set_title(f"Energy over time (dt={dt_str})")
 
     axes[1].plot(timesteps, force_mean, marker="o", color="tab:orange", linewidth=1.2)
     axes[1].set_ylabel("Mean |F| (eV/Å)")
     axes[1].set_title("Force magnitude over time")
 
     axes[2].plot(timesteps, gad_mean, marker="o", color="tab:green", linewidth=1.2)
-    axes[2].set_ylabel("Mean |GAD| (Å)")
+    axes[2].set_ylabel("Mean |GAD| (eV/Å)")
     axes[2].set_xlabel("Step")
     axes[2].set_title("GAD vector magnitude over time")
+
+    axes[3].plot(timesteps, eig_product, marker="o", color="tab:red", linewidth=1.2)
+    axes[3].set_ylabel("λ₀·λ₁")
+    axes[3].set_xlabel("Step")
+    axes[3].set_title("Product of two smallest Hessian eigenvalues")
 
     fig.tight_layout()
 
     safe_formula = _sanitize_formula(formula)
-    filename = f"rgd1_gad_traj_{sample_index:03d}_{safe_formula}.png"
+    dt_token = dt_str.replace(".", "p")
+    filename = f"rgd1_gad_traj_{sample_index:03d}_dt{dt_token}_{safe_formula}.png"
     out_path = os.path.join(out_dir, filename)
     fig.savefig(out_path, dpi=200)
     plt.close(fig)
@@ -303,7 +329,7 @@ if __name__ == "__main__":
     SELECT_UNIQUE_FORMULAS = True
     T1X_SPLIT = "test"
     N_STEPS = 50
-    DT = 0.005
+    DT_GRID = [0.005, 0.01, 0.15, 0.2]
 
     # I/O layout
     checkpoint_path = os.path.join(PROJECT, "large-files", "ckpt", "hesspred_v1.ckpt")
@@ -343,7 +369,10 @@ if __name__ == "__main__":
     print(f"Dataset:    {h5_path} (split={T1X_SPLIT})")
     print(f"Device:     {device}")
     print(f"Loaded samples: {len(dataset)}")
-    print(f"Processing up to {MAX_SAMPLES} samples with GAD-Euler (steps={N_STEPS}, dt={DT})")
+    print(
+        f"Processing up to {MAX_SAMPLES} samples with GAD-Euler "
+        f"(steps={N_STEPS}, dt grid={DT_GRID})"
+    )
 
     if len(dataset) == 0:
         raise RuntimeError("No Transition1x samples loaded. Check h5 path and split.")
@@ -376,38 +405,51 @@ if __name__ == "__main__":
                 continue
             seen_formulas.add(formula)
 
-            batch.natoms=torch.tensor([batch.pos.shape[0]], dtype=torch.long)
+            batch.natoms = torch.tensor([batch.pos.shape[0]], dtype=torch.long)
             batch = batch.to(device)
-            out = run_gad_euler_on_batch(calculator, batch, n_steps=N_STEPS, dt=DT)
+            start_pos = batch.pos.detach().clone()
             sample_idx = processed
-            processed += 1
-            plot_path = plot_trajectory(out["trajectory"], sample_idx, formula, plot_dir)
-            plot_path_rel = os.path.relpath(plot_path, out_dir)
 
-            result = {
-                "dataset_index": dataset_idx,
-                "sample_order": sample_idx,
-                "formula": formula,
-                "plot_path": plot_path_rel,
-                **out,
-            }
-            results_summary.append(result)
-            energy_start = out["energy_start"]
-            energy_end = out["energy_end"]
-            if energy_start is not None and energy_end is not None:
-                delta_e_str = f"ΔE={energy_end - energy_start:.5f} eV"
-            else:
-                delta_e_str = "ΔE=NA"
-            print(
-                f"[sample {sample_idx}] N={out['natoms']}, RMSD={out['rmsd']:.4f} Å, {delta_e_str}, "
-                f"RMS|F|_end={out['rms_force_end']:.3f} eV/Å, "
-                f"max|F_i|_end={out['max_atom_force_end']:.3f} eV/Å, "
-                f"λmin_start={out['min_hess_eig_start']:.5f}, "
-                f"λmin_end={out['min_hess_eig_end']:.5f}, "
-                f"mean disp={out['mean_displacement']:.4f} Å, "
-                f"max disp={out['max_displacement']:.4f} Å, "
-                f"formula={formula}"
-            )
+            for dt_val in DT_GRID:
+                batch.pos = start_pos.clone()
+                out = run_gad_euler_on_batch(
+                    calculator, batch, n_steps=N_STEPS, dt=dt_val
+                )
+                plot_path = plot_trajectory(
+                    out["trajectory"], sample_idx, formula, plot_dir, dt=dt_val
+                )
+                plot_path_rel = os.path.relpath(plot_path, out_dir)
+
+                energy_start = out["energy_start"]
+                energy_end = out["energy_end"]
+                if energy_start is not None and energy_end is not None:
+                    delta_e_str = f"ΔE={energy_end - energy_start:.5f} eV"
+                else:
+                    delta_e_str = "ΔE=NA"
+
+                result = {
+                    "dataset_index": dataset_idx,
+                    "sample_order": sample_idx,
+                    "formula": formula,
+                    "dt": dt_val,
+                    "plot_path": plot_path_rel,
+                    **out,
+                }
+                results_summary.append(result)
+
+                print(
+                    f"[sample {sample_idx} dt={dt_val:g}] N={out['natoms']}, "
+                    f"RMSD={out['rmsd']:.4f} Å, {delta_e_str}, "
+                    f"RMS|F|_end={out['rms_force_end']:.3f} eV/Å, "
+                    f"max|F_i|_end={out['max_atom_force_end']:.3f} eV/Å, "
+                    f"λmin_start={out['min_hess_eig_start']:.5f}, "
+                    f"λmin_end={out['min_hess_eig_end']:.5f}, "
+                    f"mean disp={out['mean_displacement']:.4f} Å, "
+                    f"max disp={out['max_displacement']:.4f} Å, "
+                    f"formula={formula}"
+                )
+
+            processed += 1
         except Exception as e:
             print(f"[{dataset_idx}] ERROR: {e}")
 
@@ -415,5 +457,6 @@ if __name__ == "__main__":
     with open(out_json, "w") as f:
         json.dump(results_summary, f, indent=2)
     print(
-        f"\nSaved GAD RMSD summary for {len(results_summary)} unique samples → {out_json}"
+        f"\nSaved GAD RMSD summary for {processed} samples across {len(DT_GRID)} dt values "
+        f"({len(results_summary)} entries) → {out_json}"
     )
