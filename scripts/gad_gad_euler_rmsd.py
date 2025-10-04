@@ -12,6 +12,7 @@ from torch_geometric.loader import DataLoader
 from transition1x import Dataloader as T1xDataloader
 
 from hip.equiformer_torch_calculator import EquiformerTorchCalculator
+from hip.frequency_analysis import analyze_frequencies_torch
 from ocpmodels.hessian_graph_transform import HessianGraphTransform
 
 import matplotlib
@@ -142,6 +143,37 @@ def _prepare_hessian(hess: torch.Tensor, num_atoms: int) -> torch.Tensor:
     return hess
 
 
+def _extract_smallest_eigs(
+    hessian: torch.Tensor,
+    positions: torch.Tensor,
+    atomic_numbers: torch.Tensor,
+):
+    """Return the two smallest eigenvalues and their product via frequency analysis."""
+    try:
+        freq_info = analyze_frequencies_torch(hessian, positions, atomic_numbers)
+    except Exception as exc:
+        print(f"[WARN] Frequency analysis failed: {exc}")
+        return None, None, None
+
+    eigvals = freq_info.get("eigvals")
+    if eigvals is None:
+        return None, None, None
+    if not isinstance(eigvals, torch.Tensor):
+        eigvals = torch.as_tensor(eigvals)
+
+    eigvals = eigvals.detach()
+    if eigvals.device.type != "cpu":
+        eigvals = eigvals.cpu()
+    eigvals = eigvals.reshape(-1)
+    if eigvals.numel() < 2:
+        return None, None, None
+
+    eigvals_sorted, _ = torch.sort(eigvals)
+    smallest = float(eigvals_sorted[0].item())
+    second_smallest = float(eigvals_sorted[1].item())
+    return smallest, second_smallest, smallest * second_smallest
+
+
 def _mean_vector_magnitude(vec: torch.Tensor) -> float:
     vec = vec.detach()
     if vec.device.type != "cpu":
@@ -164,21 +196,17 @@ def run_gad_euler_on_batch(
 
     results = calculator.predict(batch, do_hessian=True)
     energy_start = _scalar_from(results, "energy")
-    forces_init = results["forces"]
-    min_eig_start = float(
-        torch.linalg.eigvalsh(
-            _prepare_hessian(results["hessian"], forces_init.shape[0])
-        )[0]
-        .detach()
-        .cpu()
-        .item()
-    )
 
     trajectory = {
         "energy": [],
         "force_mean": [],
         "gad_mean": [],
+        "eig_min1": [],
+        "eig_min2": [],
+        "eig_product": [],
     }
+
+    atomic_numbers = batch.z
 
     def _record_step(predictions: Dict[str, Any], gad_vec: Optional[torch.Tensor]):
         trajectory["energy"].append(_scalar_from(predictions, "energy"))
@@ -187,6 +215,17 @@ def run_gad_euler_on_batch(
             trajectory["gad_mean"].append(None)
         else:
             trajectory["gad_mean"].append(_mean_vector_magnitude(gad_vec))
+
+        hessian = predictions.get("hessian")
+        if hessian is None:
+            trajectory["eig_min1"].append(None)
+            trajectory["eig_min2"].append(None)
+            trajectory["eig_product"].append(None)
+        else:
+            eig0, eig1, eig_prod = _extract_smallest_eigs(hessian, batch.pos, atomic_numbers)
+            trajectory["eig_min1"].append(eig0)
+            trajectory["eig_min2"].append(eig1)
+            trajectory["eig_product"].append(eig_prod)
 
     _record_step(results, gad_vec=None)
 
@@ -219,8 +258,18 @@ def run_gad_euler_on_batch(
     max_atom_force = forces_end.norm(dim=1).max().item()
     energy_end = _scalar_from(results, "energy")
 
-    hess_end = _prepare_hessian(results["hessian"], forces_end.shape[0])
-    min_eig_end = float(torch.linalg.eigvalsh(hess_end)[0].detach().cpu().item())
+    def _to_float(value: Optional[float]) -> float:
+        if value is None:
+            return float("nan")
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return float("nan")
+
+    min_eig_start = _to_float(trajectory["eig_min1"][0] if trajectory["eig_min1"] else None)
+    min_eig_end = _to_float(trajectory["eig_min1"][-1] if trajectory["eig_min1"] else None)
+    eig_product_start = _to_float(trajectory["eig_product"][0] if trajectory["eig_product"] else None)
+    eig_product_end = _to_float(trajectory["eig_product"][-1] if trajectory["eig_product"] else None)
 
     displacement = (end_pos - start_pos).norm(dim=1)
 
@@ -233,12 +282,17 @@ def run_gad_euler_on_batch(
         "energy_end": energy_end,
         "min_hess_eig_start": min_eig_start,
         "min_hess_eig_end": min_eig_end,
+        "eig_product_start": eig_product_start,
+        "eig_product_end": eig_product_end,
         "mean_displacement": float(displacement.mean().item()),
         "max_displacement": float(displacement.max().item()),
         "trajectory": {
             "energy": trajectory["energy"],
             "force_mean": trajectory["force_mean"],
             "gad_mean": trajectory["gad_mean"],
+            "eig_min1": trajectory["eig_min1"],
+            "eig_min2": trajectory["eig_min2"],
+            "eig_product": trajectory["eig_product"],
         },
     }
 
@@ -255,17 +309,24 @@ def plot_trajectory(
     formula: str,
     out_dir: str,
 ) -> str:
-    """Create and save a 3-panel trajectory plot. Returns path to image."""
-    timesteps = np.arange(len(trajectory["energy"]))
+    """Create and save a 4-panel trajectory plot. Returns path to image."""
+    num_steps = len(trajectory.get("energy", []))
+    timesteps = np.arange(num_steps)
 
-    def _nanify(values: List[Optional[float]]) -> np.ndarray:
+    def _nanify(values: Optional[List[Optional[float]]]) -> np.ndarray:
+        values = list(values) if values is not None else []
+        if len(values) < num_steps:
+            values = values + [None] * (num_steps - len(values))
         return np.array([np.nan if v is None else v for v in values], dtype=float)
 
-    energies = _nanify(trajectory["energy"])
-    force_mean = _nanify(trajectory["force_mean"])
-    gad_mean = _nanify(trajectory["gad_mean"])
+    energies = _nanify(trajectory.get("energy"))
+    force_mean = _nanify(trajectory.get("force_mean"))
+    gad_mean = _nanify(trajectory.get("gad_mean"))
+    eig_min1 = _nanify(trajectory.get("eig_min1"))
+    eig_min2 = _nanify(trajectory.get("eig_min2"))
+    eig_product = _nanify(trajectory.get("eig_product"))
 
-    fig, axes = plt.subplots(3, 1, figsize=(8, 9), sharex=True)
+    fig, axes = plt.subplots(4, 1, figsize=(8, 11), sharex=True)
 
     axes[0].plot(timesteps, energies, marker="o", linewidth=1.2)
     axes[0].set_ylabel("Energy (eV)")
@@ -275,10 +336,32 @@ def plot_trajectory(
     axes[1].set_ylabel("Mean |F| (eV/Å)")
     axes[1].set_title("Force magnitude over time")
 
-    axes[2].plot(timesteps, gad_mean, marker="o", color="tab:green", linewidth=1.2)
-    axes[2].set_ylabel("Mean |GAD| (Å)")
-    axes[2].set_xlabel("Step")
-    axes[2].set_title("GAD vector magnitude over time")
+    eig_ax = axes[2]
+    eig_ax.plot(timesteps, eig_min1, marker="o", color="tab:blue", linewidth=1.2, label="lambda_0")
+    eig_ax.plot(timesteps, eig_min2, marker="o", color="tab:red", linewidth=1.2, label="lambda_1")
+    eig_ax.set_ylabel("Eigenvalues")
+    eig_ax.set_title("Smallest Hessian eigenvalues")
+
+    prod_ax = eig_ax.twinx()
+    prod_ax.plot(
+        timesteps,
+        eig_product,
+        marker="o",
+        color="tab:purple",
+        linewidth=1.2,
+        linestyle="--",
+        label="lambda_0*lambda_1",
+    )
+    prod_ax.set_ylabel("Product")
+
+    eig_lines, eig_labels = eig_ax.get_legend_handles_labels()
+    prod_lines, prod_labels = prod_ax.get_legend_handles_labels()
+    eig_ax.legend(eig_lines + prod_lines, eig_labels + prod_labels, loc="best", fontsize="small")
+
+    axes[3].plot(timesteps, gad_mean, marker="o", color="tab:green", linewidth=1.2)
+    axes[3].set_ylabel("Mean |GAD| (Å)")
+    axes[3].set_xlabel("Step")
+    axes[3].set_title("GAD vector magnitude over time")
 
     fig.tight_layout()
 
