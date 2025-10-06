@@ -143,35 +143,86 @@ def _prepare_hessian(hess: torch.Tensor, num_atoms: int) -> torch.Tensor:
     return hess
 
 
-def _extract_smallest_eigs(
+def _analyze_smallest_modes(
     hessian: torch.Tensor,
     positions: torch.Tensor,
     atomic_numbers: torch.Tensor,
 ):
-    """Return the two smallest eigenvalues and their product via frequency analysis."""
+    """Return smallest-mode info using hip frequency analysis (eigs + eigenvectors)."""
     try:
         freq_info = analyze_frequencies_torch(hessian, positions, atomic_numbers)
     except Exception as exc:
         print(f"[WARN] Frequency analysis failed: {exc}")
-        return None, None, None
+        return None
 
     eigvals = freq_info.get("eigvals")
-    if eigvals is None:
-        return None, None, None
+    eigvecs = freq_info.get("eigvecs")
+    if eigvals is None or eigvecs is None:
+        return None
+
     if not isinstance(eigvals, torch.Tensor):
         eigvals = torch.as_tensor(eigvals)
+    if not isinstance(eigvecs, torch.Tensor):
+        eigvecs = torch.as_tensor(eigvecs)
 
     eigvals = eigvals.detach()
-    if eigvals.device.type != "cpu":
-        eigvals = eigvals.cpu()
-    eigvals = eigvals.reshape(-1)
-    if eigvals.numel() < 2:
-        return None, None, None
+    eigvecs = eigvecs.detach()
 
-    eigvals_sorted, _ = torch.sort(eigvals)
-    smallest = float(eigvals_sorted[0].item())
-    second_smallest = float(eigvals_sorted[1].item())
-    return smallest, second_smallest, smallest * second_smallest
+    if eigvals.device != hessian.device:
+        eigvals = eigvals.to(hessian.device)
+    if eigvecs.device != hessian.device:
+        eigvecs = eigvecs.to(hessian.device)
+
+    eigvals = eigvals.reshape(-1)
+    num_modes = eigvals.numel()
+    if num_modes < 2:
+        return None
+
+    eigvecs = eigvecs.to(dtype=hessian.dtype)
+
+    if eigvecs.dim() == 2 and eigvecs.shape[0] == num_modes:
+        def _get_vec(idx: int) -> torch.Tensor:
+            return eigvecs[idx].reshape(-1)
+    elif eigvecs.dim() == 2 and eigvecs.shape[1] == num_modes:
+        def _get_vec(idx: int) -> torch.Tensor:
+            return eigvecs[:, idx].reshape(-1)
+    elif eigvecs.dim() == 3 and eigvecs.shape[0] == num_modes:
+        def _get_vec(idx: int) -> torch.Tensor:
+            return eigvecs[idx].reshape(-1)
+    elif eigvecs.dim() == 3 and eigvecs.shape[2] == num_modes:
+        def _get_vec(idx: int) -> torch.Tensor:
+            return eigvecs[..., idx].reshape(-1)
+    else:
+        print("[WARN] Unexpected eigenvector shape from frequency analysis.")
+        return None
+
+    order = torch.argsort(eigvals)
+    idx0 = order[0].item()
+    idx1 = order[1].item()
+
+    v0 = _get_vec(idx0)
+    v1 = _get_vec(idx1)
+
+    v0 = v0 / (v0.norm() + 1e-12)
+    v1 = v1 / (v1.norm() + 1e-12)
+
+    hess_mat = _prepare_hessian(hessian, positions.shape[0])
+    if hess_mat.device != v0.device:
+        hess_mat = hess_mat.to(v0.device)
+
+    eig0 = torch.dot(v0, hess_mat @ v0)
+    eig1 = torch.dot(v1, hess_mat @ v1)
+
+    eig0_val = float(eig0.detach().cpu().item())
+    eig1_val = float(eig1.detach().cpu().item())
+
+    return {
+        "eigval0": eig0_val,
+        "eigval1": eig1_val,
+        "product": eig0_val * eig1_val,
+        "eigvec0": v0.detach().cpu(),
+        "eigvec1": v1.detach().cpu(),
+    }
 
 
 def _mean_vector_magnitude(vec: torch.Tensor) -> float:
@@ -222,10 +273,15 @@ def run_gad_euler_on_batch(
             trajectory["eig_min2"].append(None)
             trajectory["eig_product"].append(None)
         else:
-            eig0, eig1, eig_prod = _extract_smallest_eigs(hessian, batch.pos, atomic_numbers)
-            trajectory["eig_min1"].append(eig0)
-            trajectory["eig_min2"].append(eig1)
-            trajectory["eig_product"].append(eig_prod)
+            mode_info = _analyze_smallest_modes(hessian, batch.pos, atomic_numbers)
+            if mode_info is None:
+                trajectory["eig_min1"].append(None)
+                trajectory["eig_min2"].append(None)
+                trajectory["eig_product"].append(None)
+            else:
+                trajectory["eig_min1"].append(mode_info["eigval0"])
+                trajectory["eig_min2"].append(mode_info["eigval1"])
+                trajectory["eig_product"].append(mode_info["product"])
 
     _record_step(results, gad_vec=None)
 
