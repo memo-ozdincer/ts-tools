@@ -354,6 +354,25 @@ def plot_trajectory(
     )
     prod_ax.set_ylabel("Product")
 
+    for step_idx, (t, prod_val, eig0_val, eig1_val) in enumerate(
+        zip(timesteps, eig_product, eig_min1, eig_min2)
+    ):
+        if step_idx % 5 != 0:
+            continue
+        if any(np.isnan(val) for val in (prod_val, eig0_val, eig1_val)):
+            continue
+        label = f"λ0={eig0_val:.3f}\nλ1={eig1_val:.3f}"
+        prod_ax.annotate(
+            label,
+            xy=(t, prod_val),
+            xytext=(0, 6),
+            textcoords="offset points",
+            ha="center",
+            va="bottom",
+            fontsize="x-small",
+            color="tab:purple",
+        )
+
     eig_lines, eig_labels = eig_ax.get_legend_handles_labels()
     prod_lines, prod_labels = prod_ax.get_legend_handles_labels()
     eig_ax.legend(eig_lines + prod_lines, eig_labels + prod_labels, loc="best", fontsize="small")
@@ -380,7 +399,7 @@ if __name__ == "__main__":
     HOME = os.path.expanduser("~")
     PROJECT = "/project/memo"  # big files here
 
-    MAX_SAMPLES = 30  # number of unique samples to process
+    MAX_SAMPLES = 20  # number of unique samples to process
     DATASET_LOAD_MULTIPLIER = 5  # load more candidates so we can pick unique formulas
     DATASET_MAX_SAMPLES = MAX_SAMPLES * DATASET_LOAD_MULTIPLIER
     SELECT_UNIQUE_FORMULAS = True
