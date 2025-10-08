@@ -33,6 +33,5 @@ python -m src.gad_gad_euler_rmsd \
     --max-samples 300 \
     --n-steps 50 \
     --dt 0.005 \
-    --unique-formulas False \
 
 echo "✅ Job completed successfully."
