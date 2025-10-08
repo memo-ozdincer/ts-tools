@@ -7,7 +7,7 @@ from typing import Dict, Any, List
 import torch
 
 # Import shared utilities
-from common_utils import setup_experiment, add_common_args
+from .common_utils import setup_experiment, add_common_args
 # Import the required analysis function
 from hip.frequency_analysis import analyze_frequencies_torch
 

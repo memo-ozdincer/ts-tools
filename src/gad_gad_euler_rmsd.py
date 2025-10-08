@@ -10,7 +10,7 @@ import numpy as np
 from torch_geometric.data import Batch
 
 # Import shared utilities
-from common_utils import setup_experiment, add_common_args
+from .common_utils import setup_experiment, add_common_args
 # Import the required analysis function, which is now used exclusively
 from hip.frequency_analysis import analyze_frequencies_torch
 from hip.equiformer_torch_calculator import EquiformerTorchCalculator
