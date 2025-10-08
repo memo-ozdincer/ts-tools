@@ -30,8 +30,9 @@ source ${VENV_DIR}/bin/activate
 echo ">>> Running Euler RMSD script..."
 # ARGS R HERE NOW
 python -m src.gad_gad_euler_rmsd \
-    --max-samples 100 \
-    --n-steps 50 \
+    --max-samples 300 \
+    --n-steps 100 \
     --dt 0.005 \
+    --start-from reactant
 
 echo "✅ Job completed successfully."
