@@ -11,7 +11,7 @@
 set -e
 PROJECT_DIR="/project/memo/code/ts-tools"
 VENV_DIR="${PROJECT_DIR}/.venv"
-PYTHON_VERSION="3.10" # Must match the version used in your setup script
+PYTHON_VERSION="3.10"
 
 # --- Script Start ---
 echo ">>> Starting job on node $(hostname)"
@@ -19,18 +19,18 @@ echo ">>> Project Directory: ${PROJECT_DIR}"
 
 cd ${PROJECT_DIR}
 
-# 1. Load the same Python module
 echo ">>> Loading Python ${PYTHON_VERSION} module..."
 source /cvmfs/soft.computecanada.ca/config/profile/bash.sh
 module purge
 module load python/${PYTHON_VERSION}
 
-# 2. Activate the virtual environment
 echo ">>> Activating virtual environment..."
 source ${VENV_DIR}/bin/activate
 
-# 3. Run your Python script
 echo ">>> Running frequency analysis script..."
-python scripts/gad_frequency_analysis.py
+# ARGS R HERE NOW
+python -m src.gad_frequency_analysis \
+    --max-samples 30 \
+    --split test
 
 echo "✅ Job completed successfully."
