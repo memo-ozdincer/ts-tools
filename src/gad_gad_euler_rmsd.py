@@ -169,38 +169,41 @@ def plot_trajectory(trajectory: Dict[str, List[Optional[float]]], sample_index: 
     axes[1].plot(timesteps, _nanify(trajectory["force_mean"]), marker=".", color="tab:orange", lw=1.2)
     axes[1].set_ylabel("Mean |F| (eV/Å)"); axes[1].set_title("Force Magnitude")
 
-    # Panel 3: Eigenvalues (with annotations)
+    # --- MODIFIED: Panel 3 now shows only the product of eigenvalues ---
     eig_ax = axes[2]
-    eig_min1 = _nanify(trajectory["eig_min1"])
-    eig_min2 = _nanify(trajectory["eig_min2"])
+    eig_product = _nanify(trajectory["eig_product"])
     
-    eig_ax.plot(timesteps, eig_min1, marker=".", color="tab:blue", lw=1.2, label="λ_0")
-    eig_ax.plot(timesteps, eig_min2, marker=".", color="tab:red", lw=1.2, label="λ_1")
+    eig_ax.plot(timesteps, eig_product, marker=".", color="tab:purple", lw=1.2, label="λ_0 * λ_1")
     
-    # Add text annotations for start and end eigenvalues
-    if not np.isnan(eig_min1[0]):
-        eig_ax.text(0.02, 0.95, f"λ_0 start: {eig_min1[0]:.4f}", transform=eig_ax.transAxes, ha='left', va='top', color='tab:blue', fontsize=9)
-    if not np.isnan(eig_min2[0]):
-        eig_ax.text(0.02, 0.80, f"λ_1 start: {eig_min2[0]:.4f}", transform=eig_ax.transAxes, ha='left', va='top', color='tab:red', fontsize=9)
-    if not np.isnan(eig_min1[-1]):
-        eig_ax.text(0.98, 0.95, f"λ_0 end: {eig_min1[-1]:.4f}", transform=eig_ax.transAxes, ha='right', va='top', color='tab:blue', fontsize=9)
-    if not np.isnan(eig_min2[-1]):
-        eig_ax.text(0.98, 0.80, f"λ_1 end: {eig_min2[-1]:.4f}", transform=eig_ax.transAxes, ha='right', va='top', color='tab:red', fontsize=9)
+    # Add a horizontal line at y=0 to distinguish minima (>0) from saddles (<0)
+    eig_ax.axhline(0, color='grey', linestyle='--', linewidth=1, zorder=1)
+    
+    # Add text annotations for start and end product values
+    if not np.isnan(eig_product[0]):
+        eig_ax.text(0.02, 0.95, f"Start: {eig_product[0]:.4f}", 
+                    transform=eig_ax.transAxes, ha='left', va='top', 
+                    color='tab:purple', fontsize=9)
+    if not np.isnan(eig_product[-1]):
+        eig_ax.text(0.98, 0.95, f"End: {eig_product[-1]:.4f}", 
+                    transform=eig_ax.transAxes, ha='right', va='top', 
+                    color='tab:purple', fontsize=9)
 
-    eig_ax.set_ylabel("Eigenvalues"); eig_ax.set_title("Smallest Hessian Eigenvalues")
-    eig_ax.legend(loc='center left', bbox_to_anchor=(1.05, 0.5))
+    eig_ax.set_ylabel("Eigenvalue Product"); eig_ax.set_title("Product of Two Smallest Hessian Eigenvalues")
+    eig_ax.legend(loc='best')
+    # --- END MODIFICATION ---
     
     # Panel 4: GAD Vector
     axes[3].plot(timesteps, _nanify(trajectory["gad_mean"]), marker=".", color="tab:green", lw=1.2)
     axes[3].set_ylabel("Mean |GAD| (Å)"); axes[3].set_xlabel("Step"); axes[3].set_title("GAD Vector Magnitude")
     
-    fig.tight_layout(rect=[0, 0, 1, 0.96]) # Adjust layout to make room for suptitle
+    fig.tight_layout(rect=[0, 0, 1, 0.96]) # Adjust layout for suptitle
 
     filename = f"rgd1_gad_traj_{sample_index:03d}_{_sanitize_formula(formula)}.png"
     out_path = os.path.join(out_dir, filename)
     fig.savefig(out_path, dpi=200); plt.close(fig)
     return out_path
 
+# The `if __name__ == "__main__"` block remains exactly the same as the previous version...
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run GAD-Euler dynamics and analyze RMSD.")
     parser = add_common_args(parser)
@@ -209,7 +212,6 @@ if __name__ == "__main__":
     parser.add_argument("--unique-formulas", action="store_true", help="Only process one sample for each unique chemical formula.")
     parser.add_argument("--dataset-load-multiplier", type=int, default=5, help="Factor to multiply max_samples by for initial data loading.")
     
-    # NEW: Add convergence criteria arguments
     parser.add_argument("--convergence-rms-force", type=float, default=0.01, help="Convergence threshold for RMS force (eV/Å).")
     parser.add_argument("--convergence-max-force", type=float, default=0.03, help="Convergence threshold for max atomic force (eV/Å).")
 
@@ -223,7 +225,6 @@ if __name__ == "__main__":
     print(f"Processing up to {args.max_samples} samples with GAD-Euler (steps={args.n_steps}, dt={args.dt})")
     print(f"Convergence criteria: RMS|F| < {args.convergence_rms_force:.4f}, Max|F| < {args.convergence_max_force:.4f} eV/Å")
 
-    # NEW: Add trackers for summary
     seen_formulas = set()
     processed_count = 0
     converged_count = 0
@@ -243,7 +244,6 @@ if __name__ == "__main__":
             batch = batch.to(device)
             out = run_gad_euler_on_batch(calculator, batch, n_steps=args.n_steps, dt=args.dt)
             
-            # NEW: Check for convergence and store results
             final_rms_forces.append(out['rms_force_end'])
             is_converged = (
                 out['rms_force_end'] < args.convergence_rms_force and
@@ -264,7 +264,6 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"[{dataset_idx}] ERROR: {e}")
 
-    # NEW: Add final summary and histogram plot
     if processed_count > 0:
         print("\n" + "="*50)
         print(" " * 15 + "CONVERGENCE SUMMARY")
@@ -282,7 +281,6 @@ if __name__ == "__main__":
         print(f"  Min:    {np.min(forces_np):.5f}")
         print(f"  Max:    {np.max(forces_np):.5f}")
 
-        # Generate and save a histogram
         plt.figure(figsize=(10, 6))
         plt.hist(forces_np, bins=50, alpha=0.7, label='Final RMS Force Distribution')
         plt.axvline(args.convergence_rms_force, color='r', linestyle='--', linewidth=2, label=f'Threshold ({args.convergence_rms_force})')
