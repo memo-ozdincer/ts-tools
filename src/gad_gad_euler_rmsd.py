@@ -112,13 +112,15 @@ def run_gad_euler_on_batch(
         N = forces.shape[0]
         hess = _prepare_hessian(results["hessian"], N)
 
-        freq_info = analyze_frequencies_torch(hess, batch.pos, batch.z)
-        v = freq_info["eigvecs"][:, 0]  # Smallest eigenvector
+        # --- FIX: Use the full Hessian for GAD dynamics ---
+        # GAD requires the eigenvector of the full, unprojected Hessian.
+        # We use the standard eigh for this, which is the correct tool.
+        # This gives us all 3N eigenvalues and eigenvectors.
+        evals, evecs = torch.linalg.eigh(hess)
+        v = evecs[:, 0]  # Eigenvector for the lowest eigenvalue
 
-        # --- FIX: DATA TYPE MISMATCH ---
-        # Cast the eigenvector 'v' (likely float64) to match the forces' dtype (float32).
+        # We still need to cast the dtype, as eigh often uses float64
         v = v.to(forces.dtype)
-
         v = v / (v.norm() + 1e-12)
 
         f_flat = forces.reshape(-1)
