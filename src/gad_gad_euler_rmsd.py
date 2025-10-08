@@ -4,6 +4,7 @@ import json
 import re
 import argparse
 from typing import Any, Dict, List, Optional
+from collections import defaultdict
 
 import torch
 import numpy as np
@@ -19,7 +20,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-# --- Alignment + RMSD utilities (Specific to this script) ---
+# --- (All helper functions like find_rigid_alignment, get_rmsd, _scalar_from, etc., remain unchanged) ---
 def find_rigid_alignment(A: np.ndarray, B: np.ndarray):
     """Kabsch (no masses), handles reflection."""
     a_mean = A.mean(axis=0); b_mean = B.mean(axis=0)
@@ -46,7 +47,6 @@ def align_ordered_and_get_rmsd(A, B) -> float:
     A_aligned = (R @ A.T).T + t
     return get_rmsd(A_aligned, B)
 
-# --- GAD (Euler) loop and helpers (Specific to this script) ---
 def _scalar_from(results: Dict[str, Any], key: str) -> Optional[float]:
     value = results.get(key)
     if value is None: return None
@@ -77,34 +77,42 @@ def _extract_smallest_eigs(freq_info: Dict[str, Any]):
 def _mean_vector_magnitude(vec: torch.Tensor) -> float:
     return float(vec.detach().cpu().norm(dim=1).mean().item())
 
+
+# --- MODIFIED run_gad_euler_on_batch FUNCTION ---
 def run_gad_euler_on_batch(
     calculator: EquiformerTorchCalculator, batch: Batch, n_steps: int, dt: float
 ) -> Dict[str, Any]:
-    """Runs GAD Euler updates on positions in `batch` using predicted Hessians."""
+    """Runs GAD Euler updates and analyzes start/end frequency modes."""
     assert int(batch.batch.max().item()) + 1 == 1, "Use batch_size=1."
     start_pos = batch.pos.detach().clone()
     
     trajectory = {k: [] for k in ["energy", "force_mean", "gad_mean", "eig_min1", "eig_min2", "eig_product"]}
 
     def _record_step(predictions: Dict[str, Any], gad_vec: Optional[torch.Tensor]):
+        # ... (this inner function remains the same)
         trajectory["energy"].append(_scalar_from(predictions, "energy"))
         trajectory["force_mean"].append(_mean_vector_magnitude(predictions["forces"]))
         trajectory["gad_mean"].append(_mean_vector_magnitude(gad_vec) if gad_vec is not None else None)
-
         try:
             freq_info = analyze_frequencies_torch(predictions["hessian"], batch.pos, batch.z)
             eig0, eig1, eig_prod = _extract_smallest_eigs(freq_info)
         except Exception:
             eig0, eig1, eig_prod = None, None, None
-
         trajectory["eig_min1"].append(eig0)
         trajectory["eig_min2"].append(eig1)
         trajectory["eig_product"].append(eig_prod)
-        return freq_info
 
+    # Initial calculation and frequency analysis for STARTING point
     results = calculator.predict(batch, do_hessian=True)
+    try:
+        initial_freq_info = analyze_frequencies_torch(results["hessian"], batch.pos, batch.z)
+        neg_eigvals_start = int(initial_freq_info.get("neg_num", -1))
+    except Exception as e:
+        print(f"[WARN] Initial frequency analysis failed: {e}")
+        neg_eigvals_start = -1 # Use -1 to indicate failure
     _record_step(results, gad_vec=None)
 
+    # GAD Euler loop
     for _ in range(n_steps):
         forces = results["forces"]
         N = forces.shape[0]
@@ -123,8 +131,16 @@ def run_gad_euler_on_batch(
         results = calculator.predict(batch, do_hessian=True)
         _record_step(results, gad)
 
+    # Final calculations and frequency analysis for ENDING point
     end_pos = batch.pos.detach().clone()
     forces_end = results["forces"]
+    try:
+        final_freq_info = analyze_frequencies_torch(results["hessian"], batch.pos, batch.z)
+        neg_eigvals_end = int(final_freq_info.get("neg_num", -1))
+    except Exception as e:
+        print(f"[WARN] Final frequency analysis failed: {e}")
+        neg_eigvals_end = -1 # Use -1 to indicate failure
+
     displacement = (end_pos - start_pos).norm(dim=1)
 
     def _to_float(value: Optional[float]) -> float:
@@ -144,41 +160,30 @@ def run_gad_euler_on_batch(
         "mean_displacement": float(displacement.mean().item()),
         "max_displacement": float(displacement.max().item()),
         "trajectory": trajectory,
+        # --- NEW: Add negative eigenvalue counts ---
+        "neg_eigvals_start": neg_eigvals_start,
+        "neg_eigvals_end": neg_eigvals_end,
     }
 
-# --- Plotting utilities (Specific to this script) ---
+# --- (plot_trajectory function remains unchanged) ---
 def _sanitize_formula(formula: str) -> str:
     safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", formula)
     return (safe.strip("_") or "sample")
-
 def plot_trajectory(trajectory: Dict[str, List[Optional[float]]], sample_index: int, formula: str, out_dir: str) -> str:
     num_steps = len(trajectory.get("energy", []))
     timesteps = np.arange(num_steps)
-
     def _nanify(values: List[Optional[float]]) -> np.ndarray:
         return np.array([v if v is not None else np.nan for v in values], dtype=float)
-
     fig, axes = plt.subplots(4, 1, figsize=(8, 12), sharex=True)
     fig.suptitle(f"GAD Trajectory for Sample {sample_index}: {formula}", fontsize=14)
-    
-    # Panel 1: Energy
     axes[0].plot(timesteps, _nanify(trajectory["energy"]), marker=".", lw=1.2)
     axes[0].set_ylabel("Energy (eV)"); axes[0].set_title("Energy")
-    
-    # Panel 2: Force
     axes[1].plot(timesteps, _nanify(trajectory["force_mean"]), marker=".", color="tab:orange", lw=1.2)
     axes[1].set_ylabel("Mean |F| (eV/Å)"); axes[1].set_title("Force Magnitude")
-
-    # --- MODIFIED: Panel 3 now shows only the product of eigenvalues ---
     eig_ax = axes[2]
     eig_product = _nanify(trajectory["eig_product"])
-    
     eig_ax.plot(timesteps, eig_product, marker=".", color="tab:purple", lw=1.2, label="λ_0 * λ_1")
-    
-    # Add a horizontal line at y=0 to distinguish minima (>0) from saddles (<0)
     eig_ax.axhline(0, color='grey', linestyle='--', linewidth=1, zorder=1)
-    
-    # Add text annotations for start and end product values
     if not np.isnan(eig_product[0]):
         eig_ax.text(0.02, 0.95, f"Start: {eig_product[0]:.4f}", 
                     transform=eig_ax.transAxes, ha='left', va='top', 
@@ -187,34 +192,27 @@ def plot_trajectory(trajectory: Dict[str, List[Optional[float]]], sample_index: 
         eig_ax.text(0.98, 0.95, f"End: {eig_product[-1]:.4f}", 
                     transform=eig_ax.transAxes, ha='right', va='top', 
                     color='tab:purple', fontsize=9)
-
     eig_ax.set_ylabel("Eigenvalue Product"); eig_ax.set_title("Product of Two Smallest Hessian Eigenvalues")
     eig_ax.legend(loc='best')
-    # --- END MODIFICATION ---
-    
-    # Panel 4: GAD Vector
     axes[3].plot(timesteps, _nanify(trajectory["gad_mean"]), marker=".", color="tab:green", lw=1.2)
     axes[3].set_ylabel("Mean |GAD| (Å)"); axes[3].set_xlabel("Step"); axes[3].set_title("GAD Vector Magnitude")
-    
-    fig.tight_layout(rect=[0, 0, 1, 0.96]) # Adjust layout for suptitle
-
+    fig.tight_layout(rect=[0, 0, 1, 0.96])
     filename = f"rgd1_gad_traj_{sample_index:03d}_{_sanitize_formula(formula)}.png"
     out_path = os.path.join(out_dir, filename)
     fig.savefig(out_path, dpi=200); plt.close(fig)
     return out_path
 
-# The `if __name__ == "__main__"` block remains exactly the same as the previous version...
+
 if __name__ == "__main__":
+    # --- (argparse setup remains the same) ---
     parser = argparse.ArgumentParser(description="Run GAD-Euler dynamics and analyze RMSD.")
     parser = add_common_args(parser)
     parser.add_argument("--n-steps", type=int, default=50, help="Number of Euler steps.")
     parser.add_argument("--dt", type=float, default=0.005, help="Time step for Euler integration.")
     parser.add_argument("--unique-formulas", action="store_true", help="Only process one sample for each unique chemical formula.")
     parser.add_argument("--dataset-load-multiplier", type=int, default=5, help="Factor to multiply max_samples by for initial data loading.")
-    
     parser.add_argument("--convergence-rms-force", type=float, default=0.01, help="Convergence threshold for RMS force (eV/Å).")
     parser.add_argument("--convergence-max-force", type=float, default=0.03, help="Convergence threshold for max atomic force (eV/Å).")
-
     args = parser.parse_args()
 
     calculator, dataloader, device, out_dir = setup_experiment(args, shuffle=True, dataset_load_multiplier=args.dataset_load_multiplier if args.unique_formulas else 1)
@@ -229,6 +227,8 @@ if __name__ == "__main__":
     processed_count = 0
     converged_count = 0
     final_rms_forces = []
+    # --- NEW: Add a tracker for eigenvalue transitions ---
+    neg_eig_transitions = defaultdict(int)
 
     for dataset_idx, batch in enumerate(dataloader):
         if processed_count >= args.max_samples: break
@@ -245,20 +245,23 @@ if __name__ == "__main__":
             out = run_gad_euler_on_batch(calculator, batch, n_steps=args.n_steps, dt=args.dt)
             
             final_rms_forces.append(out['rms_force_end'])
-            is_converged = (
-                out['rms_force_end'] < args.convergence_rms_force and
-                out['max_atom_force_end'] < args.convergence_max_force
-            )
+            is_converged = (out['rms_force_end'] < args.convergence_rms_force and out['max_atom_force_end'] < args.convergence_max_force)
             if is_converged:
                 converged_count += 1
             convergence_status = "✅ Converged" if is_converged else "❌ Not Converged"
             
-            plot_path = plot_trajectory(out["trajectory"], processed_count, formula, plot_dir)
+            # --- NEW: Track the eigenvalue transition ---
+            start_n, end_n = out['neg_eigvals_start'], out['neg_eigvals_end']
+            if start_n >= 0 and end_n >= 0: # Only count successful analyses
+                transition_key = f"{start_n} -> {end_n}"
+                neg_eig_transitions[transition_key] += 1
             
+            plot_path = plot_trajectory(out["trajectory"], processed_count, formula, plot_dir)
             result = {"dataset_index": dataset_idx, "sample_order": processed_count, "formula": formula, "plot_path": os.path.relpath(plot_path, out_dir), "converged": is_converged, **out}
             results_summary.append(result)
             
-            print(f"[sample {processed_count}] N={out['natoms']}, RMSD={out['rmsd']:.4f}, RMS|F|_end={out['rms_force_end']:.4f}, {convergence_status}, formula={formula}")
+            # --- MODIFIED: Update print statement ---
+            print(f"[sample {processed_count}] N={out['natoms']}, RMS|F|_end={out['rms_force_end']:.4f}, neg_eigs: {start_n} -> {end_n}, {convergence_status}, formula={formula}")
             processed_count += 1
             
         except Exception as e:
@@ -280,6 +283,15 @@ if __name__ == "__main__":
         print(f"  Std:    {np.std(forces_np):.5f}")
         print(f"  Min:    {np.min(forces_np):.5f}")
         print(f"  Max:    {np.max(forces_np):.5f}")
+
+        # --- NEW: Print the negative eigenvalue transition summary ---
+        print("\nNegative Eigenvalue Transitions (Start -> End):")
+        if not neg_eig_transitions:
+            print("  No successful frequency analyses to report.")
+        else:
+            # Sort for consistent output
+            for key, count in sorted(neg_eig_transitions.items()):
+                print(f"  {key}: {count} samples")
 
         plt.figure(figsize=(10, 6))
         plt.hist(forces_np, bins=50, alpha=0.7, label='Final RMS Force Distribution')
