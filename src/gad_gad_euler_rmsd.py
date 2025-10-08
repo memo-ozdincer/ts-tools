@@ -11,7 +11,7 @@ from torch_geometric.data import Batch
 
 # Import shared utilities
 from .common_utils import setup_experiment, add_common_args
-# Import the required analysis function, which is now used exclusively
+# Import the required analysis function
 from hip.frequency_analysis import analyze_frequencies_torch
 from hip.equiformer_torch_calculator import EquiformerTorchCalculator
 
@@ -22,10 +22,8 @@ import matplotlib.pyplot as plt
 # --- Alignment + RMSD utilities (Specific to this script) ---
 def find_rigid_alignment(A: np.ndarray, B: np.ndarray):
     """Kabsch (no masses), handles reflection."""
-    a_mean = A.mean(axis=0)
-    b_mean = B.mean(axis=0)
-    A_c = A - a_mean
-    B_c = B - b_mean
+    a_mean = A.mean(axis=0); b_mean = B.mean(axis=0)
+    A_c = A - a_mean; B_c = B - b_mean
     H = A_c.T @ B_c
     U, _, Vt = np.linalg.svd(H)
     V = Vt.T
@@ -112,14 +110,8 @@ def run_gad_euler_on_batch(
         N = forces.shape[0]
         hess = _prepare_hessian(results["hessian"], N)
 
-        # --- FIX: Use the full Hessian for GAD dynamics ---
-        # GAD requires the eigenvector of the full, unprojected Hessian.
-        # We use the standard eigh for this, which is the correct tool.
-        # This gives us all 3N eigenvalues and eigenvectors.
         evals, evecs = torch.linalg.eigh(hess)
-        v = evecs[:, 0]  # Eigenvector for the lowest eigenvalue
-
-        # We still need to cast the dtype, as eigh often uses float64
+        v = evecs[:, 0]
         v = v.to(forces.dtype)
         v = v / (v.norm() + 1e-12)
 
@@ -166,26 +158,43 @@ def plot_trajectory(trajectory: Dict[str, List[Optional[float]]], sample_index: 
     def _nanify(values: List[Optional[float]]) -> np.ndarray:
         return np.array([v if v is not None else np.nan for v in values], dtype=float)
 
-    fig, axes = plt.subplots(4, 1, figsize=(8, 11), sharex=True)
+    fig, axes = plt.subplots(4, 1, figsize=(8, 12), sharex=True)
+    fig.suptitle(f"GAD Trajectory for Sample {sample_index}: {formula}", fontsize=14)
+    
+    # Panel 1: Energy
     axes[0].plot(timesteps, _nanify(trajectory["energy"]), marker=".", lw=1.2)
     axes[0].set_ylabel("Energy (eV)"); axes[0].set_title("Energy")
+    
+    # Panel 2: Force
     axes[1].plot(timesteps, _nanify(trajectory["force_mean"]), marker=".", color="tab:orange", lw=1.2)
     axes[1].set_ylabel("Mean |F| (eV/Å)"); axes[1].set_title("Force Magnitude")
 
+    # Panel 3: Eigenvalues (with annotations)
     eig_ax = axes[2]
-    eig_ax.plot(timesteps, _nanify(trajectory["eig_min1"]), marker=".", color="tab:blue", lw=1.2, label="λ_0")
-    eig_ax.plot(timesteps, _nanify(trajectory["eig_min2"]), marker=".", color="tab:red", lw=1.2, label="λ_1")
-    eig_ax.set_ylabel("Eigenvalues"); eig_ax.set_title("Smallest Hessian Eigenvalues")
-    prod_ax = eig_ax.twinx()
-    prod_ax.plot(timesteps, _nanify(trajectory["eig_product"]), marker=".", color="tab:purple", lw=1.2, ls="--", label="λ_0*λ_1")
-    prod_ax.set_ylabel("Product")
-    lines, labels = eig_ax.get_legend_handles_labels()
-    plines, plabels = prod_ax.get_legend_handles_labels()
-    eig_ax.legend(lines + plines, labels + plabels, loc="best", fontsize="small")
+    eig_min1 = _nanify(trajectory["eig_min1"])
+    eig_min2 = _nanify(trajectory["eig_min2"])
+    
+    eig_ax.plot(timesteps, eig_min1, marker=".", color="tab:blue", lw=1.2, label="λ_0")
+    eig_ax.plot(timesteps, eig_min2, marker=".", color="tab:red", lw=1.2, label="λ_1")
+    
+    # Add text annotations for start and end eigenvalues
+    if not np.isnan(eig_min1[0]):
+        eig_ax.text(0.02, 0.95, f"λ_0 start: {eig_min1[0]:.4f}", transform=eig_ax.transAxes, ha='left', va='top', color='tab:blue', fontsize=9)
+    if not np.isnan(eig_min2[0]):
+        eig_ax.text(0.02, 0.80, f"λ_1 start: {eig_min2[0]:.4f}", transform=eig_ax.transAxes, ha='left', va='top', color='tab:red', fontsize=9)
+    if not np.isnan(eig_min1[-1]):
+        eig_ax.text(0.98, 0.95, f"λ_0 end: {eig_min1[-1]:.4f}", transform=eig_ax.transAxes, ha='right', va='top', color='tab:blue', fontsize=9)
+    if not np.isnan(eig_min2[-1]):
+        eig_ax.text(0.98, 0.80, f"λ_1 end: {eig_min2[-1]:.4f}", transform=eig_ax.transAxes, ha='right', va='top', color='tab:red', fontsize=9)
 
+    eig_ax.set_ylabel("Eigenvalues"); eig_ax.set_title("Smallest Hessian Eigenvalues")
+    eig_ax.legend(loc='center left', bbox_to_anchor=(1.05, 0.5))
+    
+    # Panel 4: GAD Vector
     axes[3].plot(timesteps, _nanify(trajectory["gad_mean"]), marker=".", color="tab:green", lw=1.2)
     axes[3].set_ylabel("Mean |GAD| (Å)"); axes[3].set_xlabel("Step"); axes[3].set_title("GAD Vector Magnitude")
-    fig.tight_layout()
+    
+    fig.tight_layout(rect=[0, 0, 1, 0.96]) # Adjust layout to make room for suptitle
 
     filename = f"rgd1_gad_traj_{sample_index:03d}_{_sanitize_formula(formula)}.png"
     out_path = os.path.join(out_dir, filename)
@@ -198,7 +207,12 @@ if __name__ == "__main__":
     parser.add_argument("--n-steps", type=int, default=50, help="Number of Euler steps.")
     parser.add_argument("--dt", type=float, default=0.005, help="Time step for Euler integration.")
     parser.add_argument("--unique-formulas", action="store_true", help="Only process one sample for each unique chemical formula.")
-    parser.add_argument("--dataset-load-multiplier", type=int, default=5, help="Factor to multiply max_samples by for initial data loading, used for finding unique formulas.")
+    parser.add_argument("--dataset-load-multiplier", type=int, default=5, help="Factor to multiply max_samples by for initial data loading.")
+    
+    # NEW: Add convergence criteria arguments
+    parser.add_argument("--convergence-rms-force", type=float, default=0.01, help="Convergence threshold for RMS force (eV/Å).")
+    parser.add_argument("--convergence-max-force", type=float, default=0.03, help="Convergence threshold for max atomic force (eV/Å).")
+
     args = parser.parse_args()
 
     calculator, dataloader, device, out_dir = setup_experiment(args, shuffle=True, dataset_load_multiplier=args.dataset_load_multiplier if args.unique_formulas else 1)
@@ -207,9 +221,14 @@ if __name__ == "__main__":
     plot_dir = os.path.join(out_dir, "gad_trajectories"); os.makedirs(plot_dir, exist_ok=True)
     
     print(f"Processing up to {args.max_samples} samples with GAD-Euler (steps={args.n_steps}, dt={args.dt})")
+    print(f"Convergence criteria: RMS|F| < {args.convergence_rms_force:.4f}, Max|F| < {args.convergence_max_force:.4f} eV/Å")
 
+    # NEW: Add trackers for summary
     seen_formulas = set()
     processed_count = 0
+    converged_count = 0
+    final_rms_forces = []
+
     for dataset_idx, batch in enumerate(dataloader):
         if processed_count >= args.max_samples: break
 
@@ -224,18 +243,62 @@ if __name__ == "__main__":
             batch = batch.to(device)
             out = run_gad_euler_on_batch(calculator, batch, n_steps=args.n_steps, dt=args.dt)
             
+            # NEW: Check for convergence and store results
+            final_rms_forces.append(out['rms_force_end'])
+            is_converged = (
+                out['rms_force_end'] < args.convergence_rms_force and
+                out['max_atom_force_end'] < args.convergence_max_force
+            )
+            if is_converged:
+                converged_count += 1
+            convergence_status = "✅ Converged" if is_converged else "❌ Not Converged"
+            
             plot_path = plot_trajectory(out["trajectory"], processed_count, formula, plot_dir)
             
-            result = {"dataset_index": dataset_idx, "sample_order": processed_count, "formula": formula, "plot_path": os.path.relpath(plot_path, out_dir), **out}
+            result = {"dataset_index": dataset_idx, "sample_order": processed_count, "formula": formula, "plot_path": os.path.relpath(plot_path, out_dir), "converged": is_converged, **out}
             results_summary.append(result)
             
-            e_start, e_end = out["energy_start"], out["energy_end"]
-            delta_e_str = f"ΔE={e_end - e_start:.5f}" if e_start is not None and e_end is not None else "ΔE=NA"
-            print(f"[sample {processed_count}] N={out['natoms']}, RMSD={out['rmsd']:.4f} Å, {delta_e_str}, λ_min_end={out['min_hess_eig_end']:.5f}, formula={formula}")
+            print(f"[sample {processed_count}] N={out['natoms']}, RMSD={out['rmsd']:.4f}, RMS|F|_end={out['rms_force_end']:.4f}, {convergence_status}, formula={formula}")
             processed_count += 1
             
         except Exception as e:
             print(f"[{dataset_idx}] ERROR: {e}")
+
+    # NEW: Add final summary and histogram plot
+    if processed_count > 0:
+        print("\n" + "="*50)
+        print(" " * 15 + "CONVERGENCE SUMMARY")
+        print("="*50)
+        convergence_rate = (converged_count / processed_count) * 100
+        print(f"Total samples processed: {processed_count}")
+        print(f"Samples converged:       {converged_count}")
+        print(f"Convergence rate:        {convergence_rate:.2f}%")
+        
+        forces_np = np.array(final_rms_forces)
+        print("\nStatistics of Final RMS Force (eV/Å):")
+        print(f"  Mean:   {np.mean(forces_np):.5f}")
+        print(f"  Median: {np.median(forces_np):.5f}")
+        print(f"  Std:    {np.std(forces_np):.5f}")
+        print(f"  Min:    {np.min(forces_np):.5f}")
+        print(f"  Max:    {np.max(forces_np):.5f}")
+
+        # Generate and save a histogram
+        plt.figure(figsize=(10, 6))
+        plt.hist(forces_np, bins=50, alpha=0.7, label='Final RMS Force Distribution')
+        plt.axvline(args.convergence_rms_force, color='r', linestyle='--', linewidth=2, label=f'Threshold ({args.convergence_rms_force})')
+        plt.xlabel("Final RMS Force (eV/Å)")
+        plt.ylabel("Number of Samples")
+        plt.title(f"Convergence Distribution over {processed_count} Samples")
+        plt.legend()
+        plt.grid(axis='y', alpha=0.5)
+        hist_path = os.path.join(out_dir, f"convergence_histogram_{processed_count}_samples.png")
+        plt.savefig(hist_path, dpi=200)
+        print(f"\nSaved convergence histogram to: {hist_path}")
+        plt.close()
+
+    else:
+        print("\nNo samples were processed successfully.")
+    print("="*50)
 
     out_json = os.path.join(out_dir, f"rgd1_gad_rmsd_{len(results_summary)}.json")
     with open(out_json, "w") as f:
