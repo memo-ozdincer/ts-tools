@@ -112,10 +112,13 @@ def run_gad_euler_on_batch(
         N = forces.shape[0]
         hess = _prepare_hessian(results["hessian"], N)
 
-        # *** MODIFIED: Use analyze_frequencies_torch to get the eigenvector ***
-        # This ensures Eckart projection is always used, as requested.
         freq_info = analyze_frequencies_torch(hess, batch.pos, batch.z)
         v = freq_info["eigvecs"][:, 0]  # Smallest eigenvector
+
+        # --- FIX: DATA TYPE MISMATCH ---
+        # Cast the eigenvector 'v' (likely float64) to match the forces' dtype (float32).
+        v = v.to(forces.dtype)
+
         v = v / (v.norm() + 1e-12)
 
         f_flat = forces.reshape(-1)
