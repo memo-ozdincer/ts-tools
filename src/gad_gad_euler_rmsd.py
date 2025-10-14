@@ -207,14 +207,11 @@ if __name__ == "__main__":
     parser.add_argument("--dataset-load-multiplier", type=int, default=5, help="Factor to multiply max_samples by for initial data loading.")
     parser.add_argument("--convergence-rms-force", type=float, default=0.01, help="Convergence threshold for RMS force (eV/Å).")
     parser.add_argument("--convergence-max-force", type=float, default=0.03, help="Convergence threshold for max atomic force (eV/Å).")
-
-    # --- MODIFIED: Add new choices for the starting geometry ---
     parser.add_argument("--start-from", type=str, default="ts", 
                         choices=["ts", "reactant", "midpoint_rt", "three_quarter_rt"],
                         help="Which geometry to start from. 'rt' refers to Reactant-to-TS interpolation.")
-
     args = parser.parse_args()
-    # ... (setup and loop initialization is the same) ...
+    
     calculator, dataloader, device, out_dir = setup_experiment(args, shuffle=True, dataset_load_multiplier=args.dataset_load_multiplier if args.unique_formulas else 1)
     results_summary: List[Dict[str, Any]] = []
     plot_dir = os.path.join(out_dir, "gad_trajectories"); os.makedirs(plot_dir, exist_ok=True)
@@ -230,8 +227,7 @@ if __name__ == "__main__":
     for dataset_idx, batch in enumerate(dataloader):
         if processed_count >= args.max_samples: break
         try:
-            # --- MODIFIED: Logic to set the starting position based on the argument ---
-            start_pos_source = "ts_guess" # Default
+            start_pos_source = "ts_guess" 
             if args.start_from == "reactant":
                 if not hasattr(batch, 'pos_reactant'): continue
                 batch.pos = batch.pos_reactant
@@ -244,7 +240,6 @@ if __name__ == "__main__":
                 if not (hasattr(batch, 'pos_reactant') and hasattr(batch, 'pos_transition')): continue
                 batch.pos = 0.25 * batch.pos_reactant + 0.75 * batch.pos_transition
                 start_pos_source = "three_quarter_rt"
-            # --- END MODIFICATION ---
 
             formula = getattr(batch, "formula", [""])[0]
             if isinstance(formula, bytes): formula = formula.decode("utf-8", "ignore")
@@ -255,7 +250,6 @@ if __name__ == "__main__":
             batch = batch.to(device)
             out = run_gad_euler_on_batch(calculator, batch, n_steps=args.n_steps, dt=args.dt)
             
-            # ... (rest of the loop and summary is unchanged) ...
             final_rms_forces.append(out['rms_force_end'])
             is_converged = (out['rms_force_end'] < args.convergence_rms_force and out['max_atom_force_end'] < args.convergence_max_force)
             if is_converged: converged_count += 1
@@ -274,8 +268,50 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"[{dataset_idx}] ERROR: {e}")
 
-    # --- (Final summary block is unchanged) ---
-    # ...
+    # The summary printing block
+    if processed_count > 0:
+        print("\n" + "="*50)
+        print(" " * 15 + "CONVERGENCE SUMMARY")
+        print("="*50)
+        convergence_rate = (converged_count / processed_count) * 100
+        print(f"Total samples processed: {processed_count}")
+        print(f"Samples converged:       {converged_count}")
+        print(f"Convergence rate:        {convergence_rate:.2f}%")
+        
+        forces_np = np.array(final_rms_forces)
+        print("\nStatistics of Final RMS Force (eV/Å):")
+        print(f"  Mean:   {np.mean(forces_np):.5f}")
+        print(f"  Median: {np.median(forces_np):.5f}")
+        print(f"  Std:    {np.std(forces_np):.5f}")
+        print(f"  Min:    {np.min(forces_np):.5f}")
+        print(f"  Max:    {np.max(forces_np):.5f}")
+
+        print("\nNegative Eigenvalue Transitions (Start -> End):")
+        if not neg_eig_transitions:
+            print("  No successful frequency analyses to report.")
+        else:
+            for key, count in sorted(neg_eig_transitions.items()):
+                print(f"  {key}: {count} samples")
+
+        # The histogram plot generation
+        plt.figure(figsize=(10, 6))
+        plt.hist(forces_np, bins=50, alpha=0.7, label='Final RMS Force Distribution')
+        plt.axvline(args.convergence_rms_force, color='r', linestyle='--', linewidth=2, label=f'Threshold ({args.convergence_rms_force})')
+        plt.xlabel("Final RMS Force (eV/Å)")
+        plt.ylabel("Number of Samples")
+        plt.title(f"Convergence Distribution over {processed_count} Samples")
+        plt.legend()
+        plt.grid(axis='y', alpha=0.5)
+        hist_path = os.path.join(out_dir, f"convergence_histogram_{processed_count}_from_{args.start_from}_samples.png")
+        plt.savefig(hist_path, dpi=200)
+        print(f"\nSaved convergence histogram to: {hist_path}")
+        
+        plt.close()
+
+    else:
+        print("\nNo samples were processed successfully.")
+    print("="*50)
+
     out_json = os.path.join(out_dir, f"rgd1_gad_rmsd_from_{args.start_from}_{len(results_summary)}.json")
     with open(out_json, "w") as f:
         json.dump(results_summary, f, indent=2)
