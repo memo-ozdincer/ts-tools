@@ -31,8 +31,10 @@ echo ">>> Running Euler RMSD script..."
 # ARGS R HERE NOW
 python -m src.gad_gad_euler_rmsd \
     --max-samples 300 \
-    --n-steps 100 \
-    --dt 0.005 \
-    --start-from reactant
+    --start-from midpoint_rt
+
+# python -m src.gad_gad_euler_rmsd \
+#     --max-samples 300 \
+#     --start-from three_quarter_rt
 
 echo "✅ Job completed successfully."
