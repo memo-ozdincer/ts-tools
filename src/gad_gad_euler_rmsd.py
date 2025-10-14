@@ -74,7 +74,6 @@ def _mean_vector_magnitude(vec: torch.Tensor) -> float:
     return float(vec.detach().cpu().norm(dim=1).mean().item())
 
 
-# --- MODIFIED: Streamlined run_gad_euler_on_batch function ---
 def run_gad_euler_on_batch(
     calculator: EquiformerTorchCalculator, batch: Batch, n_steps: int, dt: float
 ) -> Dict[str, Any]:
@@ -82,7 +81,6 @@ def run_gad_euler_on_batch(
     assert int(batch.batch.max().item()) + 1 == 1, "Use batch_size=1."
     start_pos = batch.pos.detach().clone()
     
-    # MODIFIED: Trajectory no longer stores individual eigenvalues
     trajectory = {k: [] for k in ["energy", "force_mean", "gad_mean", "eig_product"]}
 
     def _record_step(predictions: Dict[str, Any], gad_vec: Optional[torch.Tensor]):
@@ -135,7 +133,6 @@ def run_gad_euler_on_batch(
     def _to_float(value: Optional[float]) -> float:
         return float(value) if value is not None else float("nan")
 
-    # MODIFIED: Return dictionary is cleaner, no individual eigenvalues
     return {
         "rmsd": align_ordered_and_get_rmsd(start_pos, end_pos),
         "rms_force_end": forces_end.pow(2).mean().sqrt().item(),
@@ -152,9 +149,13 @@ def run_gad_euler_on_batch(
         "neg_eigvals_end": neg_eigvals_end,
     }
 
-# --- (plot_trajectory is unchanged from the last version, already plots only the product) ---
+# --- Plotting utilities (Specific to this script) ---
+# --- THE MISSING FUNCTION IS RESTORED HERE ---
+def _sanitize_formula(formula: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", formula)
+    return (safe.strip("_") or "sample")
+
 def plot_trajectory(trajectory: Dict[str, List[Optional[float]]], sample_index: int, formula: str, out_dir: str) -> str:
-    # ... (This function is identical to the previous version) ...
     num_steps = len(trajectory.get("energy", []))
     timesteps = np.arange(num_steps)
 
@@ -197,7 +198,7 @@ def plot_trajectory(trajectory: Dict[str, List[Optional[float]]], sample_index: 
     fig.savefig(out_path, dpi=200); plt.close(fig)
     return out_path
 
-
+# The `if __name__ == "__main__"` block is identical to the last version and is correct.
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run GAD-Euler dynamics and analyze RMSD.")
     parser = add_common_args(parser)
@@ -268,7 +269,6 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"[{dataset_idx}] ERROR: {e}")
 
-    # The summary printing block
     if processed_count > 0:
         print("\n" + "="*50)
         print(" " * 15 + "CONVERGENCE SUMMARY")
@@ -293,7 +293,6 @@ if __name__ == "__main__":
             for key, count in sorted(neg_eig_transitions.items()):
                 print(f"  {key}: {count} samples")
 
-        # The histogram plot generation
         plt.figure(figsize=(10, 6))
         plt.hist(forces_np, bins=50, alpha=0.7, label='Final RMS Force Distribution')
         plt.axvline(args.convergence_rms_force, color='r', linestyle='--', linewidth=2, label=f'Threshold ({args.convergence_rms_force})')
@@ -305,7 +304,6 @@ if __name__ == "__main__":
         hist_path = os.path.join(out_dir, f"convergence_histogram_{processed_count}_from_{args.start_from}_samples.png")
         plt.savefig(hist_path, dpi=200)
         print(f"\nSaved convergence histogram to: {hist_path}")
-        
         plt.close()
 
     else:
