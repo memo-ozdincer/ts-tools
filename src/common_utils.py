@@ -1,3 +1,18 @@
+# common_utils.py
+import os
+import argparse
+from typing import List, Optional, Tuple
+
+import torch
+from torch.utils.data import Dataset
+from torch_geometric.data import Data as TGDData
+from torch_geometric.loader import DataLoader
+
+# These were common imports in both scripts
+from transition1x import Dataloader as T1xDataloader
+from hip.equiformer_torch_calculator import EquiformerTorchCalculator
+
+# --- Shared Dataset Class ---
 # src/common_utils.py
 
 # ... (imports and other functions remain the same) ...
@@ -42,6 +57,7 @@ class Transition1xDataset(Dataset):
                 self.samples.append(data)
             except Exception as e:
                 print(f"[WARN] Skipping idx={idx} due to error: {e}")
+
 
     def __len__(self) -> int:
         return len(self.samples)
