@@ -204,6 +204,11 @@ def plot_trajectory(trajectory: Dict[str, List[Optional[float]]], sample_index: 
 
 
 
+# src/gad_gad_euler_rmsd.py
+
+# ... (imports and all helper functions up to `if __name__ == "__main__"` remain the same) ...
+# (No changes needed in `run_gad_euler_on_batch` or `plot_trajectory`)
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run GAD-Euler dynamics and analyze RMSD.")
     parser = add_common_args(parser)
