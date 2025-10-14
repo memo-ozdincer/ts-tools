@@ -29,12 +29,12 @@ source ${VENV_DIR}/bin/activate
 
 echo ">>> Running Euler RMSD script..."
 # ARGS R HERE NOW
-python -m src.gad_gad_euler_rmsd \
-    --max-samples 300 \
-    --start-from midpoint_rt
-
 # python -m src.gad_gad_euler_rmsd \
 #     --max-samples 300 \
-#     --start-from three_quarter_rt
+#     --start-from midpoint_rt
+
+python -m src.gad_gad_euler_rmsd \
+    --max-samples 300 \
+    --start-from three_quarter_rt
 
 echo "✅ Job completed successfully."
