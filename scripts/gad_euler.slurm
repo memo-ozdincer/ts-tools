@@ -32,7 +32,7 @@ echo ">>> Running Euler RMSD script..."
 python -m src.gad_gad_euler_rmsd \
     --max-samples 300 \
     --start-from midpoint_rt \
-    --n-steps 150
+    --n-steps 1000
 
 # python -m src.gad_gad_euler_rmsd \
 #     --max-samples 300 \
