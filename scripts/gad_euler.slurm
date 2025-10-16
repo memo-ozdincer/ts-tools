@@ -31,9 +31,10 @@ echo ">>> Running Euler RMSD script..."
 # ARGS R HERE NOW
 python -m src.gad_gad_euler_rmsd \
     --max-samples 300 \
-    --start-from midpoint_rt \
     --n-steps 1000 \
-    --step-size 0.001
+    --start-from midpoint_rt \
+    --stop-at-ts \
+    --dt 0.001
 
 # python -m src.gad_gad_euler_rmsd \
 #     --max-samples 300 \
