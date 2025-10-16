@@ -30,7 +30,7 @@ source ${VENV_DIR}/bin/activate
 echo ">>> Running Euler RMSD script..."
 # ARGS R HERE NOW
 python -m src.gad_gad_euler_rmsd \
-    --max-samples 50 \
+    --max-samples 300 \
     --start-from midpoint_rt \
     --n-steps 1000
 
