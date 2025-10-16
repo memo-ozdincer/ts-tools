@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --time=02:00:00
+#SBATCH --time=10:00:00
 #SBATCH --gres=gpu:1
 #SBATCH --mem=32G
 #SBATCH --cpus-per-task=4
@@ -30,7 +30,7 @@ source ${VENV_DIR}/bin/activate
 echo ">>> Running Euler RMSD script..."
 # ARGS R HERE NOW
 python -m src.gad_gad_euler_rmsd \
-    --max-samples 300 \
+    --max-samples 50 \
     --start-from midpoint_rt \
     --n-steps 1000
 
