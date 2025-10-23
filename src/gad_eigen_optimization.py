@@ -18,9 +18,8 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-# --- (Helper functions are copied from the other script) ---
+# --- (Helper functions are unchanged) ---
 def find_rigid_alignment(A, B):
-    # ... (code is identical to previous script)
     a_mean = A.mean(axis=0); b_mean = B.mean(axis=0)
     A_c = A - a_mean; B_c = B - b_mean
     H = A_c.T @ B_c
@@ -55,7 +54,6 @@ def _sanitize_formula(formula: str) -> str:
     return (safe.strip("_") or "sample")
 
 def plot_trajectory(trajectory, sample_index, formula, out_dir):
-    # ... (code is identical to previous script, but now plots the loss)
     num_steps = len(trajectory["loss"])
     timesteps = np.arange(num_steps)
     def _nanify(values): return np.array([v if v is not None else np.nan for v in values], dtype=float)
@@ -94,21 +92,23 @@ def run_eigen_optimization_on_batch(
 ) -> Dict[str, Any]:
     """Optimizes atomic positions to minimize the product of the two smallest Hessian eigenvalues."""
     
-    # Enable gradient tracking for this optimization
     with torch.set_grad_enabled(True):
-        # We must clone the positions and mark them as requiring gradients
         start_pos = batch.pos.detach().clone()
         pos = start_pos.clone().requires_grad_(True)
-        
-        # Use the Adam optimizer, which is robust
         optimizer = torch.optim.Adam([pos], lr=lr)
-        
         trajectory = defaultdict(list)
         steps_taken = 0
         
-        # Get initial state for comparison
+        # Get initial state
         with torch.no_grad():
-            res_start = calculator.predict(Batch.from_data_list([TGDData(z=batch.z, pos=start_pos, batch=torch.zeros_like(batch.z))]), do_hessian=True)
+            # --- FIX #1: Add `natoms` to the temporary data object ---
+            data_start = TGDData(
+                z=batch.z,
+                pos=start_pos,
+                batch=torch.zeros_like(batch.z),
+                natoms=torch.tensor([start_pos.shape[0]], dtype=torch.long)
+            )
+            res_start = calculator.predict(Batch.from_data_list([data_start]), do_hessian=True)
             fi_start = analyze_frequencies_torch(res_start["hessian"], start_pos, batch.z)
             neg_eigvals_start = int(fi_start.get("neg_num", -1))
 
@@ -116,37 +116,41 @@ def run_eigen_optimization_on_batch(
             steps_taken = i + 1
             optimizer.zero_grad()
             
-            # Create a temporary data object for the forward pass
-            current_data = Batch.from_data_list([TGDData(z=batch.z, pos=pos, batch=torch.zeros_like(batch.z))])
-            results = calculator.predict(current_data, do_hessian=True)
+            # --- FIX #2: Add `natoms` to the data object inside the loop ---
+            current_data = TGDData(
+                z=batch.z,
+                pos=pos,
+                batch=torch.zeros_like(batch.z),
+                natoms=torch.tensor([pos.shape[0]], dtype=torch.long)
+            )
+            current_batch = Batch.from_data_list([current_data])
+            results = calculator.predict(current_batch, do_hessian=True)
             
-            # --- LOSS CALCULATION ---
             hess = _prepare_hessian(results["hessian"], pos.shape[0])
-            # eigvalsh is slightly more efficient if we only need eigenvalues
             evals = torch.linalg.eigvalsh(hess) 
             evals_sorted, _ = torch.sort(evals)
-            
-            # The loss is the product of the two smallest eigenvalues
             loss = evals_sorted[0] * evals_sorted[1]
             
-            # --- BACKPROPAGATION & OPTIMIZER STEP ---
             loss.backward()
             optimizer.step()
             
-            # --- Record metrics for this step (outside of gradient tape) ---
             with torch.no_grad():
                 trajectory["loss"].append(loss.item())
                 trajectory["energy"].append(results.get("energy").item())
                 trajectory["rms_force"].append(results.get("forces").pow(2).mean().sqrt().item())
-
-                # --- EARLY STOPPING CHECK ---
                 if stop_at_ts and loss.item() < -1e-5:
                     break
 
-    # --- Final analysis after optimization loop ---
     with torch.no_grad():
         end_pos = pos.detach().clone()
-        final_results = calculator.predict(Batch.from_data_list([TGDData(z=batch.z, pos=end_pos, batch=torch.zeros_like(batch.z))]), do_hessian=True)
+        # --- FIX #3: Add `natoms` to the final data object ---
+        data_end = TGDData(
+            z=batch.z,
+            pos=end_pos,
+            batch=torch.zeros_like(batch.z),
+            natoms=torch.tensor([end_pos.shape[0]], dtype=torch.long)
+        )
+        final_results = calculator.predict(Batch.from_data_list([data_end]), do_hessian=True)
         final_freq_info = analyze_frequencies_torch(final_results["hessian"], end_pos, batch.z)
         neg_eigvals_end = int(final_freq_info.get("neg_num", -1))
         
@@ -165,6 +169,7 @@ def run_eigen_optimization_on_batch(
             "trajectory": trajectory,
         }
 
+# --- (The __main__ block is unchanged and correct) ---
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Optimize geometry to find transition states by minimizing the eigenvalue product.")
     parser = add_common_args(parser)
@@ -204,6 +209,9 @@ if __name__ == "__main__":
             formula = getattr(batch, "formula", [""])[0]
             if isinstance(formula, bytes): formula = formula.decode("utf-8", "ignore")
             
+            # This is important: the original batch from the dataloader does not have `natoms`
+            # We must add it here before passing it to the optimization function.
+            batch.natoms = torch.tensor([batch.pos.shape[0]], dtype=torch.long)
             batch = batch.to(device)
             
             out = run_eigen_optimization_on_batch(calculator, batch, n_steps=args.n_steps, lr=args.lr, stop_at_ts=args.stop_at_ts)
