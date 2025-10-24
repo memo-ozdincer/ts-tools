@@ -18,10 +18,11 @@ module load python/${PYTHON_VERSION}
 source ${VENV_DIR}/bin/activate
 
 echo ">>> Running PROJECTED eigenvalue descent script..."
-python -m src.gad_projected_eig_descent \
-    --max-samples 30 \
-    --n-steps-opt 100 \
+python -m src.gad_eigenvalue_descent \
+    --max-samples 300 \
+    --n-steps-opt 200 \
     --lr 0.005 \
-    --start-from reactant
+    --start-from reactant \
+    --stop-at-ts
 
 echo "✅ Job completed."
