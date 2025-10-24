@@ -1,4 +1,4 @@
-# src/gad_eigenvalue_descent.py
+# src/gad_direct_gradient.py
 import os
 import json
 import argparse
@@ -11,7 +11,7 @@ from torch_geometric.data import Data as TGData, Batch as TGBatch
 
 from .common_utils import setup_experiment, add_common_args
 from hip.equiformer_torch_calculator import EquiformerTorchCalculator
-from hip.frequency_analysis import analyze_frequencies_torch # For ANALYSIS ONLY
+from hip.frequency_analysis import analyze_frequencies_torch # For final analysis
 
 # --- (Helper functions for RMSD are unchanged) ---
 def find_rigid_alignment(A, B):
@@ -36,7 +36,16 @@ def align_ordered_and_get_rmsd(A, B):
     A_aligned = (R @ A.T).T + t
     return get_rmsd(A_aligned, B)
 
-# --- (coord_atoms_to_torch_geometric is unchanged) ---
+# --- (Helper function for reshaping the Hessian) ---
+def _prepare_hessian(hess: torch.Tensor, num_atoms: int) -> torch.Tensor:
+    if hess.dim() == 1:
+        side_dim = 3 * num_atoms
+        hess = hess.reshape(side_dim, side_dim)
+    elif hess.dim() == 3 and hess.shape[0] == 1:
+        hess = hess[0]
+    return hess
+
+# --- YOUR PROVIDED FUNCTIONS, INTEGRATED ---
 def coord_atoms_to_torch_geometric(coords, atomic_nums):
     data = TGData(
         pos=torch.as_tensor(coords, dtype=torch.float32).reshape(-1, 3),
@@ -48,77 +57,70 @@ def coord_atoms_to_torch_geometric(coords, atomic_nums):
     )
     return TGBatch.from_data_list([data])
 
-# --- NEW: Added the missing helper function from the GAD script ---
-def _prepare_hessian(hess: torch.Tensor, num_atoms: int) -> torch.Tensor:
-    if hess.dim() == 1:
-        side_dim = 3 * num_atoms
-        if hess.numel() != side_dim * side_dim:
-            raise ValueError("Hessian has incorrect number of elements to be reshaped.")
-        hess = hess.reshape(side_dim, side_dim)
-    elif hess.dim() == 3 and hess.shape[0] == 1:
-        hess = hess[0]
-    return hess
+def get_gradient_of_eigprod(
+    potential: torch.nn.Module,
+    coords: torch.Tensor,
+    atomic_nums: torch.Tensor
+) -> (torch.Tensor, torch.Tensor):
+    """
+    Computes the gradient of the eigenvalue-product w.r.t. input positions,
+    exactly as you specified.
+    """
+    batch = coord_atoms_to_torch_geometric(coords, atomic_nums)
+    batch = batch.to(potential.device)
+    
+    # Enable gradients for this specific calculation
+    with torch.enable_grad():
+        # Mark the input tensor as requiring a gradient
+        batch.pos.requires_grad_(True)
+        
+        # Run the forward pass to get the hessian
+        _, _, out = potential.forward(batch, otf_graph=True)
+        
+        hess_flat = out["hessian"]
+        hess = _prepare_hessian(hess_flat, len(atomic_nums))
+        
+        eigvals, _ = torch.linalg.eigh(hess)
+        
+        prod = eigvals[0] * eigvals[1]
+        
+        # Explicitly ask for the gradient of the product w.r.t. positions
+        grad_prod = torch.autograd.grad(prod, batch.pos, retain_graph=False)[0]
+        
+    return prod.detach(), grad_prod
 
-# --- Core Optimization Function with HYBRID approach AND EARLY STOPPING ---
-def run_eigenvalue_descent(
+# --- Main Optimization Loop built around YOUR function ---
+def run_direct_gradient_descent(
     calculator: EquiformerTorchCalculator,
     initial_coords: torch.Tensor,
     atomic_nums: torch.Tensor,
     n_steps: int = 50,
     lr: float = 0.01,
-    stop_at_ts: bool = False,
 ) -> Dict[str, Any]:
-    """
-    Performs gradient descent by optimizing eigenvalues of the FULL Hessian,
-    analyzing with the PROJECTED Hessian, and optionally stopping when a TS is found.
-    """
+    
     potential = calculator.potential
     device = potential.device
     
-    coords = torch.nn.Parameter(initial_coords.clone().to(device))
-    optimizer = torch.optim.Adam([coords], lr=lr)
+    coords = initial_coords.clone().to(device)
     history = defaultdict(list)
-    steps_taken = 0
-    num_atoms = len(atomic_nums)
 
     for step in range(n_steps):
-        steps_taken = step + 1
-        optimizer.zero_grad()
-        batch = coord_atoms_to_torch_geometric(coords, atomic_nums).to(device)
-
-        with torch.enable_grad():
-            _, _, out = potential.forward(batch, otf_graph=True)
-            
-        hessian_from_model = out["hessian"]
+        # 1. Call your function to get the current value and the gradient
+        eig_prod, grad = get_gradient_of_eigprod(potential, coords, atomic_nums)
         
-        # --- THE FIX: Reshape the Hessian before passing to eigh ---
-        hessian = _prepare_hessian(hessian_from_model, num_atoms)
-        
-        full_eigvals, _ = torch.linalg.eigh(hessian)
-        loss = full_eigvals[0] * full_eigvals[1]
-        
-        loss.backward()
-        optimizer.step()
-
-        with torch.no_grad():
-            # analyze_frequencies_torch can handle the flat Hessian, so we pass the original
-            projected_freq_info = analyze_frequencies_torch(hessian_from_model.detach(), coords.detach(), atomic_nums)
-            projected_eigvals = projected_freq_info["eigvals"].cpu()
-            projected_product = (projected_eigvals[0] * projected_eigvals[1]).item()
-        
-        history["loss"].append(loss.item())
-        history["projected_eigval_0"].append(projected_eigvals[0].item())
-        history["projected_eigval_1"].append(projected_eigvals[1].item())
-        
+        # Log history
+        history["eig_product"].append(eig_prod.item())
         if step % 10 == 0:
-            print(f"  Step {step:03d}: Loss(unproj)={loss.item():.4f}, Proj λ0*λ1={projected_product:.4f}")
-            
-        if stop_at_ts and projected_product < -1e-5:
-            print(f"  Stopping early at step {step}: Found TS signature (product = {projected_product:.4f})")
-            break
+            print(f"  Step {step:03d}: Eig Product = {eig_prod.item():.5f}")
 
-    final_coords = coords.detach().clone()
-    
+        # 2. Manually update the coordinates using the calculated gradient
+        #    We do this in a no_grad block because the update itself should not be tracked.
+        with torch.no_grad():
+            coords -= lr * grad
+            
+    final_coords = coords.clone()
+
+    # Final analysis
     with torch.no_grad():
         final_batch = coord_atoms_to_torch_geometric(final_coords, atomic_nums).to(device)
         _, _, final_out = potential.forward(final_batch, otf_graph=True)
@@ -127,91 +129,69 @@ def run_eigenvalue_descent(
     return {
         "final_coords": final_coords.cpu(),
         "history": history,
-        "steps_taken": steps_taken,
         "final_eig_product": (final_freq_info["eigvals"][0] * final_freq_info["eigvals"][1]).item(),
         "final_neg_eigvals": int(final_freq_info.get("neg_num", -1)),
     }
 
 
-# --- (__main__ block is unchanged and correct) ---
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run gradient descent on Hessian eigenvalues to find transition states.")
+    parser = argparse.ArgumentParser(description="Run DIRECT gradient descent on Hessian eigenvalues.")
     parser = add_common_args(parser)
-    parser.add_argument("--n-steps-opt", type=int, default=50, help="Number of optimization steps.")
-    parser.add_argument("--lr", type=float, default=0.01, help="Learning rate for the Adam optimizer.")
+    parser.add_argument("--n-steps-opt", type=int, default=50)
+    parser.add_argument("--lr", type=float, default=0.01)
     parser.add_argument("--start-from", type=str, default="reactant", 
-                        choices=["reactant", "ts", "midpoint_rt", "three_quarter_rt"],
-                        help="Which geometry to start the optimization from.")
-    parser.add_argument("--stop-at-ts", action="store_true", 
-                        help="Stop optimization as soon as projected eigenvalue product becomes negative.")
+                        choices=["reactant", "ts", "midpoint_rt", "three_quarter_rt"])
     args = parser.parse_args()
     
     calculator, dataloader, device, out_dir = setup_experiment(args, shuffle=False)
     
-    print(f"Running Eigenvalue Product Minimization for {args.max_samples} samples.")
-    mode_str = "Search until TS found" if args.stop_at_ts else f"Fixed {args.n_steps_opt} steps"
-    print(f"Mode: {mode_str}, Starting From: {args.start_from.upper()}, LR: {args.lr}")
+    print(f"Running DIRECT Eigenvalue Product Minimization.")
+    print(f"Starting From: {args.start_from.upper()}, Steps: {args.n_steps_opt}, LR: {args.lr}")
 
     results_summary = []
     for i, batch in enumerate(dataloader):
         if i >= args.max_samples: break
         print(f"\n--- Processing Sample {i} (Formula: {batch.formula[0]}) ---")
         try:
-            if args.start_from == "reactant":
-                initial_coords = batch.pos_reactant
-            elif args.start_from == "midpoint_rt":
-                initial_coords = 0.5 * batch.pos_reactant + 0.5 * batch.pos_transition
-            elif args.start_from == "three_quarter_rt":
-                initial_coords = 0.25 * batch.pos_reactant + 0.75 * batch.pos_transition
-            else:
-                initial_coords = batch.pos_transition
+            if args.start_from == "reactant": initial_coords = batch.pos_reactant
+            elif args.start_from == "midpoint_rt": initial_coords = 0.5 * batch.pos_reactant + 0.5 * batch.pos_transition
+            elif args.start_from == "three_quarter_rt": initial_coords = 0.25 * batch.pos_reactant + 0.75 * batch.pos_transition
+            else: initial_coords = batch.pos_transition
 
-            atomic_nums = batch.z
-            target_ts_coords = batch.pos_transition
-            
-            opt_results = run_eigenvalue_descent(
+            opt_results = run_direct_gradient_descent(
                 calculator=calculator,
                 initial_coords=initial_coords,
-                atomic_nums=atomic_nums,
+                atomic_nums=batch.z,
                 n_steps=args.n_steps_opt,
                 lr=args.lr,
-                stop_at_ts=args.stop_at_ts,
             )
             
+            # ... (rest of the analysis and summary saving is similar)
             with torch.no_grad():
-                initial_batch = coord_atoms_to_torch_geometric(initial_coords, atomic_nums).to(device)
-                _, _, initial_out = calculator.potential.forward(initial_batch, otf_graph=True)
-                initial_freq_info = analyze_frequencies_torch(initial_out["hessian"], initial_coords, atomic_nums)
-            initial_eigvals = initial_freq_info["eigvals"].cpu()
-            initial_eig_product = (initial_eigvals[0] * initial_eigvals[1]).item()
+                initial_freq_info = analyze_frequencies_torch(
+                    calculator.predict(TGBatch.from_data_list([TGData(pos=initial_coords, z=batch.z, natoms=torch.tensor([len(batch.z)]))]).to(device), do_hessian=True)["hessian"], 
+                    initial_coords, 
+                    batch.z
+                )
+            initial_eig_product = (initial_freq_info["eigvals"][0] * initial_freq_info["eigvals"][1]).item()
 
             summary = {
                 "sample_index": i, "formula": batch.formula[0],
-                "steps_taken": opt_results["steps_taken"],
                 "initial_eig_product": initial_eig_product,
                 "final_eig_product": opt_results["final_eig_product"],
-                "initial_neg_eigvals": int(initial_freq_info.get("neg_num", -1)),
                 "final_neg_eigvals": opt_results["final_neg_eigvals"],
-                "rmsd_to_known_ts": align_ordered_and_get_rmsd(opt_results["final_coords"], target_ts_coords),
-                "history": opt_results["history"],
             }
             results_summary.append(summary)
             
-            stop_reason = "Found TS" if (args.stop_at_ts and opt_results['steps_taken'] < args.n_steps_opt) else "Max Steps"
-            print(f"Result for Sample {i}:")
-            print(f"  Steps Taken: {summary['steps_taken']} ({stop_reason})")
-            print(f"  Projected Eig Product: {summary['initial_eig_product']:.4f} -> {summary['final_eig_product']:.4f}")
-            print(f"  Projected Neg Eigs: {summary['initial_neg_eigvals']} -> {summary['final_neg_eigvals']}")
-            print(f"  RMSD to T1x TS: {summary['rmsd_to_known_ts']:.4f} Å")
+            print("Result:")
+            print(f"  Eig Product: {summary['initial_eig_product']:.4f} -> {summary['final_eig_product']:.4f}")
+            print(f"  Neg Eigs: {initial_freq_info.get('neg_num', -1)} -> {summary['final_neg_eigvals']}")
             
         except Exception as e:
-            print(f"[ERROR] Failed to process sample {i}: {e}")
+            print(f"[ERROR] Sample {i} failed: {e}")
             import traceback
             traceback.print_exc()
 
-    filename_suffix = f"{args.start_from}"
-    if args.stop_at_ts: filename_suffix += "_stopts"
-    out_json = os.path.join(out_dir, f"full_eig_descent_{filename_suffix}_{len(results_summary)}.json")
-    with open(out_json, "w") as f:
-        json.dump(results_summary, f, indent=2)
-    print(f"\nSaved summary for {len(results_summary)} samples to {out_json}")
+    out_json = os.path.join(out_dir, f"direct_grad_descent_{args.start_from}_{len(results_summary)}.json")
+    with open(out_json, "w") as f: json.dump(results_summary, f, indent=2)
+    print(f"\nSaved summary to {out_json}")

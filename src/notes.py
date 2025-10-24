@@ -409,7 +409,6 @@ def mass_weigh_eckart_project_hessian(hessian):
     proj_hessian = eckart_projection_notmw_torch(hessian, cart_coords, atomsymbols)
     return proj_hessian
 
-def to_batch():
     
 
 def gradient_eigvals(potential, coords, atomic_nums):
@@ -420,7 +419,7 @@ def gradient_eigvals(potential, coords, atomic_nums):
     )
     batch = batch.to(potential.device)
     with torch.grad():
-        tg_batch.pos.requires_grad_(True)
+        batch.pos.requires_grad_(True)
         energy, forces, out = potential.forward(
             batch,
             otf_graph=True,
@@ -430,8 +429,9 @@ def gradient_eigvals(potential, coords, atomic_nums):
         eigvals, eigvecs = torch.linalg.eigh(hess)
         
         prod = eigvals[0] * eigvals[1]
-        grad_eig0 = torch.autograd.grad(eigvals[0], tg_batch.pos, retain_graph=False)[0]
+        grad_eig0 = torch.autograd.grad(prod, tg_batch.pos, retain_graph=False)[0]
     return prod.detach(), grad_eig0
+
 
 
 ## For the GAD: IF THE FORCE IS TOO SMALL, use first eigenvector w/ fixed stepsize instead of multiplying it by force.
