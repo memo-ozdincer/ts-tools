@@ -18,10 +18,12 @@ module load python/${PYTHON_VERSION}
 source ${VENV_DIR}/bin/activate
 
 echo ">>> Running eigenvalue descent script..."
-python -m src.gad_direct_gradient \
+python -m src.gad_eigenvalue_descent \
     --max-samples 30 \
     --start-from reactant \
-    --loss-function product 
+    --loss-function product \
+    --n-steps-opt 20 \
+    --start-from midpoint_rt
 
 # python -m src.gad_direct_gradient \
     # --max-samples 30 \

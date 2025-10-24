@@ -1,4 +1,3 @@
-# src/gad_direct_gradient.py
 import os
 import json
 import argparse
@@ -113,7 +112,7 @@ def run_direct_gradient_descent(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run DIRECT gradient descent on projected Hessian eigenvalues.")
     parser = add_common_args(parser)
-    parser.add_argument("--n-steps-opt", type=int, default=200)
+    parser.add_argument("--n-steps-opt", type=int, default=20)
     parser.add_argument("--lr", type=float, default=0.005)
     parser.add_argument("--start-from", type=str, default="reactant", 
                         choices=["reactant", "ts", "midpoint_rt", "three_quarter_rt"])
