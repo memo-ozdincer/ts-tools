@@ -45,7 +45,6 @@ def align_ordered_and_get_rmsd(A, B) -> float:
     return get_rmsd(A_aligned, B)
 
 
-# --- Functions from your provided starter code, USED EXACTLY ---
 def coord_atoms_to_torch_geometric(
     coords,  # (N, 3)
     atomic_nums,  # (N,)
@@ -58,7 +57,7 @@ def coord_atoms_to_torch_geometric(
         z=torch.as_tensor(atomic_nums, dtype=torch.int64),
         charges=torch.as_tensor(atomic_nums, dtype=torch.int64),
         natoms=torch.tensor([len(atomic_nums)], dtype=torch.int64),
-        cell=torch.zeros(3, 3, dtype=torch.float32), # Add dummy cell for compatibility
+        cell=torch.zeros(3, 3, dtype=torch.float32), # dummy cell
         pbc=torch.tensor([False, False, False], dtype=torch.bool),
     )
     return TGBatch.from_data_list([data])
