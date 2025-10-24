@@ -11,12 +11,24 @@ import numpy as np
 from torch_geometric.data import Batch
 
 from .common_utils import setup_experiment, add_common_args
-from hip.frequency_analysis import analyze_frequencies_torch
+from hip.frequency_analysis import analyze_frequencies_torch, eckart_projection_notmw_torch
+from torch_geometric.data import Data as TGData
+from torch_geometric.data import Batch as TGBatch
 from hip.equiformer_torch_calculator import EquiformerTorchCalculator
 
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+
+GLOBAL_ATOM_NUMBERS = torch.tensor([1, 6, 7, 8])
+GLOBAL_ATOM_SYMBOLS = np.array(["H", "C", "N", "O"])
+Z_TO_ATOM_SYMBOL = {
+    1: "H",
+    6: "C",
+    7: "N",
+    8: "O",
+}
+from hip.masses import MASS_DICT
 
 # --- (Helper functions remain unchanged) ---
 def find_rigid_alignment(A: np.ndarray, B: np.ndarray):
@@ -350,3 +362,82 @@ if __name__ == "__main__":
     with open(out_json, "w") as f:
         json.dump(results_summary, f, indent=2)
     print(f"\nSaved summary → {out_json}")
+
+from hip.masses import MASS_DICT
+
+
+def coord_atoms_to_torch_geometric(
+    coords,  # (N, 3)
+    atomic_nums,  # (N,)
+):
+    """
+    Convert ASE Atoms object to torch_geometric Data format expected by Equiformer.
+    with_grad=True ensures there are gradients of the energy and forces w.r.t. the positions,
+    through the graph generation.
+
+    Args:
+        atoms: ASE Atoms object
+
+    Returns:
+        Data: torch_geometric Data object with required attributes
+    """
+
+    # Convert to torch tensors
+    data = TGData(
+        pos=torch.as_tensor(coords, dtype=torch.float32).reshape(-1, 3),
+        z=torch.as_tensor(atomic_nums, dtype=torch.int64),
+        charges=torch.as_tensor(atomic_nums, dtype=torch.int64),
+        natoms=torch.tensor([len(atomic_nums)], dtype=torch.int64),
+        cell=None,
+        pbc=torch.tensor(False, dtype=torch.bool),
+    )
+    return TGBatch.from_data_list(
+        [data],
+        # follow_batch=["diag_ij", "edge_index", "message_idx_ij"]
+    )
+
+def mass_weigh_eckart_project_hessian(hessian):
+    cart_coords = cart_coords.reshape(-1, 3).to(hessian.device)
+    hessian = hessian.reshape(cart_coords.numel(), cart_coords.numel())
+
+    if isinstance(atomsymbols[0], torch.Tensor):
+        atomsymbols = atomsymbols.tolist()
+    if not isinstance(atomsymbols[0], str):
+        # atomic numbers were passed instead of symbols
+        atomsymbols = [Z_TO_ATOM_SYMBOL[z] for z in atomsymbols]
+
+    proj_hessian = eckart_projection_notmw_torch(hessian, cart_coords, atomsymbols)
+    return proj_hessian
+
+def to_batch():
+    
+
+def gradient_eigvals(potential, coords, atomic_nums):
+    """Computes the gradient of the eigenvalue-product w.r.t. input positions."""
+    batch = coord_atoms_to_torch_geometric(
+        coords,
+        atomic_nums,
+    )
+    batch = batch.to(potential.device)
+    with torch.grad():
+        tg_batch.pos.requires_grad_(True)
+        energy, forces, out = potential.forward(
+            batch,
+            otf_graph=True,
+        )
+        hess = out["hessian"]
+        # hess = mass_weigh_eckart_project_hessian(hess) # Optional: try with and without
+        eigvals, eigvecs = torch.linalg.eigh(hess)
+        
+        prod = eigvals[0] * eigvals[1]
+        grad_eig0 = torch.autograd.grad(eigvals[0], tg_batch.pos, retain_graph=False)[0]
+    return prod.detach(), grad_eig0
+
+
+## For the GAD: IF THE FORCE IS TOO SMALL, use first eigenvector w/ fixed stepsize instead of multiplying it by force.
+
+## FILENAME of Plots: identify starting geometry. + Starting frequency and ending freqency 0->1 etc.
+
+# plot the graphs that start from reactant, check force norm on ones that can't escape 0, or something similar.
+
+# Eigenvector following methods. Dimer method
