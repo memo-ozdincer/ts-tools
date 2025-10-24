@@ -48,6 +48,17 @@ def coord_atoms_to_torch_geometric(coords, atomic_nums):
     )
     return TGBatch.from_data_list([data])
 
+# --- NEW: Added the missing helper function from the GAD script ---
+def _prepare_hessian(hess: torch.Tensor, num_atoms: int) -> torch.Tensor:
+    if hess.dim() == 1:
+        side_dim = 3 * num_atoms
+        if hess.numel() != side_dim * side_dim:
+            raise ValueError("Hessian has incorrect number of elements to be reshaped.")
+        hess = hess.reshape(side_dim, side_dim)
+    elif hess.dim() == 3 and hess.shape[0] == 1:
+        hess = hess[0]
+    return hess
+
 # --- Core Optimization Function with HYBRID approach AND EARLY STOPPING ---
 def run_eigenvalue_descent(
     calculator: EquiformerTorchCalculator,
@@ -68,6 +79,7 @@ def run_eigenvalue_descent(
     optimizer = torch.optim.Adam([coords], lr=lr)
     history = defaultdict(list)
     steps_taken = 0
+    num_atoms = len(atomic_nums)
 
     for step in range(n_steps):
         steps_taken = step + 1
@@ -77,7 +89,11 @@ def run_eigenvalue_descent(
         with torch.enable_grad():
             _, _, out = potential.forward(batch, otf_graph=True)
             
-        hessian = out["hessian"]
+        hessian_from_model = out["hessian"]
+        
+        # --- THE FIX: Reshape the Hessian before passing to eigh ---
+        hessian = _prepare_hessian(hessian_from_model, num_atoms)
+        
         full_eigvals, _ = torch.linalg.eigh(hessian)
         loss = full_eigvals[0] * full_eigvals[1]
         
@@ -85,7 +101,8 @@ def run_eigenvalue_descent(
         optimizer.step()
 
         with torch.no_grad():
-            projected_freq_info = analyze_frequencies_torch(hessian.detach(), coords.detach(), atomic_nums)
+            # analyze_frequencies_torch can handle the flat Hessian, so we pass the original
+            projected_freq_info = analyze_frequencies_torch(hessian_from_model.detach(), coords.detach(), atomic_nums)
             projected_eigvals = projected_freq_info["eigvals"].cpu()
             projected_product = (projected_eigvals[0] * projected_eigvals[1]).item()
         
@@ -96,8 +113,7 @@ def run_eigenvalue_descent(
         if step % 10 == 0:
             print(f"  Step {step:03d}: Loss(unproj)={loss.item():.4f}, Proj λ0*λ1={projected_product:.4f}")
             
-        # --- EARLY STOPPING CHECK ---
-        if stop_at_ts and projected_product < -1e-5: # Use a small threshold
+        if stop_at_ts and projected_product < -1e-5:
             print(f"  Stopping early at step {step}: Found TS signature (product = {projected_product:.4f})")
             break
 
@@ -117,6 +133,7 @@ def run_eigenvalue_descent(
     }
 
 
+# --- (__main__ block is unchanged and correct) ---
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run gradient descent on Hessian eigenvalues to find transition states.")
     parser = add_common_args(parser)
@@ -125,7 +142,6 @@ if __name__ == "__main__":
     parser.add_argument("--start-from", type=str, default="reactant", 
                         choices=["reactant", "ts", "midpoint_rt", "three_quarter_rt"],
                         help="Which geometry to start the optimization from.")
-    # --- NEW ARGUMENT ---
     parser.add_argument("--stop-at-ts", action="store_true", 
                         help="Stop optimization as soon as projected eigenvalue product becomes negative.")
     args = parser.parse_args()
@@ -159,7 +175,7 @@ if __name__ == "__main__":
                 atomic_nums=atomic_nums,
                 n_steps=args.n_steps_opt,
                 lr=args.lr,
-                stop_at_ts=args.stop_at_ts, # Pass the flag
+                stop_at_ts=args.stop_at_ts,
             )
             
             with torch.no_grad():

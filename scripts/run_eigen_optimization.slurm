@@ -17,7 +17,7 @@ module purge
 module load python/${PYTHON_VERSION}
 source ${VENV_DIR}/bin/activate
 
-echo ">>> Running PROJECTED eigenvalue descent script..."
+echo ">>> Running eigenvalue descent script..."
 python -m src.gad_eigenvalue_descent \
     --max-samples 300 \
     --n-steps-opt 200 \
