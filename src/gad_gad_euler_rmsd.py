@@ -199,33 +199,43 @@ if __name__ == "__main__":
     parser = add_common_args(parser)
     parser.add_argument("--n-steps", type=int, default=50, help="Maximum number of Euler steps.")
     parser.add_argument("--dt", type=float, default=0.005, help="Time step for integration.")
-    # ... (other args) ...
-    parser.add_argument("--start-from", type=str, default="ts", choices=["ts", "reactant", "midpoint_rt", "three_quarter_rt"])
-    parser.add_argument("--stop-at-ts", action="store_true", help="Stop simulation as soon as eigenvalue product becomes negative.")
     
-    # --- NEW ARGUMENT TO CHOOSE THE ALGORITHM ---
+    # --- FIX: RESTORED THESE ARGUMENTS ---
+    parser.add_argument("--unique-formulas", action="store_true", help="Only process one sample for each unique chemical formula.")
+    parser.add_argument("--dataset-load-multiplier", type=int, default=5, help="Factor to multiply max_samples by for initial data loading.")
+    # --- END FIX ---
+
+    # These arguments were already correct
+    parser.add_argument("--convergence-rms-force", type=float, default=0.01, help="Convergence threshold for RMS force (eV/Å) (used for stats, not stopping).")
+    parser.add_argument("--convergence-max-force", type=float, default=0.03, help="Convergence threshold for max atomic force (eV/Å).")
+    parser.add_argument("--start-from", type=str, default="ts", 
+                        choices=["ts", "reactant", "midpoint_rt", "three_quarter_rt"],
+                        help="Which geometry to start from.")
+    parser.add_argument("--stop-at-ts", action="store_true", 
+                        help="Stop simulation as soon as eigenvalue product becomes negative (TS region found).")
     parser.add_argument("--mode", type=str, default="gad", choices=["gad", "eigprod"],
                         help="Select the optimization algorithm.")
 
     args = parser.parse_args()
     
-    calculator, dataloader, device, out_dir = setup_experiment(args, shuffle=True)
+    # --- FIX: Pass the multiplier to the setup function ---
+    load_multiplier = args.dataset_load_multiplier if args.unique_formulas else 1
+    calculator, dataloader, device, out_dir = setup_experiment(args, shuffle=True, dataset_load_multiplier=load_multiplier)
+    # --- END FIX ---
+    
     results_summary: List[Dict[str, Any]] = []
     plot_dir = os.path.join(out_dir, "gad_trajectories"); os.makedirs(plot_dir, exist_ok=True)
     
     print(f"Mode: {args.mode.upper()}")
-    
     print(f"Starting GAD from: {args.start_from.upper()}")
     mode_str = "Search until TS found (eig_prod < 0)" if args.stop_at_ts else f"Fixed trajectory ({args.n_steps} steps)"
-    print(f"Mode: {mode_str}")
+    print(f"Mode details: {mode_str}")
     print(f"Processing up to {args.max_samples} samples (dt={args.dt})")
 
     seen_formulas, processed_count, converged_count = set(), 0, 0
     final_rms_forces = []
     neg_eig_transitions = defaultdict(int)
     steps_taken_list = []
-    processed_count = 0
-    neg_eig_transitions = defaultdict(int)
 
     for dataset_idx, batch in enumerate(dataloader):
         if processed_count >= args.max_samples: break
@@ -242,20 +252,19 @@ if __name__ == "__main__":
 
             formula = getattr(batch, "formula", [""])[0]
             if isinstance(formula, bytes): formula = formula.decode("utf-8", "ignore")
+            # This line will now work correctly
             if args.unique_formulas and formula in seen_formulas: continue
             seen_formulas.add(formula)
 
             batch.natoms = torch.tensor([batch.pos.shape[0]], dtype=torch.long)
             batch = batch.to(device)
             
-            # Pass the new flag
             out = run_gad_euler_on_batch(calculator, batch, n_steps=args.n_steps, dt=args.dt, 
                                          mode=args.mode, stop_at_ts=args.stop_at_ts)
             
             final_rms_forces.append(out['rms_force_end'])
             steps_taken_list.append(out['steps_taken'])
 
-            # Convergence check (for statistics, separate from stopping condition)
             is_converged = (out['rms_force_end'] < args.convergence_rms_force and out['max_atom_force_end'] < args.convergence_max_force)
             if is_converged: converged_count += 1
             
@@ -263,11 +272,10 @@ if __name__ == "__main__":
             if start_n >= 0 and end_n >= 0:
                 neg_eig_transitions[f"{start_n} -> {end_n}"] += 1
             
-            plot_path = plot_trajectory(out["trajectory"], processed_count, formula, plot_dir)
+            plot_path = plot_trajectory(out["trajectory"], processed_count, formula, args.mode, plot_dir)
             result = {"dataset_index": dataset_idx, "sample_order": processed_count, "formula": formula, "plot_path": os.path.relpath(plot_path, out_dir), "converged": is_converged, **out}
             results_summary.append(result)
             
-            # Updated print to show steps taken
             stop_reason = "Found TS" if (args.stop_at_ts and out['steps_taken'] < args.n_steps) else "Max Steps"
             print(f"[sample {processed_count}] N={out['natoms']}, Steps={out['steps_taken']}({stop_reason}), neg_eigs: {start_n}->{end_n}, RMS|F|_end={out['rms_force_end']:.3f}, formula={formula}")
             processed_count += 1
@@ -290,27 +298,31 @@ if __name__ == "__main__":
             for key, count in sorted(neg_eig_transitions.items()):
                 print(f"  {key}: {count} samples")
                 if key.endswith(" -> 1"): found_ts_count += count
-            print(f"  Total ending in TS (1 neg eig): {found_ts_count} ({found_ts_count/processed_count*100:.1f}%)")
+            success_rate = (found_ts_count / processed_count * 100) if processed_count > 0 else 0
+            print(f"  Total ending in TS (1 neg eig): {found_ts_count} ({success_rate:.1f}%)")
 
         steps_np = np.array(steps_taken_list)
         print(f"\nSteps taken (Mean): {np.mean(steps_np):.1f}")
         print(f"Steps taken (Median): {np.median(steps_np):.1f}")
 
-        # Histogram of final forces
         forces_np = np.array(final_rms_forces)
         plt.figure(figsize=(10, 6))
         plt.hist(forces_np, bins=50, alpha=0.7)
         plt.xlabel("Final RMS Force (eV/Å)"); plt.ylabel("Count"); plt.title("Final RMS Force Distribution")
-        hist_path = os.path.join(out_dir, f"force_hist_{processed_count}_{args.start_from}{'_stopts' if args.stop_at_ts else ''}.png")
+        
+        # FIX: Update filename to be more descriptive and prevent clashes
+        filename_suffix = f"from_{args.start_from}_{args.mode}"
+        if args.stop_at_ts: filename_suffix += "_stopts"
+        hist_path = os.path.join(out_dir, f"force_hist_{processed_count}_{filename_suffix}.png")
         plt.savefig(hist_path, dpi=100); plt.close()
+        print(f"\nSaved force histogram to: {hist_path}")
 
     print("="*50)
     
-    # Append _stopts to filename if flag is active
-    filename_suffix = f"from_{args.start_from}"
+    filename_suffix = f"from_{args.start_from}_{args.mode}"
     if args.stop_at_ts: filename_suffix += "_stopts"
     
-    out_json = os.path.join(out_dir, f"rgd1_gad_rmsd_{filename_suffix}_{len(results_summary)}.json")
-    with open(out_json, "w") as f:
+    out_json = os.path.join(out_dir, f"rgd1_summary_{filename_suffix}_{len(results_summary)}.json")
+    with open(out_json, "w" as f:
         json.dump(results_summary, f, indent=2)
     print(f"\nSaved summary → {out_json}")
