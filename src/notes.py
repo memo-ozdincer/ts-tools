@@ -11,7 +11,7 @@ import numpy as np
 from torch_geometric.data import Batch
 
 from .common_utils import setup_experiment, add_common_args
-from hip.frequency_analysis import analyze_frequencies_torch, eckart_projection_notmw_torch
+from hip.frequency_analysis import analyze_frequencies_torch, massweigh_and_eckartprojection_torch
 from torch_geometric.data import Data as TGData
 from torch_geometric.data import Batch as TGBatch
 from hip.equiformer_torch_calculator import EquiformerTorchCalculator
@@ -406,10 +406,9 @@ def mass_weigh_eckart_project_hessian(hessian):
         # atomic numbers were passed instead of symbols
         atomsymbols = [Z_TO_ATOM_SYMBOL[z] for z in atomsymbols]
 
-    proj_hessian = eckart_projection_notmw_torch(hessian, cart_coords, atomsymbols)
+    proj_hessian = massweigh_and_eckartprojection_torch(hessian, cart_coords, atomsymbols)
     return proj_hessian
 
-    
 
 def gradient_eigvals(potential, coords, atomic_nums):
     """Computes the gradient of the eigenvalue-product w.r.t. input positions."""
