@@ -1,14 +1,14 @@
-# src/gad_gad_euler_rmsd.py
+# src/gad_rk45_search.py
 import os
 import json
 import re
 import argparse
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 from collections import defaultdict
 
 import torch
 import numpy as np
-from torch_geometric.data import Batch
+from torch_geometric.data import Data as TGData, Batch as TGBatch
 
 from .common_utils import setup_experiment, add_common_args
 from hip.frequency_analysis import analyze_frequencies_torch
@@ -18,335 +18,236 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-# --- (Helper functions remain unchanged) ---
-def find_rigid_alignment(A: np.ndarray, B: np.ndarray):
-    a_mean = A.mean(axis=0); b_mean = B.mean(axis=0)
-    A_c = A - a_mean; B_c = B - b_mean
-    H = A_c.T @ B_c
-    U, _, Vt = np.linalg.svd(H)
-    V = Vt.T
-    R = V @ U.T
-    if np.linalg.det(R) < 0:
-        V[:, -1] *= -1
-        R = V @ U.T
-    t = b_mean - R @ a_mean
-    return R, t
+# --- RK45 Solver Class (pasted directly from your input) ---
+class RK45:
+    # ... (The entire RK45 class you provided goes here, unchanged) ...
+    """
+    Adaptive Dormand–Prince 5(4) solver for y' = f(t, y).
+    """
+    def __init__(self, f, t0, y0, t1,
+                 rtol=1e-6, atol=1e-9,
+                 h0=None,
+                 h_min=1e-12,
+                 h_max=np.inf,
+                 safety=0.9):
+        self.f = f
+        self.t = float(t0)
+        self.t_end = float(t1)
+        self.y = np.array(y0, dtype=float)
+        self.rtol = rtol
+        self.atol = atol
+        self.h_min = h_min
+        self.h_max = h_max
+        self.safety = safety
+        self.direction = np.sign(self.t_end - self.t) if self.t_end != self.t else 1.0
+        if h0 is None:
+            f0 = np.asarray(self.f(self.t, self.y))
+            scale = self.atol + np.abs(self.y) * self.rtol
+            denom = np.maximum(scale, 1e-14)
+            h_guess = 0.01 * np.linalg.norm(self.y / denom) / (np.linalg.norm(f0 / denom) + 1e-14)
+            if not np.isfinite(h_guess) or h_guess == 0.0:
+                h_guess = 1e-3
+            self.h = self.direction * min(abs(h_guess), self.h_max)
+        else:
+            self.h = self.direction * min(abs(h0), self.h_max)
+        self.c = np.array([0, 1/5, 3/10, 4/5, 8/9, 1, 1], dtype=float)
+        self.a = [
+            [],
+            [1/5],
+            [3/40, 9/40],
+            [44/45, -56/15, 32/9],
+            [19372/6561, -25360/2187, 64448/6561, -212/729],
+            [9017/3168, -355/33, 46732/5247, 49/176, -5103/18656],
+            [35/384, 0.0, 500/1113, 125/192, -2187/6784, 11/84]
+        ]
+        self.b5 = np.array([35/384, 0.0, 500/1113, 125/192, -2187/6784, 11/84, 0.0], dtype=float)
+        self.b4 = np.array([5179/57600, 0.0, 7571/16695, 393/640, -92097/339200, 187/2100, 1/40], dtype=float)
+        self.err_exponent = 1.0 / 5.0
 
-def get_rmsd(A: np.ndarray, B: np.ndarray) -> float:
-    return float(np.sqrt(((A - B) ** 2).sum(axis=1).mean()))
+    def step(self):
+        t, y, h = self.t, self.y, self.h
+        if self.direction > 0: h = min(h, self.t_end - t)
+        else: h = max(h, self.t_end - t)
+        if h == 0: return True, 0.0
+        k = []
+        for i in range(7):
+            yi = y.copy()
+            for j, a_ij in enumerate(self.a[i]):
+                yi += h * a_ij * k[j]
+            k.append(np.asarray(self.f(t + self.c[i] * h, yi)))
+        k = np.array(k)
+        y5 = y + h * np.tensordot(self.b5, k, axes=(0, 0))
+        y4 = y + h * np.tensordot(self.b4, k, axes=(0, 0))
+        err = y5 - y4
+        scale = self.atol + np.maximum(np.abs(y), np.abs(y5)) * self.rtol
+        err_norm = np.linalg.norm(err / scale) / np.sqrt(err.size)
+        if err_norm <= 1.0:
+            self.t, self.y = t + h, y5
+            factor = 2.0 if err_norm == 0.0 else self.safety * (1.0 / err_norm) ** self.err_exponent
+            h_new = np.clip(factor, 0.2, 5.0) * h
+            if self.direction > 0: h_new = min(abs(h_new), self.h_max) * self.direction
+            else: h_new = min(abs(h_new), self.h_max) * self.direction
+            self.h = h_new
+            return True, h_new
+        else:
+            factor = np.clip(factor, 0.2, 5.0) * self.safety * (1.0 / err_norm) ** self.err_exponent
+            h_new = factor * h
+            if abs(h_new) < self.h_min: raise RuntimeError("Step size underflow.")
+            self.h = h_new
+            return False, h_new
 
-def align_ordered_and_get_rmsd(A, B) -> float:
-    if isinstance(A, torch.Tensor): A = A.detach().cpu().numpy()
-    if isinstance(B, torch.Tensor): B = B.detach().cpu().numpy()
-    if A.shape != B.shape: return float("inf")
-    R, t = find_rigid_alignment(A, B)
-    A_aligned = (R @ A.T).T + t
-    return get_rmsd(A_aligned, B)
+    def solve(self, dense=False):
+        if dense: T, Y = [self.t], [self.y.copy()]
+        while True:
+            if self.direction > 0 and self.t >= self.t_end: break
+            if self.direction < 0 and self.t <= self.t_end: break
+            accepted, _ = self.step()
+            if accepted and dense: T.append(self.t); Y.append(self.y.copy())
+        return (np.array(T), np.array(Y)) if dense else (self.t, self.y)
 
-def _scalar_from(results: Dict[str, Any], key: str) -> Optional[float]:
-    value = results.get(key)
-    if value is None: return None
-    if isinstance(value, torch.Tensor):
-        if value.numel() == 0: return None
-        return float(value.detach().cpu().view(-1)[0].item())
-    try: return float(value)
-    except (TypeError, ValueError): return None
-
+# --- Helper functions for geometry and analysis ---
 def _prepare_hessian(hess: torch.Tensor, num_atoms: int) -> torch.Tensor:
-    if hess.dim() == 1: hess = hess.view(int(hess.numel()**0.5), -1)
+    if hess.dim() == 1: hess = hess.reshape(3 * num_atoms, 3 * num_atoms)
     elif hess.dim() == 3 and hess.shape[0] == 1: hess = hess[0]
-    elif hess.dim() > 2: hess = hess.reshape(3 * num_atoms, 3 * num_atoms)
     return hess
 
 def _extract_eig_product(freq_info: Dict[str, Any]) -> Optional[float]:
-    """Extracts product of two smallest eigenvalues (projected)."""
     eigvals = freq_info.get("eigvals")
-    if eigvals is None or not isinstance(eigvals, torch.Tensor) or eigvals.numel() < 2:
-        return None
-    
-    eigvals = eigvals.detach().cpu().flatten()
-    eigvals_sorted, _ = torch.sort(eigvals)
-    # Threshold to treat extremely small values as zero to avoid numerical noise flipping signs
-    e0 = float(eigvals_sorted[0].item())
-    e1 = float(eigvals_sorted[1].item())
-    return e0 * e1
+    if eigvals is None or not isinstance(eigvals, torch.Tensor) or eigvals.numel() < 2: return None
+    return (eigvals[0] * eigvals[1]).item()
 
-def _mean_vector_magnitude(vec: torch.Tensor) -> float:
-    return float(vec.detach().cpu().norm(dim=1).mean().item())
+def align_ordered_and_get_rmsd(A, B):
+    # ... (unchanged)
+    if isinstance(A, np.ndarray): A = torch.from_numpy(A)
+    if isinstance(B, np.ndarray): B = torch.from_numpy(B)
+    A, B = A.float(), B.float()
+    a_mean, b_mean = A.mean(dim=0), B.mean(dim=0)
+    A_c, B_c = A - a_mean, B - b_mean
+    H = A_c.T @ B_c
+    U, _, Vt = torch.linalg.svd(H)
+    R = Vt.T @ U.T
+    if torch.linalg.det(R) < 0:
+        Vt[-1, :] *= -1
+        R = Vt.T @ U.T
+    t = b_mean - R @ a_mean
+    A_aligned = (R @ A.T).T + t
+    return torch.sqrt(((A_aligned - B) ** 2).sum(dim=1).mean()).item()
 
+# --- The Core Dynamics Function for the RK45 Solver ---
+class GADDynamics:
+    def __init__(self, calculator, atomic_nums, force_thresh, kick_scale):
+        self.calculator = calculator
+        self.atomic_nums = torch.tensor(atomic_nums, dtype=torch.long)
+        self.num_atoms = len(atomic_nums)
+        self.force_thresh = force_thresh
+        self.kick_scale = kick_scale
+        self.device = next(calculator.potential.parameters()).device
 
-# --- MODIFIED FUNCTION IMPLEMENTING EARLY STOPPING ---
-def run_gad_euler_on_batch(
-    calculator: EquiformerTorchCalculator, batch: Batch, n_steps: int, dt: float, stop_at_ts: bool = False
-) -> Dict[str, Any]:
-    """Runs GAD Euler updates, optionally stopping when a TS signature is found."""
-    assert int(batch.batch.max().item()) + 1 == 1, "Use batch_size=1."
-    start_pos = batch.pos.detach().clone()
-    
-    trajectory = {k: [] for k in ["energy", "force_mean", "gad_mean", "eig_product"]}
-
-    # Modified to return the product for checking
-    def _record_step(predictions: Dict[str, Any], gad_vec: Optional[torch.Tensor]) -> Optional[float]:
-        trajectory["energy"].append(_scalar_from(predictions, "energy"))
-        trajectory["force_mean"].append(_mean_vector_magnitude(predictions["forces"]))
-        trajectory["gad_mean"].append(_mean_vector_magnitude(gad_vec) if gad_vec is not None else None)
-        try:
-            # Use projected analysis for the product check
-            freq_info = analyze_frequencies_torch(predictions["hessian"], batch.pos, batch.z)
-            eig_prod = _extract_eig_product(freq_info)
-        except Exception:
-            eig_prod = None
-        trajectory["eig_product"].append(eig_prod)
-        return eig_prod
-
-    # Initial state
-    results = calculator.predict(batch, do_hessian=True)
-    current_eig_prod = _record_step(results, gad_vec=None)
-    
-    steps_taken = 0
-    # Check if we start at a TS and early stopping is enabled
-    if stop_at_ts and current_eig_prod is not None and current_eig_prod < -1e-5:
-        # Already in TS region, don't take steps
-        pass
-    else:
-        # GAD loop
-        for step_i in range(1, n_steps + 1):
-            steps_taken = step_i
+    def __call__(self, t, y):
+        """ This is the f(t, y) for the ODE solver. y is the flattened coordinates. """
+        coords = torch.from_numpy(y).float().reshape(self.num_atoms, 3).to(self.device)
+        
+        # Prepare batch and get predictions
+        batch = TGBatch.from_data_list([TGData(pos=coords, z=self.atomic_nums, natoms=torch.tensor([self.num_atoms]))]).to(self.device)
+        results = self.calculator.predict(batch, do_hessian=True)
+        forces = results["forces"]
+        
+        # Check if we are at a minimum
+        rms_force = torch.norm(forces) / np.sqrt(self.num_atoms)
+        if rms_force < self.force_thresh:
+            print(f"  (Low force detected: RMS|F|={rms_force:.4f}. Applying eigenvector kick.)")
+            hessian = _prepare_hessian(results["hessian"], self.num_atoms)
+            _, evecs = torch.linalg.eigh(hessian)
+            v_kick = evecs[:, 0].to(forces.dtype)
+            v_kick /= (torch.norm(v_kick) + 1e-12)
+            velocity = self.kick_scale * v_kick
+        else:
+            # Standard GAD velocity
+            hessian = _prepare_hessian(results["hessian"], self.num_atoms)
+            _, evecs = torch.linalg.eigh(hessian)
+            v = evecs[:, 0].to(forces.dtype)
+            v /= (torch.norm(v) + 1e-12)
             
-            # 1. Get Gad direction from FULL Hessian
-            hess_full = _prepare_hessian(results["hessian"], batch.pos.shape[0])
-            evals, evecs = torch.linalg.eigh(hess_full)
-            v = evecs[:, 0].to(results["forces"].dtype) # Lowest eigenvector
-            v = v / (v.norm() + 1e-12)
-
-            # 2. Calculate GAD vector
-            f_flat = results["forces"].reshape(-1)
-            gad_flat = f_flat + 2.0 * torch.dot(-f_flat, v) * v
-            gad = gad_flat.view(batch.pos.shape[0], 3)
-
-            # 3. Euler step
-            batch.pos = batch.pos + dt * gad
+            f_flat = forces.reshape(-1)
+            # The equation from the image: x_dot = F - 2(F.v)v, since F = -grad(V)
+            gad_flat = f_flat - 2.0 * torch.dot(f_flat, v) * v
+            velocity = gad_flat.reshape(self.num_atoms, 3)
             
-            # 4. Calculate new state
-            results = calculator.predict(batch, do_hessian=True)
-            current_eig_prod = _record_step(results, gad)
+        return velocity.cpu().numpy().flatten()
 
-            # --- EARLY STOPPING CHECK ---
-            # If product is negative, we have exactly one negative eigenvalue (assuming ordered e0 < e1)
-            # Use a small epsilon to avoid stopping on numerical noise around 0
-            if stop_at_ts and current_eig_prod is not None and current_eig_prod < -1e-5:
-                break
-
-    # Final analysis of the point where we stopped
-    end_pos = batch.pos.detach().clone()
-    forces_end = results["forces"]
-    
-    # Get final negative eigenvalue count using the proper analysis function
-    try:
-        final_freq_info = analyze_frequencies_torch(results["hessian"], batch.pos, batch.z)
-        neg_eigvals_end = int(final_freq_info.get("neg_num", -1))
-    except Exception:
-        neg_eigvals_end = -1
-
-    # Get initial negative eigenvalue count (re-analyzing trajectory[0] implicitly)
-    try:
-        # create temp calculator just to re-run hessian on start_pos is inefficient, 
-        # better to grab neg_num from the very first analyze_frequencies_torch call inside _record_step
-        # but _record_step is streamlined. Let's re-calculate freq info on start_pos just for neg_num
-        # Actually, simpler: look at first eig_product. If < 0, neg_num is likely 1, if >0, could be 0 or 2.
-        # To be perfectly accurate, let's analyze start_pos again.
-        batch_start = batch.clone()
-        batch_start.pos = start_pos
-        res_start = calculator.predict(batch_start, do_hessian=True)
-        fi_start = analyze_frequencies_torch(res_start["hessian"], start_pos, batch.z)
-        neg_eigvals_start = int(fi_start.get("neg_num", -1))
-    except Exception:
-        neg_eigvals_start = -1
-
-    displacement = (end_pos - start_pos).norm(dim=1)
-
-    return {
-        "steps_taken": steps_taken, # NEW
-        "rmsd": align_ordered_and_get_rmsd(start_pos, end_pos),
-        "rms_force_end": forces_end.pow(2).mean().sqrt().item(),
-        "max_atom_force_end": forces_end.norm(dim=1).max().item(),
-        "natoms": int(start_pos.shape[0]),
-        "energy_start": _scalar_from({"energy": trajectory["energy"][0]}, "energy"),
-        "energy_end": _scalar_from({"energy": trajectory["energy"][-1]}, "energy"),
-        "eig_product_start": trajectory["eig_product"][0],
-        "eig_product_end": trajectory["eig_product"][-1],
-        "mean_displacement": float(displacement.mean().item()),
-        "max_displacement": float(displacement.max().item()),
-        "trajectory": trajectory,
-        "neg_eigvals_start": neg_eigvals_start,
-        "neg_eigvals_end": neg_eigvals_end,
-    }
-
-# --- (Plotting and helper functions remain unchanged) ---
-def _sanitize_formula(formula: str) -> str:
-    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", formula)
-    return (safe.strip("_") or "sample")
-
-def plot_trajectory(trajectory: Dict[str, List[Optional[float]]], sample_index: int, formula: str, out_dir: str) -> str:
-    num_steps = len(trajectory.get("energy", []))
-    timesteps = np.arange(num_steps)
-
-    def _nanify(values: List[Optional[float]]) -> np.ndarray:
-        return np.array([v if v is not None else np.nan for v in values], dtype=float)
-
-    fig, axes = plt.subplots(4, 1, figsize=(8, 12), sharex=True)
-    fig.suptitle(f"GAD Trajectory for Sample {sample_index}: {formula}", fontsize=14)
-    
-    axes[0].plot(timesteps, _nanify(trajectory["energy"]), marker=".", lw=1.2)
-    axes[0].set_ylabel("Energy (eV)"); axes[0].set_title("Energy")
-    
-    axes[1].plot(timesteps, _nanify(trajectory["force_mean"]), marker=".", color="tab:orange", lw=1.2)
-    axes[1].set_ylabel("Mean |F| (eV/Å)"); axes[1].set_title("Force Magnitude")
-
-    eig_ax = axes[2]
-    eig_product = _nanify(trajectory["eig_product"])
-    
-    eig_ax.plot(timesteps, eig_product, marker=".", color="tab:purple", lw=1.2, label="λ_0 * λ_1")
-    eig_ax.axhline(0, color='grey', linestyle='--', linewidth=1, zorder=1)
-    
-    if len(eig_product) > 0 and not np.isnan(eig_product[0]):
-        eig_ax.text(0.02, 0.95, f"Start: {eig_product[0]:.4f}", 
-                    transform=eig_ax.transAxes, ha='left', va='top', 
-                    color='tab:purple', fontsize=9)
-    if len(eig_product) > 0 and not np.isnan(eig_product[-1]):
-        eig_ax.text(0.98, 0.95, f"End: {eig_product[-1]:.4f}", 
-                    transform=eig_ax.transAxes, ha='right', va='top', 
-                    color='tab:purple', fontsize=9)
-
-    eig_ax.set_ylabel("Eigenvalue Product"); eig_ax.set_title("Product of Two Smallest Hessian Eigenvalues")
-    eig_ax.legend(loc='best')
-    
-    axes[3].plot(timesteps, _nanify(trajectory["gad_mean"]), marker=".", color="tab:green", lw=1.2)
-    axes[3].set_ylabel("Mean |GAD| (Å)"); axes[3].set_xlabel("Step"); axes[3].set_title("GAD Vector Magnitude")
-    
-    fig.tight_layout(rect=[0, 0, 1, 0.96])
-    filename = f"rgd1_gad_traj_{sample_index:03d}_{_sanitize_formula(formula)}.png"
-    out_path = os.path.join(out_dir, filename)
-    fig.savefig(out_path, dpi=200); plt.close(fig)
-    return out_path
-
-
+# --- Main script execution block ---
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run GAD-Euler dynamics and analyze RMSD.")
+    parser = argparse.ArgumentParser(description="Run GAD-RK45 search for transition states.")
     parser = add_common_args(parser)
-    parser.add_argument("--n-steps", type=int, default=50, help="Maximum number of Euler steps.")
-    parser.add_argument("--dt", type=float, default=0.005, help="Time step for Euler integration.")
-    parser.add_argument("--unique-formulas", action="store_true", help="Only process one sample for each unique chemical formula.")
-    parser.add_argument("--dataset-load-multiplier", type=int, default=5, help="Factor to multiply max_samples by for initial data loading.")
-    parser.add_argument("--convergence-rms-force", type=float, default=0.01, help="Convergence threshold for RMS force (eV/Å) (used for stats, not stopping).")
-    parser.add_argument("--convergence-max-force", type=float, default=0.03, help="Convergence threshold for max atomic force (eV/Å).")
-    parser.add_argument("--start-from", type=str, default="ts", 
-                        choices=["ts", "reactant", "midpoint_rt", "three_quarter_rt"],
-                        help="Which geometry to start from.")
-    
-    # --- NEW ARGUMENT ---
-    parser.add_argument("--stop-at-ts", action="store_true", 
-                        help="Stop simulation as soon as eigenvalue product becomes negative (TS region found).")
-
+    parser.add_argument("--t-end", type=float, default=1.0, help="Total integration time for the solver.")
+    parser.add_argument("--force-kick-thresh", type=float, default=0.05, help="RMS force (eV/Å) below which to apply the eigenvector kick.")
+    parser.add_argument("--kick-scale", type=float, default=0.2, help="Scaling factor for the eigenvector kick velocity.")
+    parser.add_argument("--start-from", type=str, default="reactant", choices=["ts", "reactant", "midpoint_rt", "three_quarter_rt"])
     args = parser.parse_args()
-    
-    calculator, dataloader, device, out_dir = setup_experiment(args, shuffle=True, dataset_load_multiplier=args.dataset_load_multiplier if args.unique_formulas else 1)
-    results_summary: List[Dict[str, Any]] = []
-    plot_dir = os.path.join(out_dir, "gad_trajectories"); os.makedirs(plot_dir, exist_ok=True)
-    
-    print(f"Starting GAD from: {args.start_from.upper()}")
-    mode_str = "Search until TS found (eig_prod < 0)" if args.stop_at_ts else f"Fixed trajectory ({args.n_steps} steps)"
-    print(f"Mode: {mode_str}")
-    print(f"Processing up to {args.max_samples} samples (dt={args.dt})")
 
-    seen_formulas, processed_count, converged_count = set(), 0, 0
-    final_rms_forces = []
-    neg_eig_transitions = defaultdict(int)
-    steps_taken_list = []
+    torch.set_grad_enabled(False)
+    calculator, dataloader, device, out_dir = setup_experiment(args, shuffle=False)
+    
+    print("Running GAD-RK45 Search")
+    print(f"Starting from: {args.start_from.upper()}, Integration Time: {args.t_end}, Kick Threshold: {args.force_kick_thresh}")
 
-    for dataset_idx, batch in enumerate(dataloader):
-        if processed_count >= args.max_samples: break
+    results_summary = []
+    for i, batch in enumerate(dataloader):
+        if i >= args.max_samples: break
+        print(f"\n--- Processing Sample {i} (Formula: {batch.formula[0]}) ---")
         try:
-            if args.start_from == "reactant":
-                if not hasattr(batch, 'pos_reactant'): continue
-                batch.pos = batch.pos_reactant
-            elif args.start_from == "midpoint_rt":
-                if not (hasattr(batch, 'pos_reactant') and hasattr(batch, 'pos_transition')): continue
-                batch.pos = 0.5 * batch.pos_reactant + 0.5 * batch.pos_transition
-            elif args.start_from == "three_quarter_rt":
-                if not (hasattr(batch, 'pos_reactant') and hasattr(batch, 'pos_transition')): continue
-                batch.pos = 0.25 * batch.pos_reactant + 0.75 * batch.pos_transition
+            # Select starting coordinates
+            if args.start_from == "reactant": initial_coords = batch.pos_reactant
+            elif args.start_from == "midpoint_rt": initial_coords = 0.5 * batch.pos_reactant + 0.5 * batch.pos_transition
+            elif args.start_from == "three_quarter_rt": initial_coords = 0.25 * batch.pos_reactant + 0.75 * batch.pos_transition
+            else: initial_coords = batch.pos_transition
 
-            formula = getattr(batch, "formula", [""])[0]
-            if isinstance(formula, bytes): formula = formula.decode("utf-8", "ignore")
-            if args.unique_formulas and formula in seen_formulas: continue
-            seen_formulas.add(formula)
+            # Set up the dynamics function for this molecule
+            dynamics_fn = GADDynamics(
+                calculator=calculator,
+                atomic_nums=batch.z.numpy(),
+                force_thresh=args.force_kick_thresh,
+                kick_scale=args.kick_scale
+            )
 
-            batch.natoms = torch.tensor([batch.pos.shape[0]], dtype=torch.long)
-            batch = batch.to(device)
-            
-            # Pass the new flag
-            out = run_gad_euler_on_batch(calculator, batch, n_steps=args.n_steps, dt=args.dt, stop_at_ts=args.stop_at_ts)
-            
-            final_rms_forces.append(out['rms_force_end'])
-            steps_taken_list.append(out['steps_taken'])
+            # Set up and run the RK45 solver
+            solver = RK45(
+                f=dynamics_fn,
+                t0=0.0,
+                y0=initial_coords.numpy().flatten(),
+                t1=args.t_end,
+                h_max=0.1 # Limit max step to avoid jumping too far
+            )
+            T, Y_traj = solver.solve(dense=True)
+            final_coords = torch.from_numpy(Y_traj[-1]).reshape(-1, 3).to(device)
 
-            # Convergence check (for statistics, separate from stopping condition)
-            is_converged = (out['rms_force_end'] < args.convergence_rms_force and out['max_atom_force_end'] < args.convergence_max_force)
-            if is_converged: converged_count += 1
+            # Analyze initial and final states
+            initial_results = calculator.predict(TGBatch.from_data_list([TGData(pos=initial_coords.to(device), z=batch.z, natoms=batch.natoms)]).to(device), do_hessian=True)
+            initial_freq = analyze_frequencies_torch(initial_results["hessian"], initial_coords, batch.z)
+            final_results = calculator.predict(TGBatch.from_data_list([TGData(pos=final_coords, z=batch.z, natoms=batch.natoms)]).to(device), do_hessian=True)
+            final_freq = analyze_frequencies_torch(final_results["hessian"], final_coords, batch.z)
+
+            summary = {
+                "sample_index": i, "formula": batch.formula[0],
+                "steps_taken": len(T) - 1,
+                "initial_eig_product": _extract_eig_product(initial_freq),
+                "final_eig_product": _extract_eig_product(final_freq),
+                "initial_neg_eigvals": initial_freq["neg_num"],
+                "final_neg_eigvals": final_freq["neg_num"],
+                "rmsd_to_start": align_ordered_and_get_rmsd(initial_coords, final_coords),
+            }
+            results_summary.append(summary)
             
-            start_n, end_n = out['neg_eigvals_start'], out['neg_eigvals_end']
-            if start_n >= 0 and end_n >= 0:
-                neg_eig_transitions[f"{start_n} -> {end_n}"] += 1
-            
-            plot_path = plot_trajectory(out["trajectory"], processed_count, formula, plot_dir)
-            result = {"dataset_index": dataset_idx, "sample_order": processed_count, "formula": formula, "plot_path": os.path.relpath(plot_path, out_dir), "converged": is_converged, **out}
-            results_summary.append(result)
-            
-            # Updated print to show steps taken
-            stop_reason = "Found TS" if (args.stop_at_ts and out['steps_taken'] < args.n_steps) else "Max Steps"
-            print(f"[sample {processed_count}] N={out['natoms']}, Steps={out['steps_taken']}({stop_reason}), neg_eigs: {start_n}->{end_n}, RMS|F|_end={out['rms_force_end']:.3f}, formula={formula}")
-            processed_count += 1
+            print("Result:")
+            print(f"  Solver Steps: {summary['steps_taken']}")
+            print(f"  Eig Product: {summary['initial_eig_product']:.5f} -> {summary['final_eig_product']:.5f}")
+            print(f"  Neg Eigs: {summary['initial_neg_eigvals']} -> {summary['final_neg_eigvals']}")
+
         except Exception as e:
-            print(f"[{dataset_idx}] ERROR: {e}")
+            print(f"[ERROR] Sample {i} failed: {e}")
             import traceback
             traceback.print_exc()
 
-    if processed_count > 0:
-        print("\n" + "="*50)
-        print(" " * 15 + "RUN SUMMARY")
-        print("="*50)
-        print(f"Total samples processed: {processed_count}")
-        
-        print("\nNegative Eigenvalue Transitions (Start -> End):")
-        if not neg_eig_transitions:
-            print("  No successful frequency analyses.")
-        else:
-            found_ts_count = 0
-            for key, count in sorted(neg_eig_transitions.items()):
-                print(f"  {key}: {count} samples")
-                if key.endswith(" -> 1"): found_ts_count += count
-            print(f"  Total ending in TS (1 neg eig): {found_ts_count} ({found_ts_count/processed_count*100:.1f}%)")
-
-        steps_np = np.array(steps_taken_list)
-        print(f"\nSteps taken (Mean): {np.mean(steps_np):.1f}")
-        print(f"Steps taken (Median): {np.median(steps_np):.1f}")
-
-        # Histogram of final forces
-        forces_np = np.array(final_rms_forces)
-        plt.figure(figsize=(10, 6))
-        plt.hist(forces_np, bins=50, alpha=0.7)
-        plt.xlabel("Final RMS Force (eV/Å)"); plt.ylabel("Count"); plt.title("Final RMS Force Distribution")
-        hist_path = os.path.join(out_dir, f"force_hist_{processed_count}_{args.start_from}{'_stopts' if args.stop_at_ts else ''}.png")
-        plt.savefig(hist_path, dpi=100); plt.close()
-
-    print("="*50)
-    
-    # Append _stopts to filename if flag is active
-    filename_suffix = f"from_{args.start_from}"
-    if args.stop_at_ts: filename_suffix += "_stopts"
-    
-    out_json = os.path.join(out_dir, f"rgd1_gad_rmsd_{filename_suffix}_{len(results_summary)}.json")
-    with open(out_json, "w") as f:
-        json.dump(results_summary, f, indent=2)
-    print(f"\nSaved summary → {out_json}")
+    out_json = os.path.join(out_dir, f"gad_rk45_{args.start_from}_{len(results_summary)}.json")
+    with open(out_json, "w") as f: json.dump(results_summary, f, indent=2)
+    print(f"\nSaved summary to {out_json}")
