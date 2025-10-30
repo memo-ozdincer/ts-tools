@@ -15,7 +15,6 @@ from hip.frequency_analysis import analyze_frequencies_torch
 from .differentiable_projection import differentiable_massweigh_and_eckartprojection_torch as massweigh_and_eckartprojection_torch
 from nets.prediction_utils import Z_TO_ATOM_SYMBOL
 
-# --- (Helper functions for RMSD unchanged) ---
 def find_rigid_alignment(A, B):
     if isinstance(A, torch.Tensor): A = A.detach().cpu().numpy()
     if isinstance(B, torch.Tensor): B = B.detach().cpu().numpy()
