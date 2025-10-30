@@ -31,7 +31,7 @@ echo ">>> Running GAD-RK45 Search script (No Kick)..."
 # This version uses the standard GAD dynamics with the RK45 solver.
 python -m src.gad_rk45_search \
     --max-samples 30 \
-    --start-from reactant \
+    --start-from midpoint_rt \
     --stop-at-ts \
     --t-end 2.0
 
