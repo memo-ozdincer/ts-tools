@@ -1,4 +1,4 @@
-# src/gad_midpoint_descent.py
+# src/gad_eigenvalue_descent.py
 import os
 import json
 import argparse
@@ -15,23 +15,35 @@ from hip.frequency_analysis import analyze_frequencies_torch
 from .differentiable_projection import differentiable_massweigh_and_eckartprojection_torch as massweigh_and_eckartprojection_torch
 from nets.prediction_utils import Z_TO_ATOM_SYMBOL
 
-def find_rigid_alignment(A, B):
-    if isinstance(A, torch.Tensor): A = A.detach().cpu().numpy()
-    if isinstance(B, torch.Tensor): B = B.detach().cpu().numpy()
+def find_rigid_alignment(A: np.ndarray, B: np.ndarray):
+    """Kabsch algorithm. A and B are expected to be NumPy arrays."""
     a_mean = A.mean(axis=0); b_mean = B.mean(axis=0)
     A_c = A - a_mean; B_c = B - b_mean
     H = A_c.T @ B_c
     U, _, Vt = np.linalg.svd(H); V = Vt.T
     R = V @ U.T
-    if np.linalg.det(R) < 0: V[:, -1] *= -1; R = V @ U.T
-    t = b_mean - R @ a_mean
+    if np.linalg.det(R) < 0:
+        V[:, -1] *= -1
+        R = V @ U.T
+    t = b_mean - (R @ a_mean)
     return R, t
-def get_rmsd(A, B): return float(np.sqrt(((A - B) ** 2).sum(axis=1).mean()))
-def align_ordered_and_get_rmsd(A, B):
+
+def get_rmsd(A: np.ndarray, B: np.ndarray) -> float:
+    return float(np.sqrt(((A - B) ** 2).sum(axis=1).mean()))
+
+def align_ordered_and_get_rmsd(A, B) -> float:
+    """Rigid-align A to B and compute RMSD. Handles both torch/numpy inputs."""
+    if isinstance(A, torch.Tensor): A = A.detach().cpu().numpy()
+    if isinstance(B, torch.Tensor): B = B.detach().cpu().numpy()
+    
     if A.shape != B.shape: return float("inf")
+    
+    # Now that A and B are guaranteed to be NumPy arrays, the rest of the function works.
     R, t = find_rigid_alignment(A, B)
     A_aligned = (R @ A.T).T + t
     return get_rmsd(A_aligned, B)
+# --- END OF CORRECTION ---
+
 def coord_atoms_to_torch_geometric(coords, atomic_nums, device):
     data = TGData(
         pos=coords.reshape(-1, 3),
@@ -42,9 +54,8 @@ def coord_atoms_to_torch_geometric(coords, atomic_nums, device):
     )
     return TGBatch.from_data_list([data])
 
-
-# --- Core Optimization Function with MIDPOINT Loss ---
-def run_midpoint_eigenvalue_descent(
+# --- Core Optimization Function with ReLU Loss and Manual Gradient ---
+def run_relu_manual_descent(
     calculator: EquiformerTorchCalculator,
     initial_coords: torch.Tensor,
     atomic_nums: torch.Tensor,
@@ -69,15 +80,12 @@ def run_midpoint_eigenvalue_descent(
             eigvals, _ = torch.linalg.eigh(hess_proj)
             final_eigvals = eigvals
             
-            # --- THE NEW, SUPERIOR "MIDPOINT" LOSS FUNCTION ---
-            # Drive the average of the first two eigenvalues to zero.
-            loss = ((eigvals[0] + eigvals[1]) / 2.0)**2
+            # The superior "ReLU" loss function
+            loss = torch.relu(eigvals[0]) + torch.relu(-eigvals[1])
             
             if loss.item() < 1e-8:
-                # Check if we also have separation
-                if (eigvals[0] < 0 and eigvals[1] > 0):
-                    print(f"  Stopping early at step {step}: Converged to TS signature.")
-                    break
+                print(f"  Stopping early at step {step}: Converged to TS signature (Loss ~ 0).")
+                break
                 
             grad = torch.autograd.grad(loss, coords)[0]
         
@@ -89,7 +97,7 @@ def run_midpoint_eigenvalue_descent(
         history["loss"].append(loss.item())
         history["eig_product"].append((eigvals[0] * eigvals[1]).item())
         if step % 10 == 0:
-            print(f"  Step {step:03d}: Loss={loss.item():.6f}, Midpoint={(eigvals[0]+eigvals[1]).item()/2:.4f} (λ0={eigvals[0].item():.4f}, λ1={eigvals[1].item():.4f})")
+            print(f"  Step {step:03d}: Loss={loss.item():.6f}, Proj λ0*λ1={(eigvals[0] * eigvals[1]).item():.6f} (λ0={eigvals[0].item():.4f}, λ1={eigvals[1].item():.4f})")
             
     final_coords = coords.detach()
     
@@ -102,7 +110,7 @@ def run_midpoint_eigenvalue_descent(
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run MANUAL gradient descent on eigenvalues using a Midpoint loss.")
+    parser = argparse.ArgumentParser(description="Run MANUAL gradient descent on eigenvalues using a ReLU loss.")
     parser = add_common_args(parser)
     parser.add_argument("--n-steps-opt", type=int, default=200)
     parser.add_argument("--lr", type=float, default=0.01)
@@ -112,7 +120,7 @@ if __name__ == "__main__":
     
     calculator, dataloader, device, out_dir = setup_experiment(args, shuffle=False)
     
-    print(f"Running MANUAL Midpoint Eigenvalue Descent.")
+    print(f"Running MANUAL ReLU Eigenvalue Descent.")
     print(f"Starting From: {args.start_from.upper()}, Steps: {args.n_steps_opt}, LR: {args.lr}")
 
     results_summary = []
@@ -125,7 +133,7 @@ if __name__ == "__main__":
             elif args.start_from == "three_quarter_rt": initial_coords = 0.25 * batch.pos_reactant + 0.75 * batch.pos_transition
             else: initial_coords = batch.pos_transition
 
-            opt_results = run_midpoint_eigenvalue_descent(
+            opt_results = run_relu_manual_descent(
                 calculator=calculator,
                 initial_coords=initial_coords,
                 atomic_nums=batch.z,
@@ -158,6 +166,6 @@ if __name__ == "__main__":
             import traceback
             traceback.print_exc()
 
-    out_json = os.path.join(out_dir, f"midpoint_manual_descent_{args.start_from}_{len(results_summary)}.json")
+    out_json = os.path.join(out_dir, f"relu_manual_descent_{args.start_from}_{len(results_summary)}.json")
     with open(out_json, "w") as f: json.dump(results_summary, f, indent=2)
     print(f"\nSaved summary to {out_json}")
