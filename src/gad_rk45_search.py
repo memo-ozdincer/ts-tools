@@ -18,14 +18,16 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-# --- RK45 Solver Class (Unchanged) ---
+# --- RK45 Solver Class (Modified to add max_steps) ---
 class RK45:
-    def __init__(self, f, t0, y0, t1, rtol=1e-6, atol=1e-9, h0=None, h_max=np.inf, safety=0.9, event_fn=None):
+    def __init__(self, f, t0, y0, t1, rtol=1e-6, atol=1e-9, h0=None, h_max=np.inf, safety=0.9, event_fn=None, max_steps=10000):
         self.f = f
         self.t = float(t0); self.t_end = float(t1)
         self.y = np.array(y0, dtype=float)
         self.rtol = rtol; self.atol = atol; self.h_max = h_max; self.safety = safety
         self.event_fn = event_fn
+        self.max_steps = max_steps
+        self.step_count = 0
         self.direction = np.sign(self.t_end - self.t) if self.t_end != self.t else 1.0
         if h0 is None:
             f0 = np.asarray(self.f(self.t, self.y, record_stats=False))
@@ -54,6 +56,7 @@ class RK45:
         err_norm = np.linalg.norm(err / scale) / np.sqrt(err.size)
         if err_norm <= 1.0:
             self.t, self.y = t + h, y5
+            self.step_count += 1
             factor = self.safety * (1.0 / err_norm)**(1/5) if err_norm > 0 else 2.0
             self.h *= np.clip(factor, 0.2, 5.0)
             if self.event_fn is not None and self.event_fn(): return "event"
@@ -64,6 +67,9 @@ class RK45:
 
     def solve(self):
         while self.direction * (self.t - self.t_end) < 0:
+            if self.step_count >= self.max_steps:
+                print(f"[WARNING] Max steps ({self.max_steps}) reached. Stopping integration.")
+                break
             status = self.step()
             if status == "event" or status is None: break
 
