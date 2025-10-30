@@ -3,7 +3,7 @@ import os
 import json
 import re
 import argparse
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 from collections import defaultdict
 
 import torch
@@ -18,9 +18,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-# --- RK45 Solver Class (pasted directly from your input) ---
 class RK45:
-    # ... (The entire RK45 class you provided goes here, unchanged) ...
     """
     Adaptive Dormand–Prince 5(4) solver for y' = f(t, y).
     """
