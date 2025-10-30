@@ -12,7 +12,7 @@ from torch_geometric.data import Data as TGData, Batch as TGBatch
 from .common_utils import setup_experiment, add_common_args
 from hip.equiformer_torch_calculator import EquiformerTorchCalculator
 from hip.frequency_analysis import analyze_frequencies_torch 
-from hip.differentiable_projection import differentiable_massweigh_and_eckartprojection_torch as massweigh_and_eckartprojection_torch
+from differentiable_projection import differentiable_massweigh_and_eckartprojection_torch as massweigh_and_eckartprojection_torch
 from nets.prediction_utils import Z_TO_ATOM_SYMBOL
 
 # --- (Helper functions for RMSD unchanged) ---
