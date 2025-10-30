@@ -19,9 +19,9 @@ source ${VENV_DIR}/bin/activate
 
 echo ">>> Running eigenvalue descent script..."
 python -m src.gad_eigenvalue_descent \
-    --max-samples 30 \
+    --max-samples 10 \
     --start-from reactant \
-    --n-steps-opt 200 \
+    --n-steps-opt 20 \
     --start-from midpoint_rt
 
 # python -m src.gad_direct_gradient \
