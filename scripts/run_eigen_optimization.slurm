@@ -21,7 +21,6 @@ echo ">>> Running eigenvalue descent script..."
 python -m src.gad_eigenvalue_descent \
     --max-samples 30 \
     --start-from reactant \
-    --loss-function product \
     --n-steps-opt 200 \
     --start-from midpoint_rt
 
