@@ -89,48 +89,81 @@ def align_ordered_and_get_rmsd(A, B):
     return torch.sqrt(((A_aligned - B) ** 2).sum(dim=1).mean()).item()
 def _sanitize_formula(f): return re.sub(r"[^A-Za-z0-9_.-]+", "_", f).strip("_") or "sample"
 
-# --- MODIFIED Core Dynamics Function (No Kick) ---
+# --- MODIFIED Core Dynamics Function (With Optional Kick Mechanism) ---
 class GADDynamics:
-    def __init__(self, calculator, atomic_nums, stop_at_ts=False):
+    def __init__(self, calculator, atomic_nums, stop_at_ts=False, kick_enabled=False,
+                 kick_force_threshold=0.015, kick_magnitude=0.1):
+        """
+        Args:
+            kick_enabled: Enable kick mechanism to escape local minima
+            kick_force_threshold: Force threshold in eV/Å below which kick is considered (default: 0.015)
+            kick_magnitude: Magnitude of kick in Å (default: 0.1)
+        """
         self.calculator = calculator
         self.atomic_nums = torch.tensor(atomic_nums, dtype=torch.long)
         self.num_atoms = len(atomic_nums)
         self.stop_at_ts = stop_at_ts
+        self.kick_enabled = kick_enabled
+        self.kick_force_threshold = kick_force_threshold
+        self.kick_magnitude = kick_magnitude
         self.device = next(calculator.potential.parameters()).device
         self.trajectory = defaultdict(list)
         self.ts_found = False
+        self.num_kicks = 0
 
     def __call__(self, t, y, record_stats=True):
         coords = torch.from_numpy(y).float().reshape(self.num_atoms, 3).to(self.device)
         batch = TGBatch.from_data_list([TGData(pos=coords, z=self.atomic_nums, natoms=torch.tensor([self.num_atoms]))]).to(self.device)
         results = self.calculator.predict(batch, do_hessian=True)
         forces = results["forces"]
-        
-        # --- REMOVED KICK LOGIC: Always use standard GAD velocity ---
+
+        # Calculate eigenvalues and eigenvectors
         hessian = _prepare_hessian(results["hessian"], self.num_atoms)
-        _, evecs = torch.linalg.eigh(hessian)
-        v = evecs[:, 0].to(forces.dtype)
-        v /= (torch.norm(v) + 1e-12)
-        f_flat = forces.reshape(-1)
-        # Equation from image: x_dot = F + 2(-F.v)v (since F = -grad(V))
-        # Note: Previous script had a sign error here. Corrected to match image.
-        gad_flat = f_flat + 2.0 * torch.dot(-f_flat, v) * v
-        velocity = gad_flat.reshape(self.num_atoms, 3)
-            
+        freq_info = analyze_frequencies_torch(results["hessian"], coords, self.atomic_nums)
+        eigvals = freq_info["eigvals"]  # These are the projected eigenvalues
+
+        # Get unprojected eigenvalues for full Hessian (for GAD direction)
+        evals_full, evecs_full = torch.linalg.eigh(hessian)
+
+        # Check if we should apply a kick (escape local minimum)
+        apply_kick = False
+        if self.kick_enabled:
+            force_magnitude = forces.norm(dim=1).mean().item()
+            # Check if force is below threshold AND both smallest projected eigenvalues are positive (local min)
+            if force_magnitude < self.kick_force_threshold and eigvals.numel() >= 2:
+                eig0, eig1 = eigvals[0].item(), eigvals[1].item()
+                if eig0 > 0 and eig1 > 0:  # Local minimum
+                    apply_kick = True
+                    self.num_kicks += 1
+
+        if apply_kick:
+            # Apply kick: random perturbation scaled by kick_magnitude
+            kick_direction = torch.randn_like(coords)
+            kick_direction = kick_direction / (kick_direction.norm() + 1e-12)
+            velocity = kick_direction * self.kick_magnitude
+            if record_stats:
+                print(f"  [KICK {self.num_kicks}] at t={t:.3f}: |F|={force_magnitude:.4f} eV/Å, λ₀={eig0:.6f}, λ₁={eig1:.6f}")
+        else:
+            # Standard GAD velocity
+            v = evecs_full[:, 0].to(forces.dtype)
+            v /= (torch.norm(v) + 1e-12)
+            f_flat = forces.reshape(-1)
+            # Equation: x_dot = F + 2(-F.v)v (since F = -grad(V))
+            gad_flat = f_flat + 2.0 * torch.dot(-f_flat, v) * v
+            velocity = gad_flat.reshape(self.num_atoms, 3)
+
         if record_stats:
             self.trajectory["time"].append(t)
             self.trajectory["energy"].append(results["energy"].item())
             self.trajectory["force_mean"].append(forces.norm(dim=1).mean().item())
             self.trajectory["gad_mean"].append(velocity.norm(dim=1).mean().item())
-            freq_info = analyze_frequencies_torch(results["hessian"], coords, self.atomic_nums)
-            eigvals = freq_info["eigvals"]
             eig_prod = (eigvals[0] * eigvals[1]).item() if eigvals.numel() >= 2 else None
             self.trajectory["eig_product"].append(eig_prod)
-            # Add neg_num to trajectory for later analysis
             self.trajectory["neg_num"].append(freq_info.get("neg_num", -1))
+            self.trajectory["kick_applied"].append(1 if apply_kick else 0)
             if self.stop_at_ts and eig_prod is not None and eig_prod < -1e-5:
                 self.ts_found = True
-                
+
         return velocity.cpu().numpy().flatten()
 
     def event_function(self):
@@ -157,19 +190,30 @@ def plot_trajectory(trajectory, sample_index, formula, out_dir):
     fig.savefig(out_path, dpi=200); plt.close(fig)
     return out_path
 
-# --- MODIFIED Main script execution block (No Kick args) ---
+# --- Main script execution block (With Kick args) ---
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run GAD-RK45 search for transition states.")
     parser = add_common_args(parser)
     parser.add_argument("--t-end", type=float, default=2.0, help="Total integration time for the solver.")
+    parser.add_argument("--max-steps", type=int, default=10000, help="Maximum number of integration steps.")
     parser.add_argument("--start-from", type=str, default="reactant", choices=["ts", "reactant", "midpoint_rt", "three_quarter_rt"])
     parser.add_argument("--stop-at-ts", action="store_true", help="Stop simulation as soon as a TS is found.")
+
+    # Kick mechanism arguments
+    parser.add_argument("--enable-kick", action="store_true", help="Enable kick mechanism to escape local minima.")
+    parser.add_argument("--kick-force-threshold", type=float, default=0.015,
+                        help="Force threshold in eV/Å below which kick is considered (default: 0.015).")
+    parser.add_argument("--kick-magnitude", type=float, default=0.1,
+                        help="Magnitude of kick displacement in Å (default: 0.1).")
     args = parser.parse_args()
 
     torch.set_grad_enabled(False)
     calculator, dataloader, device, out_dir = setup_experiment(args, shuffle=False)
-    
+
     print(f"Running GAD-RK45 Search. Start: {args.start_from.upper()}, Stop at TS: {args.stop_at_ts}")
+    print(f"Kick enabled: {args.enable_kick}")
+    if args.enable_kick:
+        print(f"  Force threshold: {args.kick_force_threshold} eV/Å, Kick magnitude: {args.kick_magnitude} Å")
 
     results_summary = []
     for i, batch in enumerate(dataloader):
@@ -181,8 +225,16 @@ if __name__ == "__main__":
             elif args.start_from == "three_quarter_rt": initial_coords = 0.25 * batch.pos_reactant + 0.75 * batch.pos_transition
             else: initial_coords = batch.pos_transition
 
-            dynamics_fn = GADDynamics(calculator, batch.z.numpy(), args.stop_at_ts)
-            solver = RK45(f=dynamics_fn, t0=0.0, y0=initial_coords.numpy().flatten(), t1=args.t_end, h_max=0.1, event_fn=dynamics_fn.event_function)
+            dynamics_fn = GADDynamics(
+                calculator, batch.z.numpy(),
+                stop_at_ts=args.stop_at_ts,
+                kick_enabled=args.enable_kick,
+                kick_force_threshold=args.kick_force_threshold,
+                kick_magnitude=args.kick_magnitude
+            )
+            solver = RK45(f=dynamics_fn, t0=0.0, y0=initial_coords.numpy().flatten(),
+                         t1=args.t_end, h_max=0.1, event_fn=dynamics_fn.event_function,
+                         max_steps=args.max_steps)
             
             dynamics_fn(0.0, initial_coords.numpy().flatten(), record_stats=True)
             solver.solve()
@@ -198,18 +250,22 @@ if __name__ == "__main__":
                 "initial_neg_eigvals": dynamics_fn.trajectory["neg_num"][0],
                 "final_neg_eigvals": dynamics_fn.trajectory["neg_num"][-1],
                 "rmsd_to_start": align_ordered_and_get_rmsd(initial_coords, final_coords),
+                "num_kicks": dynamics_fn.num_kicks,
             }
             results_summary.append(summary)
-            
+
             plot_path = plot_trajectory(dynamics_fn.trajectory, i, batch.formula[0], out_dir)
-            
+
             print("Result:")
             print(f"  Solver Steps: {summary['steps_taken']}, Final Time: {summary['final_time']:.3f}")
             print(f"  Neg Eigs: {summary['initial_neg_eigvals']} -> {summary['final_neg_eigvals']}")
+            if args.enable_kick:
+                print(f"  Kicks applied: {dynamics_fn.num_kicks}")
 
         except Exception as e:
             print(f"[ERROR] Sample {i} failed: {e}"); import traceback; traceback.print_exc()
 
-    out_json = os.path.join(out_dir, f"gad_rk45_{args.start_from}{'_stopts' if args.stop_at_ts else ''}_{len(results_summary)}.json")
+    kick_suffix = "_kick" if args.enable_kick else ""
+    out_json = os.path.join(out_dir, f"gad_rk45_{args.start_from}{'_stopts' if args.stop_at_ts else ''}{kick_suffix}_{len(results_summary)}.json")
     with open(out_json, "w") as f: json.dump(results_summary, f, indent=2)
     print(f"\nSaved summary to {out_json}")

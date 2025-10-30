@@ -75,34 +75,45 @@ def _mean_vector_magnitude(vec: torch.Tensor) -> float:
     return float(vec.detach().cpu().norm(dim=1).mean().item())
 
 
-# --- MODIFIED FUNCTION IMPLEMENTING EARLY STOPPING ---
+# --- MODIFIED FUNCTION IMPLEMENTING EARLY STOPPING AND KICK MECHANISM ---
 def run_gad_euler_on_batch(
-    calculator: EquiformerTorchCalculator, batch: Batch, n_steps: int, dt: float, stop_at_ts: bool = False
+    calculator: EquiformerTorchCalculator, batch: Batch, n_steps: int, dt: float, stop_at_ts: bool = False,
+    kick_enabled: bool = False, kick_force_threshold: float = 0.015, kick_magnitude: float = 0.1
 ) -> Dict[str, Any]:
-    """Runs GAD Euler updates, optionally stopping when a TS signature is found."""
+    """
+    Runs GAD Euler updates, optionally stopping when a TS signature is found.
+
+    Args:
+        kick_enabled: Enable kick mechanism to escape local minima
+        kick_force_threshold: Force threshold in eV/Å below which kick is considered
+        kick_magnitude: Magnitude of kick displacement in Å
+    """
     assert int(batch.batch.max().item()) + 1 == 1, "Use batch_size=1."
     start_pos = batch.pos.detach().clone()
-    
-    trajectory = {k: [] for k in ["energy", "force_mean", "gad_mean", "eig_product"]}
+    num_kicks = 0
 
-    # Modified to return the product for checking
-    def _record_step(predictions: Dict[str, Any], gad_vec: Optional[torch.Tensor]) -> Optional[float]:
+    trajectory = {k: [] for k in ["energy", "force_mean", "gad_mean", "eig_product", "kick_applied"]}
+
+    # Modified to return the product and freq_info for checking
+    def _record_step(predictions: Dict[str, Any], gad_vec: Optional[torch.Tensor], kick_applied: bool = False) -> tuple:
         trajectory["energy"].append(_scalar_from(predictions, "energy"))
         trajectory["force_mean"].append(_mean_vector_magnitude(predictions["forces"]))
         trajectory["gad_mean"].append(_mean_vector_magnitude(gad_vec) if gad_vec is not None else None)
+        trajectory["kick_applied"].append(1 if kick_applied else 0)
         try:
             # Use projected analysis for the product check
             freq_info = analyze_frequencies_torch(predictions["hessian"], batch.pos, batch.z)
             eig_prod = _extract_eig_product(freq_info)
         except Exception:
             eig_prod = None
+            freq_info = {}
         trajectory["eig_product"].append(eig_prod)
-        return eig_prod
+        return eig_prod, freq_info
 
     # Initial state
     results = calculator.predict(batch, do_hessian=True)
-    current_eig_prod = _record_step(results, gad_vec=None)
-    
+    current_eig_prod, freq_info = _record_step(results, gad_vec=None)
+
     steps_taken = 0
     # Check if we start at a TS and early stopping is enabled
     if stop_at_ts and current_eig_prod is not None and current_eig_prod < -1e-5:
@@ -112,24 +123,44 @@ def run_gad_euler_on_batch(
         # GAD loop
         for step_i in range(1, n_steps + 1):
             steps_taken = step_i
-            
-            # 1. Get Gad direction from FULL Hessian
-            hess_full = _prepare_hessian(results["hessian"], batch.pos.shape[0])
-            evals, evecs = torch.linalg.eigh(hess_full)
-            v = evecs[:, 0].to(results["forces"].dtype) # Lowest eigenvector
-            v = v / (v.norm() + 1e-12)
 
-            # 2. Calculate GAD vector
-            f_flat = results["forces"].reshape(-1)
-            gad_flat = f_flat + 2.0 * torch.dot(-f_flat, v) * v
-            gad = gad_flat.view(batch.pos.shape[0], 3)
+            # Check if we should apply a kick (escape local minimum)
+            apply_kick = False
+            if kick_enabled:
+                force_magnitude = results["forces"].norm(dim=1).mean().item()
+                # Check if force is below threshold AND both smallest projected eigenvalues are positive (local min)
+                eigvals = freq_info.get("eigvals")
+                if eigvals is not None and force_magnitude < kick_force_threshold and eigvals.numel() >= 2:
+                    eig0, eig1 = eigvals[0].item(), eigvals[1].item()
+                    if eig0 > 0 and eig1 > 0:  # Local minimum
+                        apply_kick = True
+                        num_kicks += 1
+                        print(f"  [KICK {num_kicks}] at step {step_i}: |F|={force_magnitude:.4f} eV/Å, λ₀={eig0:.6f}, λ₁={eig1:.6f}")
 
-            # 3. Euler step
-            batch.pos = batch.pos + dt * gad
-            
+            if apply_kick:
+                # Apply kick: random perturbation scaled by kick_magnitude
+                kick_direction = torch.randn_like(batch.pos)
+                kick_direction = kick_direction / (kick_direction.norm() + 1e-12)
+                batch.pos = batch.pos + kick_direction * kick_magnitude
+                gad = kick_direction * kick_magnitude
+            else:
+                # 1. Get GAD direction from FULL Hessian
+                hess_full = _prepare_hessian(results["hessian"], batch.pos.shape[0])
+                evals, evecs = torch.linalg.eigh(hess_full)
+                v = evecs[:, 0].to(results["forces"].dtype)  # Lowest eigenvector
+                v = v / (v.norm() + 1e-12)
+
+                # 2. Calculate GAD vector
+                f_flat = results["forces"].reshape(-1)
+                gad_flat = f_flat + 2.0 * torch.dot(-f_flat, v) * v
+                gad = gad_flat.view(batch.pos.shape[0], 3)
+
+                # 3. Euler step
+                batch.pos = batch.pos + dt * gad
+
             # 4. Calculate new state
             results = calculator.predict(batch, do_hessian=True)
-            current_eig_prod = _record_step(results, gad)
+            current_eig_prod, freq_info = _record_step(results, gad, kick_applied=apply_kick)
 
             # --- EARLY STOPPING CHECK ---
             # If product is negative, we have exactly one negative eigenvalue (assuming ordered e0 < e1)
@@ -180,6 +211,7 @@ def run_gad_euler_on_batch(
         "trajectory": trajectory,
         "neg_eigvals_start": neg_eigvals_start,
         "neg_eigvals_end": neg_eigvals_end,
+        "num_kicks": num_kicks,
     }
 
 # --- (Plotting and helper functions remain unchanged) ---
@@ -245,8 +277,15 @@ if __name__ == "__main__":
                         help="Which geometry to start from.")
     
     # --- NEW ARGUMENT ---
-    parser.add_argument("--stop-at-ts", action="store_true", 
+    parser.add_argument("--stop-at-ts", action="store_true",
                         help="Stop simulation as soon as eigenvalue product becomes negative (TS region found).")
+
+    # Kick mechanism arguments
+    parser.add_argument("--enable-kick", action="store_true", help="Enable kick mechanism to escape local minima.")
+    parser.add_argument("--kick-force-threshold", type=float, default=0.015,
+                        help="Force threshold in eV/Å below which kick is considered (default: 0.015).")
+    parser.add_argument("--kick-magnitude", type=float, default=0.1,
+                        help="Magnitude of kick displacement in Å (default: 0.1).")
 
     args = parser.parse_args()
     
@@ -258,6 +297,9 @@ if __name__ == "__main__":
     mode_str = "Search until TS found (eig_prod < 0)" if args.stop_at_ts else f"Fixed trajectory ({args.n_steps} steps)"
     print(f"Mode: {mode_str}")
     print(f"Processing up to {args.max_samples} samples (dt={args.dt})")
+    print(f"Kick enabled: {args.enable_kick}")
+    if args.enable_kick:
+        print(f"  Force threshold: {args.kick_force_threshold} eV/Å, Kick magnitude: {args.kick_magnitude} Å")
 
     seen_formulas, processed_count, converged_count = set(), 0, 0
     final_rms_forces = []
@@ -285,8 +327,16 @@ if __name__ == "__main__":
             batch.natoms = torch.tensor([batch.pos.shape[0]], dtype=torch.long)
             batch = batch.to(device)
             
-            # Pass the new flag
-            out = run_gad_euler_on_batch(calculator, batch, n_steps=args.n_steps, dt=args.dt, stop_at_ts=args.stop_at_ts)
+            # Pass the new flags and kick parameters
+            out = run_gad_euler_on_batch(
+                calculator, batch,
+                n_steps=args.n_steps,
+                dt=args.dt,
+                stop_at_ts=args.stop_at_ts,
+                kick_enabled=args.enable_kick,
+                kick_force_threshold=args.kick_force_threshold,
+                kick_magnitude=args.kick_magnitude
+            )
             
             final_rms_forces.append(out['rms_force_end'])
             steps_taken_list.append(out['steps_taken'])
@@ -303,9 +353,10 @@ if __name__ == "__main__":
             result = {"dataset_index": dataset_idx, "sample_order": processed_count, "formula": formula, "plot_path": os.path.relpath(plot_path, out_dir), "converged": is_converged, **out}
             results_summary.append(result)
             
-            # Updated print to show steps taken
+            # Updated print to show steps taken and kicks
             stop_reason = "Found TS" if (args.stop_at_ts and out['steps_taken'] < args.n_steps) else "Max Steps"
-            print(f"[sample {processed_count}] N={out['natoms']}, Steps={out['steps_taken']}({stop_reason}), neg_eigs: {start_n}->{end_n}, RMS|F|_end={out['rms_force_end']:.3f}, formula={formula}")
+            kick_str = f", kicks={out['num_kicks']}" if args.enable_kick else ""
+            print(f"[sample {processed_count}] N={out['natoms']}, Steps={out['steps_taken']}({stop_reason}), neg_eigs: {start_n}->{end_n}, RMS|F|_end={out['rms_force_end']:.3f}{kick_str}, formula={formula}")
             processed_count += 1
         except Exception as e:
             print(f"[{dataset_idx}] ERROR: {e}")
@@ -337,15 +388,17 @@ if __name__ == "__main__":
         plt.figure(figsize=(10, 6))
         plt.hist(forces_np, bins=50, alpha=0.7)
         plt.xlabel("Final RMS Force (eV/Å)"); plt.ylabel("Count"); plt.title("Final RMS Force Distribution")
-        hist_path = os.path.join(out_dir, f"force_hist_{processed_count}_{args.start_from}{'_stopts' if args.stop_at_ts else ''}.png")
+        kick_suffix = "_kick" if args.enable_kick else ""
+        hist_path = os.path.join(out_dir, f"force_hist_{processed_count}_{args.start_from}{'_stopts' if args.stop_at_ts else ''}{kick_suffix}.png")
         plt.savefig(hist_path, dpi=100); plt.close()
 
     print("="*50)
-    
-    # Append _stopts to filename if flag is active
+
+    # Append _stopts and _kick to filename if flags are active
     filename_suffix = f"from_{args.start_from}"
     if args.stop_at_ts: filename_suffix += "_stopts"
-    
+    if args.enable_kick: filename_suffix += "_kick"
+
     out_json = os.path.join(out_dir, f"rgd1_gad_rmsd_{filename_suffix}_{len(results_summary)}.json")
     with open(out_json, "w") as f:
         json.dump(results_summary, f, indent=2)

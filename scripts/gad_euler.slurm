@@ -28,7 +28,7 @@ echo ">>> Activating virtual environment..."
 source ${VENV_DIR}/bin/activate
 
 echo ">>> Running Euler RMSD script..."
-# ARGS R HERE NOW
+# ARGS ARE HERE NOW
 python -m src.gad_gad_euler_rmsd \
     --max-samples 300 \
     --n-steps 1000 \
@@ -36,15 +36,20 @@ python -m src.gad_gad_euler_rmsd \
     --stop-at-ts \
     --dt 0.001
 
+# --- Example with kick mechanism enabled ---
+# Uncomment to enable kick mechanism to escape local minima:
+# python -m src.gad_gad_euler_rmsd \
+#     --max-samples 300 \
+#     --n-steps 1000 \
+#     --start-from reactant \
+#     --stop-at-ts \
+#     --dt 0.001 \
+#     --enable-kick \
+#     --kick-force-threshold 0.015 \
+#     --kick-magnitude 0.1
+
 # python -m src.gad_gad_euler_rmsd \
 #     --max-samples 300 \
 #     --start-from three_quarter_rt
 
-# python -m src.gad_gad_euler_rmsd \
-#     --mode eigprod \
-#     --start-from reactant \
-#     --stop-at-ts \
-#     --n-steps 200 \
-#     --max-samples 10 \
-    
 echo "✅ Job completed successfully."

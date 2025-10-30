@@ -25,14 +25,27 @@ module load python/${PYTHON_VERSION}
 echo ">>> Activating virtual environment..."
 source ${VENV_DIR}/bin/activate
 
-echo ">>> Running GAD-RK45 Search script (No Kick)..."
+echo ">>> Running GAD-RK45 Search script..."
 
-# --- Main Experiment: Start from Reactant and search for TS ---
+# --- Main Experiment: Start from midpoint and search for TS ---
 # This version uses the standard GAD dynamics with the RK45 solver.
 python -m src.gad_rk45_search \
     --max-samples 30 \
     --start-from midpoint_rt \
     --stop-at-ts \
-    --t-end 2.0
+    --t-end 2.0 \
+    --max-steps 100
+
+# --- Example with kick mechanism enabled ---
+# Uncomment to enable kick mechanism to escape local minima:
+# python -m src.gad_rk45_search \
+#     --max-samples 30 \
+#     --start-from reactant \
+#     --stop-at-ts \
+#     --t-end 2.0 \
+#     --max-steps 10000 \
+#     --enable-kick \
+#     --kick-force-threshold 0.015 \
+#     --kick-magnitude 0.1
 
 echo "✅ Job completed successfully."
