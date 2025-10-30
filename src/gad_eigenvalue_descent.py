@@ -11,31 +11,40 @@ from torch_geometric.data import Data as TGData, Batch as TGBatch
 
 from .common_utils import setup_experiment, add_common_args
 from hip.equiformer_torch_calculator import EquiformerTorchCalculator
-from hip.frequency_analysis import analyze_frequencies_torch
-# Import the NEW differentiable projection and other necessary modules
-from .differentiable_projection import differentiable_massweigh_and_eckartprojection_torch as massweigh_and_eckartprojection_torch
+from differentiable_projection import differentiable_massweigh_and_eckartprojection_torch as massweigh_and_eckartprojection_torch
 from nets.prediction_utils import Z_TO_ATOM_SYMBOL
 
-# --- (Helper functions for RMSD are unchanged and correct) ---
-def find_rigid_alignment(A, B):
-    if isinstance(A, torch.Tensor): A = A.detach().cpu().numpy()
-    if isinstance(B, torch.Tensor): B = B.detach().cpu().numpy()
+# --- CORRECTED HELPER FUNCTIONS ---
+def find_rigid_alignment(A: np.ndarray, B: np.ndarray):
+    """Kabsch algorithm for rigid alignment. Expects NumPy arrays."""
     a_mean = A.mean(axis=0); b_mean = B.mean(axis=0)
     A_c = A - a_mean; B_c = B - b_mean
     H = A_c.T @ B_c
     U, _, Vt = np.linalg.svd(H); V = Vt.T
     R = V @ U.T
-    if np.linalg.det(R) < 0: V[:, -1] *= -1; R = V @ U.T
+    if np.linalg.det(R) < 0:
+        V[:, -1] *= -1
+        R = V @ U.T
     t = b_mean - R @ a_mean
     return R, t
 
-def get_rmsd(A, B): return float(np.sqrt(((A - B) ** 2).sum(axis=1).mean()))
+def get_rmsd(A: np.ndarray, B: np.ndarray) -> float:
+    return float(np.sqrt(((A - B) ** 2).sum(axis=1).mean()))
 
-def align_ordered_and_get_rmsd(A, B):
+def align_ordered_and_get_rmsd(A, B) -> float:
+    """Rigid-align A to B and compute RMSD, ensuring inputs are NumPy arrays."""
+    # THE FIX: Convert any PyTorch Tensors to NumPy arrays right at the start.
+    if isinstance(A, torch.Tensor): A = A.detach().cpu().numpy()
+    if isinstance(B, torch.Tensor): B = B.detach().cpu().numpy()
+    
     if A.shape != B.shape: return float("inf")
+    
+    # Now that A and B are guaranteed to be NumPy arrays, the rest works.
     R, t = find_rigid_alignment(A, B)
     A_aligned = (R @ A.T).T + t
     return get_rmsd(A_aligned, B)
+# --- END CORRECTION ---
+
 
 def coord_atoms_to_torch_geometric(coords, atomic_nums, device):
     data = TGData(
@@ -59,39 +68,28 @@ def run_manual_eigenvalue_descent(
     model = calculator.potential
     device = model.device
     
-    # The coordinates are now a regular tensor that we will update manually
     coords = initial_coords.clone().to(torch.float32).to(device)
-    coords.requires_grad = True # We need to track it for grad calculation
+    coords.requires_grad = True 
     
     atomsymbols = [Z_TO_ATOM_SYMBOL[z.item()] for z in atomic_nums]
     history = defaultdict(list)
-    
+    current_prod = float('nan')
+
     for step in range(n_steps):
-        # 1. Enable gradient tracking for the forward pass
         with torch.enable_grad():
             batch = coord_atoms_to_torch_geometric(coords, atomic_nums, device)
             _, _, out = model.forward(batch, otf_graph=True)
             hess_raw = out["hessian"].reshape(coords.numel(), coords.numel())
             hess_proj = massweigh_and_eckartprojection_torch(hess_raw, coords, atomsymbols)
             eigvals, _ = torch.linalg.eigh(hess_proj)
-            
-            # This is the value we want to minimize
             value_to_minimize = eigvals[0] * eigvals[1]
-            
-            # 2. Calculate the gradient of this value w.r.t. coordinates
-            #    This is the "downhill" direction.
             grad = torch.autograd.grad(value_to_minimize, coords)[0]
         
-        # 3. Perform the manual gradient descent step.
-        #    This must be in a no_grad block to prevent the update from being
-        #    tracked in the computation history.
         with torch.no_grad():
             coords -= lr * grad
             
-        # Ensure coords continues to require a gradient for the next loop iteration
         coords.requires_grad = True
             
-        # Logging
         current_prod = value_to_minimize.item()
         history["eig_product"].append(current_prod)
         if step % 10 == 0:
@@ -138,7 +136,6 @@ if __name__ == "__main__":
                 lr=args.lr,
             )
             
-            # Final analysis to get neg_num
             with torch.no_grad():
                 final_batch = coord_atoms_to_torch_geometric(opt_results['final_coords'].to(device), batch.z, device)
                 _, _, final_out = calculator.potential.forward(final_batch, otf_graph=True)
