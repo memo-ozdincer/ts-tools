@@ -1,4 +1,4 @@
-# src/gad_relu_manual_descent.py
+# src/gad_eigenvalue_descent.py
 import os
 import json
 import argparse
@@ -15,24 +15,34 @@ from hip.frequency_analysis import analyze_frequencies_torch
 from .differentiable_projection import differentiable_massweigh_and_eckartprojection_torch as massweigh_and_eckartprojection_torch
 from nets.prediction_utils import Z_TO_ATOM_SYMBOL
 
-# --- (Helper functions are correct and unchanged) ---
-def find_rigid_alignment(A, B):
-    if isinstance(A, torch.Tensor): A = A.detach().cpu().numpy()
-    if isinstance(B, torch.Tensor): B = B.detach().cpu().numpy()
+def find_rigid_alignment(A: np.ndarray, B: np.ndarray):
+    """Kabsch algorithm for rigid alignment. Expects NumPy arrays."""
     a_mean = A.mean(axis=0); b_mean = B.mean(axis=0)
     A_c = A - a_mean; B_c = B - b_mean
     H = A_c.T @ B_c
     U, _, Vt = np.linalg.svd(H); V = Vt.T
     R = V @ U.T
-    if np.linalg.det(R) < 0: V[:, -1] *= -1; R = V @ U.T
+    if np.linalg.det(R) < 0:
+        V[:, -1] *= -1
+        R = V @ U.T
     t = b_mean - R @ a_mean
     return R, t
-def get_rmsd(A, B): return float(np.sqrt(((A - B) ** 2).sum(axis=1).mean()))
-def align_ordered_and_get_rmsd(A, B):
+
+def get_rmsd(A: np.ndarray, B: np.ndarray) -> float:
+    return float(np.sqrt(((A - B) ** 2).sum(axis=1).mean()))
+
+def align_ordered_and_get_rmsd(A, B) -> float:
+    """Rigid-align A to B and compute RMSD, ensuring inputs are NumPy arrays."""
+    if isinstance(A, torch.Tensor): A = A.detach().cpu().numpy()
+    if isinstance(B, torch.Tensor): B = B.detach().cpu().numpy()
+    
     if A.shape != B.shape: return float("inf")
+    
     R, t = find_rigid_alignment(A, B)
     A_aligned = (R @ A.T).T + t
     return get_rmsd(A_aligned, B)
+# --- END OF CORRECTION ---
+
 def coord_atoms_to_torch_geometric(coords, atomic_nums, device):
     data = TGData(
         pos=coords.reshape(-1, 3),
@@ -43,8 +53,6 @@ def coord_atoms_to_torch_geometric(coords, atomic_nums, device):
     )
     return TGBatch.from_data_list([data])
 
-
-# --- Core Optimization Function with ReLU Loss ---
 def run_relu_manual_descent(
     calculator: EquiformerTorchCalculator,
     initial_coords: torch.Tensor,
@@ -68,13 +76,10 @@ def run_relu_manual_descent(
             hess_raw = out["hessian"].reshape(coords.numel(), coords.numel())
             hess_proj = massweigh_and_eckartprojection_torch(hess_raw, coords, atomsymbols)
             eigvals, _ = torch.linalg.eigh(hess_proj)
-            final_eigvals = eigvals # Store for logging
+            final_eigvals = eigvals
             
-            # --- THE NEW, ROBUST LOSS FUNCTION ---
-            # Penalize λ₀ if it's > 0. Penalize λ₁ if it's < 0.
             loss = torch.relu(eigvals[0]) + torch.relu(-eigvals[1])
             
-            # Stop if the loss is zero (we have found a TS signature)
             if loss.item() < 1e-8:
                 print(f"  Stopping early at step {step}: Found TS signature (Loss ~ 0).")
                 break
@@ -99,7 +104,6 @@ def run_relu_manual_descent(
         "final_loss": loss.item(),
         "final_eig_product": (final_eigvals[0] * final_eigvals[1]).item(),
     }
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run MANUAL gradient descent on eigenvalues using a ReLU loss.")
