@@ -18,7 +18,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-# --- RK45 Solver Class (Modified to support event detection and trajectory recording) ---
+# --- RK45 Solver Class (Unchanged) ---
 class RK45:
     def __init__(self, f, t0, y0, t1, rtol=1e-6, atol=1e-9, h0=None, h_max=np.inf, safety=0.9, event_fn=None):
         self.f = f
@@ -45,7 +45,7 @@ class RK45:
         k = []
         for i in range(7):
             yi = y.copy() + h * sum(a_ij * k[j] for j, a_ij in enumerate(self.a[i]))
-            k.append(np.asarray(self.f(t + self.c[i] * h, yi, record_stats=(i==0)))) # Only record stats on full steps
+            k.append(np.asarray(self.f(t + self.c[i] * h, yi, record_stats=(i==0))))
         k = np.array(k)
         y5 = y + h * np.tensordot(self.b5, k, axes=(0,0))
         y4 = y + h * np.tensordot(self.b4, k, axes=(0,0))
@@ -67,32 +67,28 @@ class RK45:
             status = self.step()
             if status == "event" or status is None: break
 
-# --- Helper Functions ---
+# --- Helper Functions (Unchanged) ---
 def _prepare_hessian(hess, num_atoms): return hess.reshape(3*num_atoms, 3*num_atoms) if hess.dim()==1 else hess
 def align_ordered_and_get_rmsd(A, B):
-    # ... (unchanged, but it's good practice to keep it for analysis)
     if isinstance(A, np.ndarray): A = torch.from_numpy(A)
     if isinstance(B, np.ndarray): B = torch.from_numpy(B)
     A, B = A.float(), B.float()
     a_mean, b_mean = A.mean(dim=0), B.mean(dim=0)
     A_c, B_c = A - a_mean, B - b_mean
     H = A_c.T @ B_c
-    U, _, Vt = torch.linalg.svd(H)
-    R = Vt.T @ U.T
+    U, _, Vt = torch.linalg.svd(H); R = Vt.T @ U.T
     if torch.linalg.det(R) < 0: Vt[-1, :] *= -1; R = Vt.T @ U.T
     t = b_mean - R @ a_mean
     A_aligned = (R @ A.T).T + t
     return torch.sqrt(((A_aligned - B) ** 2).sum(dim=1).mean()).item()
 def _sanitize_formula(f): return re.sub(r"[^A-Za-z0-9_.-]+", "_", f).strip("_") or "sample"
 
-# --- Core GAD-RK45 Dynamics Function ---
+# --- MODIFIED Core Dynamics Function (No Kick) ---
 class GADDynamics:
-    def __init__(self, calculator, atomic_nums, force_thresh, kick_scale, stop_at_ts=False):
+    def __init__(self, calculator, atomic_nums, stop_at_ts=False):
         self.calculator = calculator
         self.atomic_nums = torch.tensor(atomic_nums, dtype=torch.long)
         self.num_atoms = len(atomic_nums)
-        self.force_thresh = force_thresh
-        self.kick_scale = kick_scale
         self.stop_at_ts = stop_at_ts
         self.device = next(calculator.potential.parameters()).device
         self.trajectory = defaultdict(list)
@@ -103,20 +99,18 @@ class GADDynamics:
         batch = TGBatch.from_data_list([TGData(pos=coords, z=self.atomic_nums, natoms=torch.tensor([self.num_atoms]))]).to(self.device)
         results = self.calculator.predict(batch, do_hessian=True)
         forces = results["forces"]
+        
+        # --- REMOVED KICK LOGIC: Always use standard GAD velocity ---
         hessian = _prepare_hessian(results["hessian"], self.num_atoms)
-        
-        rms_force = torch.norm(forces) / np.sqrt(self.num_atoms)
-        if rms_force < self.force_thresh:
-            if record_stats: print(f"  (t={t:.2f}, Low force detected. Applying eigenvector kick.)")
-            _, evecs = torch.linalg.eigh(hessian)
-            v_kick = evecs[:, 0].to(forces.dtype); v_kick /= (torch.norm(v_kick) + 1e-12)
-            velocity = self.kick_scale * v_kick
-        else:
-            _, evecs = torch.linalg.eigh(hessian); v = evecs[:, 0].to(forces.dtype); v /= (torch.norm(v) + 1e-12)
-            f_flat = forces.reshape(-1)
-            gad_flat = f_flat - 2.0 * torch.dot(f_flat, v) * v
-            velocity = gad_flat.reshape(self.num_atoms, 3)
-        
+        _, evecs = torch.linalg.eigh(hessian)
+        v = evecs[:, 0].to(forces.dtype)
+        v /= (torch.norm(v) + 1e-12)
+        f_flat = forces.reshape(-1)
+        # Equation from image: x_dot = F + 2(-F.v)v (since F = -grad(V))
+        # Note: Previous script had a sign error here. Corrected to match image.
+        gad_flat = f_flat + 2.0 * torch.dot(-f_flat, v) * v
+        velocity = gad_flat.reshape(self.num_atoms, 3)
+            
         if record_stats:
             self.trajectory["time"].append(t)
             self.trajectory["energy"].append(results["energy"].item())
@@ -126,6 +120,8 @@ class GADDynamics:
             eigvals = freq_info["eigvals"]
             eig_prod = (eigvals[0] * eigvals[1]).item() if eigvals.numel() >= 2 else None
             self.trajectory["eig_product"].append(eig_prod)
+            # Add neg_num to trajectory for later analysis
+            self.trajectory["neg_num"].append(freq_info.get("neg_num", -1))
             if self.stop_at_ts and eig_prod is not None and eig_prod < -1e-5:
                 self.ts_found = True
                 
@@ -134,7 +130,7 @@ class GADDynamics:
     def event_function(self):
         return self.ts_found
 
-# --- Plotting (identical to previous version) ---
+# --- Plotting (Unchanged) ---
 def plot_trajectory(trajectory, sample_index, formula, out_dir):
     # ... (code is unchanged)
     timesteps = np.array(trajectory.get("time", []))
@@ -155,13 +151,11 @@ def plot_trajectory(trajectory, sample_index, formula, out_dir):
     fig.savefig(out_path, dpi=200); plt.close(fig)
     return out_path
 
-# --- Main script execution block ---
+# --- MODIFIED Main script execution block (No Kick args) ---
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run GAD-RK45 search for transition states.")
     parser = add_common_args(parser)
     parser.add_argument("--t-end", type=float, default=2.0, help="Total integration time for the solver.")
-    parser.add_argument("--force-kick-thresh", type=float, default=0.05, help="RMS force (eV/Å) below which to apply the eigenvector kick.")
-    parser.add_argument("--kick-scale", type=float, default=0.2, help="Scaling factor for the eigenvector kick velocity.")
     parser.add_argument("--start-from", type=str, default="reactant", choices=["ts", "reactant", "midpoint_rt", "three_quarter_rt"])
     parser.add_argument("--stop-at-ts", action="store_true", help="Stop simulation as soon as a TS is found.")
     args = parser.parse_args()
@@ -181,29 +175,22 @@ if __name__ == "__main__":
             elif args.start_from == "three_quarter_rt": initial_coords = 0.25 * batch.pos_reactant + 0.75 * batch.pos_transition
             else: initial_coords = batch.pos_transition
 
-            dynamics_fn = GADDynamics(calculator, batch.z.numpy(), args.force_kick_thresh, args.kick_scale, args.stop_at_ts)
+            dynamics_fn = GADDynamics(calculator, batch.z.numpy(), args.stop_at_ts)
             solver = RK45(f=dynamics_fn, t0=0.0, y0=initial_coords.numpy().flatten(), t1=args.t_end, h_max=0.1, event_fn=dynamics_fn.event_function)
             
-            # Run initial analysis
             dynamics_fn(0.0, initial_coords.numpy().flatten(), record_stats=True)
-            
-            # Run solver
             solver.solve()
             
             final_coords = torch.from_numpy(solver.y).reshape(-1, 3)
             
-            # Final analysis is already in the trajectory, just grab the last entry
-            initial_neg_num = dynamics_fn.trajectory["neg_num"][0] if "neg_num" in dynamics_fn.trajectory else analyze_frequencies_torch(calculator.predict(TGBatch.from_data_list([TGData(pos=initial_coords.to(device),z=batch.z,natoms=batch.natoms)]).to(device), do_hessian=True)["hessian"],initial_coords.to(device),batch.z)["neg_num"]
-            final_neg_num = dynamics_fn.trajectory["neg_num"][-1] if "neg_num" in dynamics_fn.trajectory else -1
-
             summary = {
                 "sample_index": i, "formula": batch.formula[0],
                 "steps_taken": len(dynamics_fn.trajectory["time"]) - 1,
                 "final_time": solver.t,
                 "initial_eig_product": dynamics_fn.trajectory["eig_product"][0],
                 "final_eig_product": dynamics_fn.trajectory["eig_product"][-1],
-                "initial_neg_eigvals": initial_neg_num,
-                "final_neg_eigvals": final_neg_num,
+                "initial_neg_eigvals": dynamics_fn.trajectory["neg_num"][0],
+                "final_neg_eigvals": dynamics_fn.trajectory["neg_num"][-1],
                 "rmsd_to_start": align_ordered_and_get_rmsd(initial_coords, final_coords),
             }
             results_summary.append(summary)
