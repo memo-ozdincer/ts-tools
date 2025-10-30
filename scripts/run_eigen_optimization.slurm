@@ -18,7 +18,7 @@ module load python/${PYTHON_VERSION}
 source ${VENV_DIR}/bin/activate
 
 echo ">>> Running MANUAL ReLU Eigenvalue Descent script..."
-python -m src.gad_relu_manual_descent \
+python -m src.gad_eigenvalue_descent \
     --max-samples 30 \
     --n-steps-opt 40 \
     --lr 0.005 \
