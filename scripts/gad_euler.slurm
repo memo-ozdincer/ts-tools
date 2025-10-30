@@ -45,6 +45,6 @@ python -m src.gad_gad_euler_rmsd \
     --start-from reactant \
     --stop-at-ts \
     --n-steps 200 \
-    --max-samples 50 \
+    --max-samples 10 \
     
 echo "✅ Job completed successfully."
