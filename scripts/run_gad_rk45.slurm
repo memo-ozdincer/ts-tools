@@ -36,7 +36,7 @@ python -m src.gad_rk45_search \
     --stop-at-ts \
     --t-end 2.0 \
     --max-steps 100 \
-    --min-eig-product-threshold -1e-4 \
+    --min-eig-product-threshold -0.0001 \
     --confirmation-steps 10
 
 # --- Example with kick mechanism enabled ---

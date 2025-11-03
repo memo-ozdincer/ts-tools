@@ -45,14 +45,31 @@ def align_ordered_and_get_rmsd(A, B) -> float:
 # --- END OF CORRECTION ---
 
 def coord_atoms_to_torch_geometric(coords, atomic_nums, device):
+    """Convert coordinates and atomic numbers to a PyG batch for model inference.
+
+    Important: Must move batch to device AFTER creating it from data list.
+    Matches the format expected by Equiformer models.
+    """
+    # Ensure coords has the right shape (num_atoms, 3)
+    if isinstance(coords, torch.Tensor) and coords.dim() == 1:
+        coords = coords.reshape(-1, 3)
+
+    # Safety check: ensure coordinates are valid
+    if isinstance(coords, torch.Tensor):
+        if torch.isnan(coords).any() or torch.isinf(coords).any():
+            raise ValueError("Invalid coordinates detected (NaN or Inf)")
+
+    # Create TGData with all required fields (CPU tensors first)
     data = TGData(
-        pos=coords.reshape(-1, 3),
-        z=torch.as_tensor(atomic_nums, dtype=torch.int64, device=device),
-        natoms=torch.tensor([len(atomic_nums)], dtype=torch.int64, device=device),
-        cell=torch.zeros(3, 3, dtype=torch.float32, device=device),
-        pbc=torch.tensor([False, False, False], dtype=torch.bool, device=device),
+        pos=torch.as_tensor(coords, dtype=torch.float32).reshape(-1, 3),
+        z=torch.as_tensor(atomic_nums, dtype=torch.int64),
+        charges=torch.as_tensor(atomic_nums, dtype=torch.int64),
+        natoms=torch.tensor([len(atomic_nums)], dtype=torch.int64),
+        cell=None,
+        pbc=torch.tensor(False, dtype=torch.bool),
     )
-    return TGBatch.from_data_list([data])
+    # Create batch and THEN move to device
+    return TGBatch.from_data_list([data]).to(device)
 
 # --- Core Optimization Function with Improved Loss Functions ---
 def run_eigenvalue_descent(
