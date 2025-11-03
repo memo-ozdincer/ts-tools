@@ -17,11 +17,40 @@ module purge
 module load python/${PYTHON_VERSION}
 source ${VENV_DIR}/bin/activate
 
-echo ">>> Running ReLU Eigenvalue Descent script..."
+echo ">>> Running Eigenvalue Descent script..."
+
+# --- Main Experiment: Targeted magnitude loss (recommended) ---
+# Targets specific eigenvalue magnitudes to avoid numerical noise convergence
 python -m src.gad_eigenvalue_descent \
     --max-samples 30 \
-    --n-steps-opt 40 \
-    --lr 0.005 \
-    --start-from midpoint_rt
+    --n-steps-opt 200 \
+    --lr 0.01 \
+    --start-from midpoint_rt \
+    --loss-type targeted_magnitude \
+    --target-eig0 -0.05 \
+    --target-eig1 0.10
+
+# --- Example with adaptive target relaxation ---
+# Uncomment for flat barrier systems:
+# python -m src.gad_eigenvalue_descent \
+#     --max-samples 30 \
+#     --n-steps-opt 250 \
+#     --lr 0.01 \
+#     --start-from reactant \
+#     --loss-type targeted_magnitude \
+#     --target-eig0 -0.10 \
+#     --target-eig1 0.15 \
+#     --adaptive-targets \
+#     --adaptive-relax-steps 50 \
+#     --adaptive-final-eig0 -0.02 \
+#     --adaptive-final-eig1 0.05
+
+# --- Example with original ReLU loss (for comparison) ---
+# python -m src.gad_eigenvalue_descent \
+#     --max-samples 30 \
+#     --n-steps-opt 200 \
+#     --lr 0.01 \
+#     --start-from midpoint_rt \
+#     --loss-type relu
 
 echo "✅ Job completed."

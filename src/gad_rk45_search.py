@@ -183,13 +183,43 @@ class GADDynamics:
             kick_direction = kick_direction / (kick_direction.norm() + 1e-12)
             velocity = kick_direction * self.kick_magnitude
         else:
-            # Standard GAD velocity
-            v = evecs_full[:, 0].to(forces.dtype)
-            v /= (torch.norm(v) + 1e-12)
-            f_flat = forces.reshape(-1)
-            # Equation: x_dot = F + 2(-F.v)v (since F = -grad(V))
-            gad_flat = f_flat + 2.0 * torch.dot(-f_flat, v) * v
-            velocity = gad_flat.reshape(self.num_atoms, 3)
+            # Check if we should switch to eigenvector-following mode
+            current_step = len(self.trajectory["time"]) + 1
+            if (self.eigenvector_following and
+                self.ts_candidate_step is not None and
+                current_step >= self.ts_candidate_step + self.eigvec_follow_delay and
+                not self.eigvec_follow_active):
+                self.eigvec_follow_active = True
+                if record_stats:
+                    print(f"  [MODE SWITCH] Activating eigenvector-following refinement at step {current_step}")
+
+            if self.eigvec_follow_active:
+                # Eigenvector-following mode: maximize uphill motion along lowest eigenvector
+                # while minimizing motion in all other directions
+                # Get projected eigenvectors (from frequency analysis)
+                hessian_proj = _prepare_hessian(freq_info["hessian_proj"], self.num_atoms)
+                _, evecs_proj = torch.linalg.eigh(hessian_proj)
+                min_mode = evecs_proj[:, 0].to(forces.dtype)  # Lowest eigenvector (most negative)
+                min_mode = min_mode.reshape(self.num_atoms, 3)
+                min_mode /= (torch.norm(min_mode) + 1e-12)
+
+                # Project forces onto the minimum mode
+                f_flat = forces.reshape(-1)
+                min_mode_flat = min_mode.reshape(-1)
+                projection_onto_mode = torch.dot(f_flat, min_mode_flat)
+
+                # Move uphill along minimum mode (reverse force projection), downhill in all others
+                # velocity = -F + 2*(F·v)v  (ascent along v, descent in orthogonal space)
+                velocity_flat = -f_flat + 2.0 * projection_onto_mode * min_mode_flat
+                velocity = velocity_flat.reshape(self.num_atoms, 3)
+            else:
+                # Standard GAD velocity
+                v = evecs_full[:, 0].to(forces.dtype)
+                v /= (torch.norm(v) + 1e-12)
+                f_flat = forces.reshape(-1)
+                # Equation: x_dot = F + 2(-F.v)v (since F = -grad(V))
+                gad_flat = f_flat + 2.0 * torch.dot(-f_flat, v) * v
+                velocity = gad_flat.reshape(self.num_atoms, 3)
 
         # Record trajectory statistics
         if record_stats:
@@ -202,6 +232,7 @@ class GADDynamics:
             self.trajectory["eig1"].append(eig1)
             self.trajectory["neg_num"].append(freq_info.get("neg_num", -1))
             self.trajectory["kick_applied"].append(1 if apply_kick else 0)
+            self.trajectory["eigvec_follow_mode"].append(1 if self.eigvec_follow_active else 0)
 
             # Multi-stage early stopping logic
             if self.stop_at_ts and eig_prod is not None:
@@ -288,6 +319,18 @@ def plot_trajectory(trajectory, sample_index, formula, out_dir, start_from, init
     axes[4].set_xlabel("Time (a.u.)")
     axes[4].set_title("GAD Vector Magnitude")
 
+    # Add visual indicators for mode switches
+    if "eigvec_follow_mode" in trajectory:
+        eigvec_mode = np.array(trajectory["eigvec_follow_mode"])
+        if np.any(eigvec_mode > 0):
+            # Find where mode switches to eigenvector-following
+            mode_switch_idx = np.where(np.diff(eigvec_mode) > 0)[0]
+            if len(mode_switch_idx) > 0:
+                switch_time = timesteps[mode_switch_idx[0] + 1]
+                for ax in axes:
+                    ax.axvline(switch_time, color='orange', ls=':', lw=2, alpha=0.7, label='Eigvec Follow')
+                axes[0].legend(loc='best', fontsize=8)
+
     fig.tight_layout(rect=[0, 0, 1, 0.96])
     filename = f"traj_{sample_index:03d}_{_sanitize_formula(formula)}_from_{start_from}_{initial_neg_num}to{final_neg_num}.png"
     out_path = os.path.join(out_dir, filename)
@@ -320,6 +363,12 @@ if __name__ == "__main__":
                         help="Window size for stagnation detection (default: 20).")
     parser.add_argument("--stagnation-variance-threshold", type=float, default=1e-6,
                         help="Variance threshold for stagnation detection (default: 1e-6).")
+
+    # Eigenvector-following refinement
+    parser.add_argument("--eigenvector-following", action="store_true",
+                        help="Enable eigenvector-following refinement after TS candidate found.")
+    parser.add_argument("--eigvec-follow-delay", type=int, default=5,
+                        help="Steps after TS candidate before switching to eigenvector following (default: 5).")
     args = parser.parse_args()
 
     torch.set_grad_enabled(False)
@@ -333,6 +382,9 @@ if __name__ == "__main__":
         print(f"Multi-stage TS detection:")
         print(f"  Min eigenvalue product: {args.min_eig_product_threshold:.2e}")
         print(f"  Confirmation steps: {args.confirmation_steps}")
+    if args.eigenvector_following:
+        print(f"Eigenvector-following refinement: ENABLED")
+        print(f"  Activation delay: {args.eigvec_follow_delay} steps after TS candidate")
 
     results_summary = []
     stalled_runs_data = []  # For 0 -> 0 transitions
@@ -354,7 +406,9 @@ if __name__ == "__main__":
                 min_eig_product_threshold=args.min_eig_product_threshold,
                 confirmation_steps=args.confirmation_steps,
                 stagnation_check_window=args.stagnation_check_window,
-                stagnation_variance_threshold=args.stagnation_variance_threshold
+                stagnation_variance_threshold=args.stagnation_variance_threshold,
+                eigenvector_following=args.eigenvector_following,
+                eigvec_follow_delay=args.eigvec_follow_delay
             )
             solver = RK45(f=dynamics_fn, t0=0.0, y0=initial_coords.numpy().flatten(),
                          t1=args.t_end, h_max=0.1, event_fn=dynamics_fn.event_function,
@@ -385,6 +439,7 @@ if __name__ == "__main__":
                 "num_kicks": dynamics_fn.num_kicks,
                 "ts_candidate_step": dynamics_fn.ts_candidate_step,
                 "ts_confirmed": dynamics_fn.ts_found,
+                "eigvec_follow_activated": dynamics_fn.eigvec_follow_active,
                 "final_mean_force": traj["force_mean"][-1],
                 "final_mean_gad": traj["gad_mean"][-1],
             }

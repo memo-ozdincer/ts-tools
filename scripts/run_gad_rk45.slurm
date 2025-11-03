@@ -29,12 +29,15 @@ echo ">>> Running GAD-RK45 Search script..."
 
 # --- Main Experiment: Start from midpoint and search for TS ---
 # This version uses the standard GAD dynamics with the RK45 solver.
+# Now includes multi-stage early stopping for robust TS detection.
 python -m src.gad_rk45_search \
     --max-samples 30 \
     --start-from midpoint_rt \
     --stop-at-ts \
     --t-end 2.0 \
-    --max-steps 100
+    --max-steps 100 \
+    --min-eig-product-threshold -1e-4 \
+    --confirmation-steps 10
 
 # --- Example with kick mechanism enabled ---
 # Uncomment to enable kick mechanism to escape local minima:
@@ -47,5 +50,16 @@ python -m src.gad_rk45_search \
 #     --enable-kick \
 #     --kick-force-threshold 0.015 \
 #     --kick-magnitude 0.1
+
+# --- Example with eigenvector-following refinement ---
+# Uncomment for high-accuracy TS refinement:
+# python -m src.gad_rk45_search \
+#     --max-samples 30 \
+#     --start-from reactant \
+#     --stop-at-ts \
+#     --t-end 2.0 \
+#     --enable-kick \
+#     --eigenvector-following \
+#     --eigvec-follow-delay 5
 
 echo "✅ Job completed successfully."
