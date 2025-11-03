@@ -257,7 +257,7 @@ def plot_trajectory(trajectory: Dict[str, List[Optional[float]]], sample_index: 
     axes[3].set_ylabel("Mean |GAD| (Å)"); axes[3].set_xlabel("Step"); axes[3].set_title("GAD Vector Magnitude")
     
     fig.tight_layout(rect=[0, 0, 1, 0.96])
-    filename = f"rgd1_gad_traj_{sample_index:03d}_{_sanitize_formula(formula)}.png"
+    filename = f"t1x_gad_traj_{sample_index:03d}_{_sanitize_formula(formula)}.png"
     out_path = os.path.join(out_dir, filename)
     fig.savefig(out_path, dpi=200); plt.close(fig)
     return out_path
@@ -399,7 +399,7 @@ if __name__ == "__main__":
     if args.stop_at_ts: filename_suffix += "_stopts"
     if args.enable_kick: filename_suffix += "_kick"
 
-    out_json = os.path.join(out_dir, f"rgd1_gad_rmsd_{filename_suffix}_{len(results_summary)}.json")
+    out_json = os.path.join(out_dir, f"t1x_gad_rmsd_{filename_suffix}_{len(results_summary)}.json")
     with open(out_json, "w") as f:
         json.dump(results_summary, f, indent=2)
     print(f"\nSaved summary → {out_json}")

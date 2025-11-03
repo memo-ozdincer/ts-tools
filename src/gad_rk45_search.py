@@ -92,12 +92,18 @@ def _sanitize_formula(f): return re.sub(r"[^A-Za-z0-9_.-]+", "_", f).strip("_") 
 # --- MODIFIED Core Dynamics Function (With Optional Kick Mechanism) ---
 class GADDynamics:
     def __init__(self, calculator, atomic_nums, stop_at_ts=False, kick_enabled=False,
-                 kick_force_threshold=0.015, kick_magnitude=0.1):
+                 kick_force_threshold=0.015, kick_magnitude=0.1,
+                 min_eig_product_threshold=-1e-4, confirmation_steps=10,
+                 stagnation_check_window=20, stagnation_variance_threshold=1e-6):
         """
         Args:
             kick_enabled: Enable kick mechanism to escape local minima
             kick_force_threshold: Force threshold in eV/Å below which kick is considered (default: 0.015)
             kick_magnitude: Magnitude of kick in Å (default: 0.1)
+            min_eig_product_threshold: Minimum eigenvalue product to consider as TS candidate (default: -1e-4)
+            confirmation_steps: Number of steps to wait for confirmation after TS candidate found (default: 10)
+            stagnation_check_window: Window size for checking stagnation (default: 20)
+            stagnation_variance_threshold: Variance threshold for detecting stagnation (default: 1e-6)
         """
         self.calculator = calculator
         self.atomic_nums = torch.tensor(atomic_nums, dtype=torch.long)
@@ -106,9 +112,14 @@ class GADDynamics:
         self.kick_enabled = kick_enabled
         self.kick_force_threshold = kick_force_threshold
         self.kick_magnitude = kick_magnitude
+        self.min_eig_product_threshold = min_eig_product_threshold
+        self.confirmation_steps = confirmation_steps
+        self.stagnation_check_window = stagnation_check_window
+        self.stagnation_variance_threshold = stagnation_variance_threshold
         self.device = next(calculator.potential.parameters()).device
         self.trajectory = defaultdict(list)
         self.ts_found = False
+        self.ts_candidate_step = None
         self.num_kicks = 0
 
     def __call__(self, t, y, record_stats=True):
@@ -125,24 +136,41 @@ class GADDynamics:
         # Get unprojected eigenvalues for full Hessian (for GAD direction)
         evals_full, evecs_full = torch.linalg.eigh(hessian)
 
-        # Check if we should apply a kick (escape local minimum)
+        # Extract eigenvalue information
+        eig0 = eigvals[0].item() if eigvals.numel() >= 1 else None
+        eig1 = eigvals[1].item() if eigvals.numel() >= 2 else None
+        eig_prod = (eig0 * eig1) if (eig0 is not None and eig1 is not None) else None
+        force_magnitude = forces.norm(dim=1).mean().item()
+
+        # Check if we should apply a kick (escape local minimum or stagnation)
         apply_kick = False
         if self.kick_enabled:
-            force_magnitude = forces.norm(dim=1).mean().item()
-            # Check if force is below threshold AND both smallest projected eigenvalues are positive (local min)
-            if force_magnitude < self.kick_force_threshold and eigvals.numel() >= 2:
-                eig0, eig1 = eigvals[0].item(), eigvals[1].item()
-                if eig0 > 0 and eig1 > 0:  # Local minimum
+            # Criterion 1: Force below threshold AND both eigenvalues positive (local min)
+            if force_magnitude < self.kick_force_threshold and eig0 is not None and eig1 is not None:
+                if eig0 > 0 and eig1 > 0:
                     apply_kick = True
                     self.num_kicks += 1
+                    if record_stats:
+                        print(f"  [KICK {self.num_kicks}] Local minimum: |F|={force_magnitude:.4f} eV/Å, λ₀={eig0:.6f}, λ₁={eig1:.6f}")
+
+            # Criterion 2: Eigenvalue product stagnating near zero (but positive)
+            if not apply_kick and len(self.trajectory["eig_product"]) >= self.stagnation_check_window:
+                recent_eig_products = [ep for ep in self.trajectory["eig_product"][-self.stagnation_check_window:] if ep is not None]
+                if len(recent_eig_products) >= self.stagnation_check_window:
+                    eig_prod_variance = np.var(recent_eig_products)
+                    mean_eig_prod = np.mean(recent_eig_products)
+                    # Stagnating if variance is tiny and mean is small positive
+                    if eig_prod_variance < self.stagnation_variance_threshold and 0 < mean_eig_prod < 1e-3:
+                        apply_kick = True
+                        self.num_kicks += 1
+                        if record_stats:
+                            print(f"  [KICK {self.num_kicks}] Stagnation: eig_prod_var={eig_prod_variance:.2e}, mean={mean_eig_prod:.6f}")
 
         if apply_kick:
             # Apply kick: random perturbation scaled by kick_magnitude
             kick_direction = torch.randn_like(coords)
             kick_direction = kick_direction / (kick_direction.norm() + 1e-12)
             velocity = kick_direction * self.kick_magnitude
-            if record_stats:
-                print(f"  [KICK {self.num_kicks}] at t={t:.3f}: |F|={force_magnitude:.4f} eV/Å, λ₀={eig0:.6f}, λ₁={eig1:.6f}")
         else:
             # Standard GAD velocity
             v = evecs_full[:, 0].to(forces.dtype)
@@ -152,17 +180,48 @@ class GADDynamics:
             gad_flat = f_flat + 2.0 * torch.dot(-f_flat, v) * v
             velocity = gad_flat.reshape(self.num_atoms, 3)
 
+        # Record trajectory statistics
         if record_stats:
             self.trajectory["time"].append(t)
             self.trajectory["energy"].append(results["energy"].item())
             self.trajectory["force_mean"].append(forces.norm(dim=1).mean().item())
             self.trajectory["gad_mean"].append(velocity.norm(dim=1).mean().item())
-            eig_prod = (eigvals[0] * eigvals[1]).item() if eigvals.numel() >= 2 else None
             self.trajectory["eig_product"].append(eig_prod)
+            self.trajectory["eig0"].append(eig0)  # Track individual eigenvalues
+            self.trajectory["eig1"].append(eig1)
             self.trajectory["neg_num"].append(freq_info.get("neg_num", -1))
             self.trajectory["kick_applied"].append(1 if apply_kick else 0)
-            if self.stop_at_ts and eig_prod is not None and eig_prod < -1e-5:
-                self.ts_found = True
+
+            # Multi-stage early stopping logic
+            if self.stop_at_ts and eig_prod is not None:
+                current_step = len(self.trajectory["time"])
+
+                # Stage 1: Check if eigenvalue product is meaningfully negative
+                if eig_prod < self.min_eig_product_threshold:
+                    if self.ts_candidate_step is None:
+                        self.ts_candidate_step = current_step
+                        print(f"  [TS CANDIDATE] Found at step {current_step}, t={t:.4f}: λ₀*λ₁={eig_prod:.6e} (λ₀={eig0:.6f}, λ₁={eig1:.6f})")
+
+                    # Stage 2: Confirm TS by checking if eigenvalue product magnitude is increasing
+                    if current_step >= self.ts_candidate_step + self.confirmation_steps:
+                        candidate_eig_prod = self.trajectory["eig_product"][self.ts_candidate_step - 1]
+                        # Check if product is getting MORE negative (magnitude increasing)
+                        magnitude_increase = abs(eig_prod) / (abs(candidate_eig_prod) + 1e-20)
+
+                        if magnitude_increase > 1.2:  # 20% increase in magnitude
+                            self.ts_found = True
+                            print(f"  [TS CONFIRMED] at step {current_step}: λ₀*λ₁={eig_prod:.6e} (increased by {magnitude_increase:.2f}x)")
+                        else:
+                            # Check if λ₀ is becoming MORE negative
+                            candidate_eig0 = self.trajectory["eig0"][self.ts_candidate_step - 1]
+                            if eig0 < candidate_eig0 * 1.1:  # λ₀ became 10% more negative
+                                self.ts_found = True
+                                print(f"  [TS CONFIRMED] at step {current_step}: λ₀={eig0:.6f} (more negative than {candidate_eig0:.6f})")
+                else:
+                    # Reset candidate if we drift back to positive or less negative
+                    if self.ts_candidate_step is not None and current_step < self.ts_candidate_step + self.confirmation_steps:
+                        print(f"  [TS CANDIDATE RESET] Drifted back: λ₀*λ₁={eig_prod:.6e}")
+                    self.ts_candidate_step = None
 
         return velocity.cpu().numpy().flatten()
 
@@ -173,20 +232,56 @@ class GADDynamics:
 def plot_trajectory(trajectory, sample_index, formula, out_dir, start_from, initial_neg_num, final_neg_num):
     timesteps = np.array(trajectory.get("time", []))
     def _nanify(key): return np.array([v if v is not None else np.nan for v in trajectory.get(key, [])], dtype=float)
-    fig, axes = plt.subplots(4, 1, figsize=(8, 12), sharex=True)
+
+    # Create 5 subplots to include individual eigenvalues
+    fig, axes = plt.subplots(5, 1, figsize=(8, 15), sharex=True)
     fig.suptitle(f"GAD Trajectory for Sample {sample_index}: {formula}", fontsize=14)
-    axes[0].plot(timesteps, _nanify("energy"), marker=".", lw=1.2); axes[0].set_ylabel("Energy (eV)"); axes[0].set_title("Energy")
-    axes[1].plot(timesteps, _nanify("force_mean"), marker=".", color="tab:orange", lw=1.2); axes[1].set_ylabel("Mean |F| (eV/Å)"); axes[1].set_title("Force Magnitude")
-    eig_ax, eig_prod = axes[2], _nanify("eig_product")
-    eig_ax.plot(timesteps, eig_prod, marker=".", color="tab:purple", lw=1.2, label="λ_0 * λ_1"); eig_ax.axhline(0, color='grey', ls='--', lw=1)
-    if len(eig_prod) > 0 and not np.isnan(eig_prod[0]): eig_ax.text(0.02, 0.95, f"Start: {eig_prod[0]:.4f}", transform=eig_ax.transAxes, ha='left', va='top', c='purple', fontsize=9)
-    if len(eig_prod) > 0 and not np.isnan(eig_prod[-1]): eig_ax.text(0.98, 0.95, f"End: {eig_prod[-1]:.4f}", transform=eig_ax.transAxes, ha='right', va='top', c='purple', fontsize=9)
-    eig_ax.set_ylabel("Eigenvalue Product"); eig_ax.set_title("Product of Two Smallest Hessian Eigenvalues"); eig_ax.legend(loc='best')
-    axes[3].plot(timesteps, _nanify("gad_mean"), marker=".", color="tab:green", lw=1.2); axes[3].set_ylabel("Mean |GAD| (Å)"); axes[3].set_xlabel("Time (a.u.)"); axes[3].set_title("GAD Vector Magnitude")
+
+    # Energy
+    axes[0].plot(timesteps, _nanify("energy"), marker=".", lw=1.2)
+    axes[0].set_ylabel("Energy (eV)")
+    axes[0].set_title("Energy")
+
+    # Force magnitude
+    axes[1].plot(timesteps, _nanify("force_mean"), marker=".", color="tab:orange", lw=1.2)
+    axes[1].set_ylabel("Mean |F| (eV/Å)")
+    axes[1].set_title("Force Magnitude")
+
+    # Individual eigenvalues
+    eig0, eig1 = _nanify("eig0"), _nanify("eig1")
+    axes[2].plot(timesteps, eig0, marker=".", color="tab:red", lw=1.2, label="λ₀ (most negative)")
+    axes[2].plot(timesteps, eig1, marker=".", color="tab:blue", lw=1.2, label="λ₁ (2nd smallest)")
+    axes[2].axhline(0, color='grey', ls='--', lw=1)
+    axes[2].set_ylabel("Eigenvalue (eV/Å²)")
+    axes[2].set_title("Individual Projected Eigenvalues")
+    axes[2].legend(loc='best')
+    if len(eig0) > 0 and not np.isnan(eig0[-1]):
+        axes[2].text(0.98, 0.05, f"Final λ₀={eig0[-1]:.6f}", transform=axes[2].transAxes, ha='right', va='bottom', fontsize=9)
+
+    # Eigenvalue product
+    eig_prod = _nanify("eig_product")
+    axes[3].plot(timesteps, eig_prod, marker=".", color="tab:purple", lw=1.2, label="λ₀ * λ₁")
+    axes[3].axhline(0, color='grey', ls='--', lw=1)
+    axes[3].axhline(-1e-4, color='red', ls=':', lw=1, label="TS threshold")
+    if len(eig_prod) > 0 and not np.isnan(eig_prod[0]):
+        axes[3].text(0.02, 0.95, f"Start: {eig_prod[0]:.4e}", transform=axes[3].transAxes, ha='left', va='top', c='purple', fontsize=9)
+    if len(eig_prod) > 0 and not np.isnan(eig_prod[-1]):
+        axes[3].text(0.98, 0.95, f"End: {eig_prod[-1]:.4e}", transform=axes[3].transAxes, ha='right', va='top', c='purple', fontsize=9)
+    axes[3].set_ylabel("Eigenvalue Product")
+    axes[3].set_title("Product of Two Smallest Projected Eigenvalues")
+    axes[3].legend(loc='best')
+
+    # GAD magnitude
+    axes[4].plot(timesteps, _nanify("gad_mean"), marker=".", color="tab:green", lw=1.2)
+    axes[4].set_ylabel("Mean |GAD| (Å)")
+    axes[4].set_xlabel("Time (a.u.)")
+    axes[4].set_title("GAD Vector Magnitude")
+
     fig.tight_layout(rect=[0, 0, 1, 0.96])
     filename = f"traj_{sample_index:03d}_{_sanitize_formula(formula)}_from_{start_from}_{initial_neg_num}to{final_neg_num}.png"
     out_path = os.path.join(out_dir, filename)
-    fig.savefig(out_path, dpi=200); plt.close(fig)
+    fig.savefig(out_path, dpi=200)
+    plt.close(fig)
     return out_path
 
 # --- Main script execution block (With Kick args) ---
@@ -204,6 +299,16 @@ if __name__ == "__main__":
                         help="Force threshold in eV/Å below which kick is considered (default: 0.015).")
     parser.add_argument("--kick-magnitude", type=float, default=0.1,
                         help="Magnitude of kick displacement in Å (default: 0.1).")
+
+    # Multi-stage early stopping arguments
+    parser.add_argument("--min-eig-product-threshold", type=float, default=-1e-4,
+                        help="Minimum eigenvalue product to consider as TS candidate (default: -1e-4).")
+    parser.add_argument("--confirmation-steps", type=int, default=10,
+                        help="Number of steps to wait for TS confirmation (default: 10).")
+    parser.add_argument("--stagnation-check-window", type=int, default=20,
+                        help="Window size for stagnation detection (default: 20).")
+    parser.add_argument("--stagnation-variance-threshold", type=float, default=1e-6,
+                        help="Variance threshold for stagnation detection (default: 1e-6).")
     args = parser.parse_args()
 
     torch.set_grad_enabled(False)
@@ -213,6 +318,10 @@ if __name__ == "__main__":
     print(f"Kick enabled: {args.enable_kick}")
     if args.enable_kick:
         print(f"  Force threshold: {args.kick_force_threshold} eV/Å, Kick magnitude: {args.kick_magnitude} Å")
+    if args.stop_at_ts:
+        print(f"Multi-stage TS detection:")
+        print(f"  Min eigenvalue product: {args.min_eig_product_threshold:.2e}")
+        print(f"  Confirmation steps: {args.confirmation_steps}")
 
     results_summary = []
     stalled_runs_data = []  # For 0 -> 0 transitions
@@ -230,7 +339,11 @@ if __name__ == "__main__":
                 stop_at_ts=args.stop_at_ts,
                 kick_enabled=args.enable_kick,
                 kick_force_threshold=args.kick_force_threshold,
-                kick_magnitude=args.kick_magnitude
+                kick_magnitude=args.kick_magnitude,
+                min_eig_product_threshold=args.min_eig_product_threshold,
+                confirmation_steps=args.confirmation_steps,
+                stagnation_check_window=args.stagnation_check_window,
+                stagnation_variance_threshold=args.stagnation_variance_threshold
             )
             solver = RK45(f=dynamics_fn, t0=0.0, y0=initial_coords.numpy().flatten(),
                          t1=args.t_end, h_max=0.1, event_fn=dynamics_fn.event_function,
@@ -252,9 +365,15 @@ if __name__ == "__main__":
                 "final_time": solver.t,
                 "initial_eig_product": traj["eig_product"][0],
                 "final_eig_product": traj["eig_product"][-1],
+                "initial_eig0": traj["eig0"][0] if traj["eig0"] else None,
+                "final_eig0": traj["eig0"][-1] if traj["eig0"] else None,
+                "initial_eig1": traj["eig1"][0] if traj["eig1"] else None,
+                "final_eig1": traj["eig1"][-1] if traj["eig1"] else None,
                 "initial_neg_eigvals": initial_neg_num,
                 "final_neg_eigvals": final_neg_num,
                 "num_kicks": dynamics_fn.num_kicks,
+                "ts_candidate_step": dynamics_fn.ts_candidate_step,
+                "ts_confirmed": dynamics_fn.ts_found,
                 "final_mean_force": traj["force_mean"][-1],
                 "final_mean_gad": traj["gad_mean"][-1],
             }

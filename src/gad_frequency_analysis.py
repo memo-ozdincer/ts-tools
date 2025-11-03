@@ -53,7 +53,7 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"[{i}] ERROR: {e}")
 
-    out_json = os.path.join(out_dir, f"rgd1_frequency_{len(results_summary)}.json")
+    out_json = os.path.join(out_dir, f"t1x_frequency_{len(results_summary)}.json")
     with open(out_json, "w") as f:
         json.dump(results_summary, f, indent=2)
     print(f"\nSaved frequency analysis summary for {len(results_summary)} samples → {out_json}")
