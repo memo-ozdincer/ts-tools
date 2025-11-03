@@ -94,7 +94,8 @@ class GADDynamics:
     def __init__(self, calculator, atomic_nums, stop_at_ts=False, kick_enabled=False,
                  kick_force_threshold=0.015, kick_magnitude=0.1,
                  min_eig_product_threshold=-1e-4, confirmation_steps=10,
-                 stagnation_check_window=20, stagnation_variance_threshold=1e-6):
+                 stagnation_check_window=20, stagnation_variance_threshold=1e-6,
+                 eigenvector_following=False, eigvec_follow_delay=5):
         """
         Args:
             kick_enabled: Enable kick mechanism to escape local minima
@@ -104,6 +105,8 @@ class GADDynamics:
             confirmation_steps: Number of steps to wait for confirmation after TS candidate found (default: 10)
             stagnation_check_window: Window size for checking stagnation (default: 20)
             stagnation_variance_threshold: Variance threshold for detecting stagnation (default: 1e-6)
+            eigenvector_following: Enable eigenvector-following refinement after TS candidate found (default: False)
+            eigvec_follow_delay: Steps after TS candidate before switching to eigenvector following (default: 5)
         """
         self.calculator = calculator
         self.atomic_nums = torch.tensor(atomic_nums, dtype=torch.long)
@@ -116,10 +119,13 @@ class GADDynamics:
         self.confirmation_steps = confirmation_steps
         self.stagnation_check_window = stagnation_check_window
         self.stagnation_variance_threshold = stagnation_variance_threshold
+        self.eigenvector_following = eigenvector_following
+        self.eigvec_follow_delay = eigvec_follow_delay
         self.device = next(calculator.potential.parameters()).device
         self.trajectory = defaultdict(list)
         self.ts_found = False
         self.ts_candidate_step = None
+        self.eigvec_follow_active = False
         self.num_kicks = 0
 
     def __call__(self, t, y, record_stats=True):
@@ -144,27 +150,32 @@ class GADDynamics:
 
         # Check if we should apply a kick (escape local minimum or stagnation)
         apply_kick = False
-        if self.kick_enabled:
-            # Criterion 1: Force below threshold AND both eigenvalues positive (local min)
-            if force_magnitude < self.kick_force_threshold and eig0 is not None and eig1 is not None:
-                if eig0 > 0 and eig1 > 0:
-                    apply_kick = True
-                    self.num_kicks += 1
-                    if record_stats:
-                        print(f"  [KICK {self.num_kicks}] Local minimum: |F|={force_magnitude:.4f} eV/Å, λ₀={eig0:.6f}, λ₁={eig1:.6f}")
+        kick_reason = ""
 
-            # Criterion 2: Eigenvalue product stagnating near zero (but positive)
-            if not apply_kick and len(self.trajectory["eig_product"]) >= self.stagnation_check_window:
+        if self.kick_enabled and eig_prod is not None:
+            # Calculate stagnation metrics if we have enough history
+            eig_prod_variance = None
+            if len(self.trajectory["eig_product"]) >= self.stagnation_check_window:
                 recent_eig_products = [ep for ep in self.trajectory["eig_product"][-self.stagnation_check_window:] if ep is not None]
                 if len(recent_eig_products) >= self.stagnation_check_window:
                     eig_prod_variance = np.var(recent_eig_products)
-                    mean_eig_prod = np.mean(recent_eig_products)
-                    # Stagnating if variance is tiny and mean is small positive
-                    if eig_prod_variance < self.stagnation_variance_threshold and 0 < mean_eig_prod < 1e-3:
-                        apply_kick = True
-                        self.num_kicks += 1
-                        if record_stats:
-                            print(f"  [KICK {self.num_kicks}] Stagnation: eig_prod_var={eig_prod_variance:.2e}, mean={mean_eig_prod:.6f}")
+
+            # KICK Criterion 1: Stagnation (low variance) AND not near TS
+            if (eig_prod_variance is not None and
+                eig_prod_variance < self.stagnation_variance_threshold and
+                eig_prod > self.min_eig_product_threshold):
+                apply_kick = True
+                kick_reason = f"Stagnation (var={eig_prod_variance:.2e}, eig_prod={eig_prod:.4e})"
+
+            # KICK Criterion 2: Force small AND not near TS (stuck in flat region)
+            elif (force_magnitude < self.kick_force_threshold and eig_prod > 0):
+                apply_kick = True
+                kick_reason = f"Low force in non-TS region (|F|={force_magnitude:.4f}, eig_prod={eig_prod:.4e})"
+
+            if apply_kick:
+                self.num_kicks += 1
+                if record_stats:
+                    print(f"  [KICK {self.num_kicks}] {kick_reason}")
 
         if apply_kick:
             # Apply kick: random perturbation scaled by kick_magnitude

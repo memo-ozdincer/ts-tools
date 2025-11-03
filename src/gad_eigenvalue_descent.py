@@ -64,6 +64,10 @@ def run_eigenvalue_descent(
     loss_type: str = "targeted_magnitude",
     target_eig0: float = -0.05,
     target_eig1: float = 0.10,
+    adaptive_targets: bool = False,
+    adaptive_relax_steps: int = 50,
+    adaptive_final_eig0: float = -0.02,
+    adaptive_final_eig1: float = 0.05,
 ) -> Dict[str, Any]:
     """
     Run gradient descent on eigenvalues to find transition states.
@@ -73,8 +77,12 @@ def run_eigenvalue_descent(
             - "relu": Original ReLU loss (allows infinitesimal eigenvalues)
             - "targeted_magnitude": Target specific eigenvalue magnitudes (RECOMMENDED)
             - "midpoint_squared": Minimize squared midpoint between eigenvalues
-        target_eig0: Target value for most negative eigenvalue (eV/Å²)
-        target_eig1: Target value for second smallest eigenvalue (eV/Å²)
+        target_eig0: Initial target value for most negative eigenvalue (eV/Å²)
+        target_eig1: Initial target value for second smallest eigenvalue (eV/Å²)
+        adaptive_targets: Enable adaptive target relaxation over final steps
+        adaptive_relax_steps: Number of final steps over which to relax targets
+        adaptive_final_eig0: Final relaxed target for λ₀ (eV/Å²)
+        adaptive_final_eig1: Final relaxed target for λ₁ (eV/Å²)
     """
     model = calculator.potential
     device = model.device
@@ -84,7 +92,25 @@ def run_eigenvalue_descent(
     history = defaultdict(list)
     final_eigvals = None
 
+    # Store initial targets for adaptive relaxation
+    initial_target_eig0 = target_eig0
+    initial_target_eig1 = target_eig1
+
     for step in range(n_steps):
+        # Adaptive target relaxation: linearly interpolate targets over final steps
+        if adaptive_targets and loss_type == "targeted_magnitude":
+            relax_start_step = n_steps - adaptive_relax_steps
+            if step >= relax_start_step:
+                # Linear interpolation: alpha = 0 at relax_start_step, alpha = 1 at n_steps
+                alpha = (step - relax_start_step) / adaptive_relax_steps
+                target_eig0 = initial_target_eig0 + alpha * (adaptive_final_eig0 - initial_target_eig0)
+                target_eig1 = initial_target_eig1 + alpha * (adaptive_final_eig1 - initial_target_eig1)
+
+                if step == relax_start_step:
+                    print(f"  [ADAPTIVE] Starting target relaxation over {adaptive_relax_steps} steps")
+                    print(f"    λ₀: {initial_target_eig0:.4f} → {adaptive_final_eig0:.4f}")
+                    print(f"    λ₁: {initial_target_eig1:.4f} → {adaptive_final_eig1:.4f}")
+
         with torch.enable_grad():
             batch = coord_atoms_to_torch_geometric(coords, atomic_nums, device)
             _, _, out = model.forward(batch, otf_graph=True)
@@ -163,9 +189,19 @@ if __name__ == "__main__":
                         choices=["relu", "targeted_magnitude", "midpoint_squared"],
                         help="Loss function type (default: targeted_magnitude)")
     parser.add_argument("--target-eig0", type=float, default=-0.05,
-                        help="Target for most negative eigenvalue in eV/Å² (default: -0.05)")
+                        help="Initial target for most negative eigenvalue in eV/Å² (default: -0.05)")
     parser.add_argument("--target-eig1", type=float, default=0.10,
-                        help="Target for second smallest eigenvalue in eV/Å² (default: 0.10)")
+                        help="Initial target for second smallest eigenvalue in eV/Å² (default: 0.10)")
+
+    # Adaptive target relaxation
+    parser.add_argument("--adaptive-targets", action="store_true",
+                        help="Enable adaptive target relaxation over final steps")
+    parser.add_argument("--adaptive-relax-steps", type=int, default=50,
+                        help="Number of final steps over which to relax targets (default: 50)")
+    parser.add_argument("--adaptive-final-eig0", type=float, default=-0.02,
+                        help="Final relaxed target for λ₀ in eV/Å² (default: -0.02)")
+    parser.add_argument("--adaptive-final-eig1", type=float, default=0.05,
+                        help="Final relaxed target for λ₁ in eV/Å² (default: 0.05)")
     args = parser.parse_args()
 
     calculator, dataloader, device, out_dir = setup_experiment(args, shuffle=False)
@@ -174,8 +210,13 @@ if __name__ == "__main__":
     print(f"Starting From: {args.start_from.upper()}, Steps: {args.n_steps_opt}, LR: {args.lr}")
     print(f"Loss Type: {args.loss_type}")
     if args.loss_type == "targeted_magnitude":
-        print(f"  Target λ₀: {args.target_eig0:.4f} eV/Å²")
-        print(f"  Target λ₁: {args.target_eig1:.4f} eV/Å²")
+        print(f"  Initial Target λ₀: {args.target_eig0:.4f} eV/Å²")
+        print(f"  Initial Target λ₁: {args.target_eig1:.4f} eV/Å²")
+        if args.adaptive_targets:
+            print(f"  Adaptive Relaxation: ENABLED")
+            print(f"    Relax over final {args.adaptive_relax_steps} steps")
+            print(f"    Final Target λ₀: {args.adaptive_final_eig0:.4f} eV/Å²")
+            print(f"    Final Target λ₁: {args.adaptive_final_eig1:.4f} eV/Å²")
 
     results_summary = []
     for i, batch in enumerate(dataloader):
@@ -196,6 +237,10 @@ if __name__ == "__main__":
                 loss_type=args.loss_type,
                 target_eig0=args.target_eig0,
                 target_eig1=args.target_eig1,
+                adaptive_targets=args.adaptive_targets,
+                adaptive_relax_steps=args.adaptive_relax_steps,
+                adaptive_final_eig0=args.adaptive_final_eig0,
+                adaptive_final_eig1=args.adaptive_final_eig1,
             )
 
             with torch.no_grad():
