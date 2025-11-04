@@ -108,6 +108,7 @@ def run_eigenvalue_descent(
     atomsymbols = [Z_TO_ATOM_SYMBOL[z.item()] for z in atomic_nums]
     history = defaultdict(list)
     final_eigvals = None
+    loss = torch.tensor(float('inf'), device=device)  # Initialize in case of early termination
 
     # Store initial targets for adaptive relaxation
     initial_target_eig0 = target_eig0
@@ -128,44 +129,74 @@ def run_eigenvalue_descent(
                     print(f"    λ₀: {initial_target_eig0:.4f} → {adaptive_final_eig0:.4f}")
                     print(f"    λ₁: {initial_target_eig1:.4f} → {adaptive_final_eig1:.4f}")
 
-        with torch.enable_grad():
-            batch = coord_atoms_to_torch_geometric(coords, atomic_nums, device)
-            _, _, out = model.forward(batch, otf_graph=True)
-            hess_raw = out["hessian"].reshape(coords.numel(), coords.numel())
-            hess_proj = massweigh_and_eckartprojection_torch(hess_raw, coords, atomsymbols)
-            eigvals, _ = torch.linalg.eigh(hess_proj)
-            final_eigvals = eigvals
+        try:
+            with torch.enable_grad():
+                batch = coord_atoms_to_torch_geometric(coords, atomic_nums, device)
+                _, _, out = model.forward(batch, otf_graph=True)
+                hess_raw = out["hessian"].reshape(coords.numel(), coords.numel())
+                hess_proj = massweigh_and_eckartprojection_torch(hess_raw, coords, atomsymbols)
+                eigvals, _ = torch.linalg.eigh(hess_proj)
+                final_eigvals = eigvals
 
-            # Compute loss based on selected type
-            if loss_type == "relu":
-                # Original: allows infinitesimal eigenvalues
-                loss = torch.relu(eigvals[0]) + torch.relu(-eigvals[1])
+                # Compute loss based on selected type
+                if loss_type == "relu":
+                    # Original: allows infinitesimal eigenvalues
+                    loss = torch.relu(eigvals[0]) + torch.relu(-eigvals[1])
 
-            elif loss_type == "targeted_magnitude":
-                # Target specific magnitudes (RECOMMENDED)
-                # Push λ₀ to be meaningfully negative, λ₁ to be meaningfully positive
-                loss = (eigvals[0] - target_eig0)**2 + (eigvals[1] - target_eig1)**2
+                elif loss_type == "targeted_magnitude":
+                    # Target specific magnitudes (RECOMMENDED)
+                    # Push λ₀ to be meaningfully negative, λ₁ to be meaningfully positive
+                    loss = (eigvals[0] - target_eig0)**2 + (eigvals[1] - target_eig1)**2
 
-            elif loss_type == "midpoint_squared":
-                # Minimize squared midpoint (from your description)
-                midpoint = (eigvals[0] + eigvals[1]) / 2.0
-                loss = midpoint**2
+                elif loss_type == "midpoint_squared":
+                    # Minimize squared midpoint (from your description)
+                    midpoint = (eigvals[0] + eigvals[1]) / 2.0
+                    loss = midpoint**2
 
+                else:
+                    raise ValueError(f"Unknown loss_type: {loss_type}")
+
+                # Early stopping based on loss type
+                if loss_type == "relu" and loss.item() < 1e-8:
+                    print(f"  Stopping early at step {step}: Converged (Loss ~ 0).")
+                    break
+                elif loss_type in ["targeted_magnitude", "midpoint_squared"] and loss.item() < 1e-6:
+                    print(f"  Stopping early at step {step}: Converged (Loss < 1e-6).")
+                    break
+
+                grad = torch.autograd.grad(loss, coords)[0]
+
+        except (AssertionError, RuntimeError) as e:
+            # Handle case where atoms drift too far apart (empty edge graph)
+            if "edge_distance_vec is empty" in str(e) or "edge_index" in str(e):
+                print(f"  [WARNING] Step {step}: Atoms too far apart, stopping optimization early.")
+                print(f"    This usually means the optimization diverged. Returning last valid state.")
+                break
             else:
-                raise ValueError(f"Unknown loss_type: {loss_type}")
-
-            # Early stopping based on loss type
-            if loss_type == "relu" and loss.item() < 1e-8:
-                print(f"  Stopping early at step {step}: Converged (Loss ~ 0).")
-                break
-            elif loss_type in ["targeted_magnitude", "midpoint_squared"] and loss.item() < 1e-6:
-                print(f"  Stopping early at step {step}: Converged (Loss < 1e-6).")
-                break
-
-            grad = torch.autograd.grad(loss, coords)[0]
+                raise  # Re-raise if it's a different error
 
         with torch.no_grad():
-            coords -= lr * grad
+            # Gradient clipping to prevent exploding gradients
+            grad_norm = torch.norm(grad)
+            max_grad_norm = 100.0  # Maximum allowed gradient norm
+            if grad_norm > max_grad_norm:
+                grad = grad * (max_grad_norm / grad_norm)
+
+            # Compute proposed update
+            update = lr * grad
+
+            # Limit maximum displacement per atom to prevent atoms from flying apart
+            # Max displacement per atom should be ~0.1-0.3 Å per step
+            max_displacement_per_atom = 0.2  # Angstroms
+            update_per_atom = update.reshape(-1, 3)
+            atom_displacements = torch.norm(update_per_atom, dim=1)
+            max_atom_disp = atom_displacements.max()
+
+            if max_atom_disp > max_displacement_per_atom:
+                scale_factor = max_displacement_per_atom / max_atom_disp
+                update = update * scale_factor
+
+            coords -= update
 
         coords.requires_grad = True
 
@@ -179,6 +210,18 @@ def run_eigenvalue_descent(
             print(f"  Step {step:03d}: Loss={loss.item():.6e}, λ₀*λ₁={eig_prod:.6e} (λ₀={eigvals[0].item():.6f}, λ₁={eigvals[1].item():.6f})")
 
     final_coords = coords.detach()
+
+    # Handle case where optimization failed/diverged early
+    if final_eigvals is None:
+        print(f"  [WARNING] Optimization failed - no valid eigenvalues computed")
+        return {
+            "final_coords": final_coords.cpu(),
+            "history": history,
+            "final_loss": float('inf'),
+            "final_eig_product": float('inf'),
+            "final_eig0": float('nan'),
+            "final_eig1": float('nan'),
+        }
 
     return {
         "final_coords": final_coords.cpu(),
