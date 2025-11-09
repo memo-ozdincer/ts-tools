@@ -30,7 +30,7 @@ source ${VENV_DIR}/bin/activate
 echo ">>> Running frequency analysis script..."
 # ARGS R HERE NOW
 python -m src.gad_frequency_analysis \
-    --max-samples 30 \
+    --max-samples 500 \
     --split test
 
 echo "✅ Job completed successfully."
