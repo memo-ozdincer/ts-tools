@@ -136,21 +136,42 @@ def run_eigenvalue_descent(
                 hess_raw = out["hessian"].reshape(coords.numel(), coords.numel())
                 hess_proj = massweigh_and_eckartprojection_torch(hess_raw, coords, atomsymbols)
                 eigvals, _ = torch.linalg.eigh(hess_proj)
-                final_eigvals = eigvals
+
+                # Remove rigid-body modes (translations / rotations) before building losses.
+                with torch.no_grad():
+                    coords_cent = coords.detach().reshape(-1, 3).to(torch.float64)
+                    coords_cent = coords_cent - coords_cent.mean(dim=0, keepdim=True)
+                    # Linear molecules have 5 zero modes, non-linear have 6.
+                    geom_rank = torch.linalg.matrix_rank(coords_cent.cpu(), tol=1e-8).item()
+                    expected_rigid = 5 if geom_rank <= 2 else 6
+                total_modes = eigvals.shape[0]
+                expected_rigid = min(expected_rigid, max(0, total_modes - 2))
+                abs_sorted_idx = torch.argsort(torch.abs(eigvals))
+                keep_idx = abs_sorted_idx[expected_rigid:]
+                keep_idx, _ = torch.sort(keep_idx)
+                vibrational_eigvals = eigvals[keep_idx]
+                if vibrational_eigvals.numel() < 2:
+                    raise RuntimeError(
+                        f"Insufficient vibrational eigenvalues after removing {expected_rigid} rigid modes."
+                    )
+
+                eig0 = vibrational_eigvals[0]
+                eig1 = vibrational_eigvals[1]
+                final_eigvals = vibrational_eigvals
 
                 # Compute loss based on selected type
                 if loss_type == "relu":
                     # Original: allows infinitesimal eigenvalues
-                    loss = torch.relu(eigvals[0]) + torch.relu(-eigvals[1])
+                    loss = torch.relu(eig0) + torch.relu(-eig1)
 
                 elif loss_type == "targeted_magnitude":
                     # Target specific magnitudes (RECOMMENDED)
                     # Push λ₀ to be meaningfully negative, λ₁ to be meaningfully positive
-                    loss = (eigvals[0] - target_eig0)**2 + (eigvals[1] - target_eig1)**2
+                    loss = (eig0 - target_eig0)**2 + (eig1 - target_eig1)**2
 
                 elif loss_type == "midpoint_squared":
                     # Minimize squared midpoint (from your description)
-                    midpoint = (eigvals[0] + eigvals[1]) / 2.0
+                    midpoint = (eig0 + eig1) / 2.0
                     loss = midpoint**2
 
                 else:
@@ -201,13 +222,13 @@ def run_eigenvalue_descent(
         coords.requires_grad = True
 
         history["loss"].append(loss.item())
-        history["eig_product"].append((eigvals[0] * eigvals[1]).item())
-        history["eig0"].append(eigvals[0].item())
-        history["eig1"].append(eigvals[1].item())
+        history["eig_product"].append((final_eigvals[0] * final_eigvals[1]).item())
+        history["eig0"].append(final_eigvals[0].item())
+        history["eig1"].append(final_eigvals[1].item())
 
         if step % 10 == 0:
-            eig_prod = (eigvals[0] * eigvals[1]).item()
-            print(f"  Step {step:03d}: Loss={loss.item():.6e}, λ₀*λ₁={eig_prod:.6e} (λ₀={eigvals[0].item():.6f}, λ₁={eigvals[1].item():.6f})")
+            eig_prod = (final_eigvals[0] * final_eigvals[1]).item()
+            print(f"  Step {step:03d}: Loss={loss.item():.6e}, λ₀*λ₁={eig_prod:.6e} (λ₀={final_eigvals[0].item():.6f}, λ₁={final_eigvals[1].item():.6f})")
 
     final_coords = coords.detach()
 
