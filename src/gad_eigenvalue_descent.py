@@ -2,7 +2,7 @@
 import os
 import json
 import argparse
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 from collections import defaultdict
 
 import torch
@@ -14,6 +14,10 @@ from hip.equiformer_torch_calculator import EquiformerTorchCalculator
 from hip.frequency_analysis import analyze_frequencies_torch
 from .differentiable_projection import differentiable_massweigh_and_eckartprojection_torch as massweigh_and_eckartprojection_torch
 from nets.prediction_utils import Z_TO_ATOM_SYMBOL
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 
 def find_rigid_alignment(A: np.ndarray, B: np.ndarray):
     """Kabsch algorithm. A and B are expected to be NumPy arrays."""
@@ -44,6 +48,11 @@ def align_ordered_and_get_rmsd(A, B) -> float:
     return get_rmsd(A_aligned, B)
 # --- END OF CORRECTION ---
 
+def _sanitize_formula(formula: str) -> str:
+    keep = "".join(ch if ch.isalnum() or ch in "-._" else "_" for ch in str(formula))
+    keep = keep.strip("_")
+    return keep or "sample"
+
 def coord_atoms_to_torch_geometric(coords, atomic_nums, device):
     """Convert coordinates and atomic numbers to a PyG batch for model inference.
 
@@ -70,6 +79,98 @@ def coord_atoms_to_torch_geometric(coords, atomic_nums, device):
     )
     # Create batch and THEN move to device
     return TGBatch.from_data_list([data]).to(device)
+
+def plot_eig_descent_history(
+    history: Dict[str, List[float]],
+    sample_index: int,
+    formula: str,
+    out_dir: str,
+    start_from: str,
+    target_eig0: float,
+    target_eig1: float,
+    final_neg_vibrational: int,
+    final_neg_eigvals: int,
+) -> Optional[str]:
+    """Plot optimization traces for eigenvalue descent."""
+    def _series(key: str) -> np.ndarray:
+        values = history.get(key, [])
+        if not values:
+            return np.array([], dtype=float)
+        return np.asarray(values, dtype=float)
+
+    loss = _series("loss")
+    if loss.size == 0:
+        return None  # Nothing to plot
+    steps = np.arange(loss.size)
+    eig0 = _series("eig0")
+    eig1 = _series("eig1")
+    eig_prod = _series("eig_product")
+    grad_norm = _series("grad_norm")
+    max_disp = _series("max_atom_disp")
+    neg_vib = _series("neg_vibrational")
+
+    fig, axes = plt.subplots(5, 1, figsize=(8, 15), sharex=True)
+    fig.suptitle(f"Eigenvalue Descent (Sample {sample_index}): {formula}", fontsize=14)
+
+    loss_for_plot = np.maximum(loss, 1e-12)
+    axes[0].plot(steps, loss_for_plot, marker=".", lw=1.2, color="tab:blue")
+    axes[0].set_ylabel("Loss")
+    axes[0].set_yscale("log")
+    axes[0].set_title("Optimization Loss (log scale)")
+
+    axes[1].plot(steps, eig0, marker=".", lw=1.2, color="tab:red", label="λ₀")
+    axes[1].plot(steps, eig1, marker=".", lw=1.2, color="tab:green", label="λ₁")
+    axes[1].axhline(target_eig0, color="tab:red", ls="--", lw=1, alpha=0.6, label="Target λ₀")
+    axes[1].axhline(target_eig1, color="tab:green", ls="--", lw=1, alpha=0.6, label="Target λ₁")
+    axes[1].axhline(0.0, color="grey", ls=":", lw=1)
+    axes[1].set_ylabel("Eigenvalue (eV/Å²)")
+    axes[1].set_title("Tracked Vibrational Eigenvalues")
+    axes[1].legend(loc="best", fontsize=9)
+
+    axes[2].plot(steps, eig_prod, marker=".", lw=1.2, color="tab:purple")
+    axes[2].axhline(0.0, color="grey", ls=":", lw=1)
+    axes[2].set_ylabel("λ₀ · λ₁")
+    axes[2].set_title("Eigenvalue Product")
+    if eig_prod.size:
+        axes[2].text(0.02, 0.9, f"Start {eig_prod[0]:.3e}", transform=axes[2].transAxes, ha="left", va="top", fontsize=9, color="tab:purple")
+        axes[2].text(0.98, 0.9, f"End {eig_prod[-1]:.3e}", transform=axes[2].transAxes, ha="right", va="top", fontsize=9, color="tab:purple")
+
+    axes[3].plot(steps, np.maximum(grad_norm, 1e-12), marker=".", lw=1.2, color="tab:orange")
+    axes[3].set_ylabel("‖∇‖")
+    axes[3].set_yscale("log")
+    axes[3].set_title("Gradient Norm (log scale)")
+
+    axes[4].plot(steps, max_disp, marker=".", lw=1.2, color="tab:cyan", label="Max atom Δ (Å)")
+    axes[4].axhline(0.2, color="tab:cyan", ls="--", lw=1, alpha=0.6, label="Clamp limit")
+    axes[4].set_ylabel("Displacement (Å)")
+    axes[4].set_xlabel("Optimization Step")
+    axes[4].set_title("Per-step Displacement & Neg Eigenvalue Count")
+
+    if neg_vib.size:
+        ax4b = axes[4].twinx()
+        ax4b.step(steps, neg_vib, where="post", color="tab:red", lw=1.2, label="# neg vib eig")
+        ax4b.set_ylabel("# Neg Vibrational")
+        handles, labels = axes[4].get_legend_handles_labels()
+        handles2, labels2 = ax4b.get_legend_handles_labels()
+        axes[4].legend(handles + handles2, labels + labels2, loc="best", fontsize=9)
+        ax4b.set_ylim(-0.5, max(np.max(neg_vib) + 0.5, 1.5))
+        ax4b.set_yticks(sorted(set(int(v) for v in neg_vib)))
+    else:
+        axes[4].legend(loc="best", fontsize=9)
+
+    axes[4].text(
+        0.98, 0.05,
+        f"Final neg vib: {final_neg_vibrational}\nFreq analysis neg: {final_neg_eigvals}",
+        transform=axes[4].transAxes, ha="right", va="bottom", fontsize=9,
+        bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.7),
+    )
+
+    fig.tight_layout(rect=[0, 0, 1, 0.97])
+    filename = f"eigdesc_{sample_index:03d}_{_sanitize_formula(formula)}_{start_from}_steps{loss.size}.png"
+    out_path = os.path.join(out_dir, filename)
+    fig.savefig(out_path, dpi=200)
+    plt.close(fig)
+    return out_path
 
 # --- Core Optimization Function with Improved Loss Functions ---
 def run_eigenvalue_descent(
@@ -200,9 +301,11 @@ def run_eigenvalue_descent(
         with torch.no_grad():
             # Gradient clipping to prevent exploding gradients
             grad_norm = torch.norm(grad)
+            grad_norm_value = grad_norm.item()
             max_grad_norm = 100.0  # Maximum allowed gradient norm
             if grad_norm > max_grad_norm:
                 grad = grad * (max_grad_norm / grad_norm)
+                grad_norm_value = float(max_grad_norm)
 
             # Compute proposed update
             update = lr * grad
@@ -217,6 +320,10 @@ def run_eigenvalue_descent(
             if max_atom_disp > max_displacement_per_atom:
                 scale_factor = max_displacement_per_atom / max_atom_disp
                 update = update * scale_factor
+                atom_displacements = atom_displacements * scale_factor
+                max_atom_disp = max_atom_disp * scale_factor
+
+            max_atom_disp_value = max_atom_disp.item()
 
             coords -= update
 
@@ -227,6 +334,8 @@ def run_eigenvalue_descent(
         history["eig0"].append(final_eigvals[0].item())
         history["eig1"].append(final_eigvals[1].item())
         history["neg_vibrational"].append(neg_vibrational)
+        history["grad_norm"].append(grad_norm_value)
+        history["max_atom_disp"].append(max_atom_disp_value)
 
         if step % 10 == 0:
             eig_prod = (final_eigvals[0] * final_eigvals[1]).item()
@@ -247,6 +356,7 @@ def run_eigenvalue_descent(
             "final_eig_product": float('inf'),
             "final_eig0": float('nan'),
             "final_eig1": float('nan'),
+            "final_neg_vibrational": -1,
         }
 
     return {
@@ -346,6 +456,21 @@ if __name__ == "__main__":
                 "rmsd_to_known_ts": align_ordered_and_get_rmsd(opt_results["final_coords"], batch.pos_transition),
             }
             results_summary.append(summary)
+
+            plot_path = plot_eig_descent_history(
+                history=opt_results["history"],
+                sample_index=i,
+                formula=batch.formula[0],
+                out_dir=out_dir,
+                start_from=args.start_from,
+                target_eig0=args.target_eig0,
+                target_eig1=args.target_eig1,
+                final_neg_vibrational=summary["final_neg_vibrational"],
+                final_neg_eigvals=summary["final_neg_eigvals"],
+            )
+            if plot_path:
+                summary["plot_path"] = plot_path
+                print(f"  Saved optimization plot to: {os.path.basename(plot_path)}")
 
             print(f"Result for Sample {i}:")
             print(f"  Final Loss: {summary['final_loss']:.6e}")

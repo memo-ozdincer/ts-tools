@@ -22,8 +22,8 @@ echo ">>> Running Eigenvalue Descent script..."
 # --- Main Experiment: Targeted magnitude loss (recommended) ---
 # Targets specific eigenvalue magnitudes to avoid numerical noise convergence
 python -m src.gad_eigenvalue_descent \
-    --max-samples 300 \
-    --n-steps-opt 100 \
+    --max-samples 30 \
+    --n-steps-opt 50 \
     --lr 0.01 \
     --start-from midpoint_rt \
     --loss-type targeted_magnitude \
