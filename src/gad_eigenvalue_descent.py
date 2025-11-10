@@ -186,6 +186,7 @@ def run_eigenvalue_descent(
     adaptive_relax_steps: int = 50,
     adaptive_final_eig0: float = -0.02,
     adaptive_final_eig1: float = 0.05,
+    early_stop_eig_product_threshold: Optional[float] = 5e-4,
 ) -> Dict[str, Any]:
     """
     Run gradient descent on eigenvalues to find transition states.
@@ -201,6 +202,7 @@ def run_eigenvalue_descent(
         adaptive_relax_steps: Number of final steps over which to relax targets
         adaptive_final_eig0: Final relaxed target for λ₀ (eV/Å²)
         adaptive_final_eig1: Final relaxed target for λ₁ (eV/Å²)
+        early_stop_eig_product_threshold: Stop once λ₀·λ₁ ≤ -THRESH (set ≤0 to disable)
     """
     model = calculator.potential
     device = model.device
@@ -210,6 +212,12 @@ def run_eigenvalue_descent(
     history = defaultdict(list)
     final_eigvals = None
     loss = torch.tensor(float('inf'), device=device)  # Initialize in case of early termination
+    stop_reason: Optional[str] = None
+    eig_product_threshold = (
+        abs(float(early_stop_eig_product_threshold))
+        if (early_stop_eig_product_threshold is not None and early_stop_eig_product_threshold > 0)
+        else None
+    )
 
     # Store initial targets for adaptive relaxation
     initial_target_eig0 = target_eig0
@@ -330,15 +338,27 @@ def run_eigenvalue_descent(
         coords.requires_grad = True
 
         history["loss"].append(loss.item())
-        history["eig_product"].append((final_eigvals[0] * final_eigvals[1]).item())
+        eig_prod_value = (final_eigvals[0] * final_eigvals[1]).item()
+        history["eig_product"].append(eig_prod_value)
         history["eig0"].append(final_eigvals[0].item())
         history["eig1"].append(final_eigvals[1].item())
         history["neg_vibrational"].append(neg_vibrational)
         history["grad_norm"].append(grad_norm_value)
         history["max_atom_disp"].append(max_atom_disp_value)
 
+        if eig_product_threshold is not None:
+            if eig_prod_value < 0 and abs(eig_prod_value) >= eig_product_threshold:
+                stop_reason = (
+                    f"eig_product_threshold |λ₀·λ₁|={abs(eig_prod_value):.3e} ≥ {eig_product_threshold:.1e}"
+                )
+                print(
+                    f"  Stopping early at step {step}: λ₀*λ₁={eig_prod_value:.6e} crossed threshold "
+                    f"-{eig_product_threshold:.1e}."
+                )
+                break
+
         if step % 10 == 0:
-            eig_prod = (final_eigvals[0] * final_eigvals[1]).item()
+            eig_prod = eig_prod_value
             print(
                 f"  Step {step:03d}: Loss={loss.item():.6e}, λ₀*λ₁={eig_prod:.6e} "
                 f"(λ₀={final_eigvals[0].item():.6f}, λ₁={final_eigvals[1].item():.6f}, neg_vib={neg_vibrational})"
@@ -367,6 +387,7 @@ def run_eigenvalue_descent(
         "final_eig0": final_eigvals[0].item(),
         "final_eig1": final_eigvals[1].item(),
         "final_neg_vibrational": int((final_eigvals < 0).sum().item()),
+        "stop_reason": stop_reason,
     }
 
 
@@ -399,6 +420,9 @@ if __name__ == "__main__":
                         help="Final relaxed target for λ₀ in eV/Å² (default: -0.02)")
     parser.add_argument("--adaptive-final-eig1", type=float, default=0.05,
                         help="Final relaxed target for λ₁ in eV/Å² (default: 0.05)")
+    parser.add_argument("--early-stop-eig-product", type=float, default=5e-4,
+                        help="Stop optimization once λ₀·λ₁ ≤ -THRESH (default: 5e-4). "
+                             "Set to ≤0 to disable.")
     args = parser.parse_args()
 
     calculator, dataloader, device, out_dir = setup_experiment(args, shuffle=False)
@@ -406,6 +430,10 @@ if __name__ == "__main__":
     print(f"Running Eigenvalue Descent to Find Transition States")
     print(f"Starting From: {args.start_from.upper()}, Steps: {args.n_steps_opt}, LR: {args.lr}")
     print(f"Loss Type: {args.loss_type}")
+    if args.early_stop_eig_product and args.early_stop_eig_product > 0:
+        print(f"  Early stop when λ₀·λ₁ ≤ -{args.early_stop_eig_product:.1e}")
+    else:
+        print(f"  Early stop based on λ₀·λ₁: DISABLED")
     if args.loss_type == "targeted_magnitude":
         print(f"  Initial Target λ₀: {args.target_eig0:.4f} eV/Å²")
         print(f"  Initial Target λ₁: {args.target_eig1:.4f} eV/Å²")
@@ -438,6 +466,7 @@ if __name__ == "__main__":
                 adaptive_relax_steps=args.adaptive_relax_steps,
                 adaptive_final_eig0=args.adaptive_final_eig0,
                 adaptive_final_eig1=args.adaptive_final_eig1,
+                early_stop_eig_product_threshold=args.early_stop_eig_product,
             )
 
             with torch.no_grad():
@@ -454,6 +483,7 @@ if __name__ == "__main__":
                 "final_neg_vibrational": opt_results["final_neg_vibrational"],
                 "final_neg_eigvals": int(final_freq_info.get("neg_num", -1)),
                 "rmsd_to_known_ts": align_ordered_and_get_rmsd(opt_results["final_coords"], batch.pos_transition),
+                "stop_reason": opt_results.get("stop_reason"),
             }
             results_summary.append(summary)
 
