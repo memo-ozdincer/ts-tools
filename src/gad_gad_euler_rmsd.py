@@ -144,7 +144,7 @@ def run_gad_euler_on_batch(
                 batch.pos = batch.pos + kick_direction * kick_magnitude
                 gad = kick_direction * kick_magnitude
             else:
-                # 1. Get GAD direction from FULL Hessian
+                # 1. Get GAD direction from Hessian
                 hess_full = _prepare_hessian(results["hessian"], batch.pos.shape[0])
                 evals, evecs = torch.linalg.eigh(hess_full)
                 v = evecs[:, 0].to(results["forces"].dtype)  # Lowest eigenvector

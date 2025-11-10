@@ -157,6 +157,7 @@ def run_eigenvalue_descent(
 
                 eig0 = vibrational_eigvals[0]
                 eig1 = vibrational_eigvals[1]
+                neg_vibrational = (vibrational_eigvals < 0).sum().item()
                 final_eigvals = vibrational_eigvals
 
                 # Compute loss based on selected type
@@ -225,10 +226,14 @@ def run_eigenvalue_descent(
         history["eig_product"].append((final_eigvals[0] * final_eigvals[1]).item())
         history["eig0"].append(final_eigvals[0].item())
         history["eig1"].append(final_eigvals[1].item())
+        history["neg_vibrational"].append(neg_vibrational)
 
         if step % 10 == 0:
             eig_prod = (final_eigvals[0] * final_eigvals[1]).item()
-            print(f"  Step {step:03d}: Loss={loss.item():.6e}, λ₀*λ₁={eig_prod:.6e} (λ₀={final_eigvals[0].item():.6f}, λ₁={final_eigvals[1].item():.6f})")
+            print(
+                f"  Step {step:03d}: Loss={loss.item():.6e}, λ₀*λ₁={eig_prod:.6e} "
+                f"(λ₀={final_eigvals[0].item():.6f}, λ₁={final_eigvals[1].item():.6f}, neg_vib={neg_vibrational})"
+            )
 
     final_coords = coords.detach()
 
@@ -251,6 +256,7 @@ def run_eigenvalue_descent(
         "final_eig_product": (final_eigvals[0] * final_eigvals[1]).item(),
         "final_eig0": final_eigvals[0].item(),
         "final_eig1": final_eigvals[1].item(),
+        "final_neg_vibrational": int((final_eigvals < 0).sum().item()),
     }
 
 
@@ -335,6 +341,7 @@ if __name__ == "__main__":
                 "final_eig_product": opt_results["final_eig_product"],
                 "final_eig0": opt_results["final_eig0"],
                 "final_eig1": opt_results["final_eig1"],
+                "final_neg_vibrational": opt_results["final_neg_vibrational"],
                 "final_neg_eigvals": int(final_freq_info.get("neg_num", -1)),
                 "rmsd_to_known_ts": align_ordered_and_get_rmsd(opt_results["final_coords"], batch.pos_transition),
             }
@@ -344,7 +351,7 @@ if __name__ == "__main__":
             print(f"  Final Loss: {summary['final_loss']:.6e}")
             print(f"  Final λ₀: {summary['final_eig0']:.6f} eV/Å², λ₁: {summary['final_eig1']:.6f} eV/Å²")
             print(f"  Final λ₀*λ₁: {summary['final_eig_product']:.6e}")
-            print(f"  Final Neg Eigs: {summary['final_neg_eigvals']}")
+            print(f"  Final Neg Vibrational: {summary['final_neg_vibrational']} (Freq Analysis Negs: {summary['final_neg_eigvals']})")
             print(f"  RMSD to T1x TS: {summary['rmsd_to_known_ts']:.4f} Å")
             
         except Exception as e:
