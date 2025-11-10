@@ -3,7 +3,7 @@ import os
 import json
 import re
 import argparse
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from collections import defaultdict
 
 import torch
@@ -89,6 +89,38 @@ def align_ordered_and_get_rmsd(A, B):
     return torch.sqrt(((A_aligned - B) ** 2).sum(dim=1).mean()).item()
 def _sanitize_formula(f): return re.sub(r"[^A-Za-z0-9_.-]+", "_", f).strip("_") or "sample"
 
+def _extract_vibrational_eigvals(eigvals: torch.Tensor, coords: torch.Tensor) -> Tuple[Optional[torch.Tensor], int]:
+    """
+    Remove rigid-body zero modes from eigenvalue spectrum based on molecular geometry.
+    Returns (vibrational_eigvals, rigid_modes_removed).
+    """
+    if not isinstance(eigvals, torch.Tensor) or eigvals.numel() == 0:
+        return None, 0
+
+    eigvals = eigvals.detach().to(torch.float64).flatten()
+    coords3d = coords.detach().reshape(-1, 3).to(torch.float64)
+    coords3d = coords3d - coords3d.mean(dim=0, keepdim=True)
+
+    # Linear molecules have rank <= 2 → 5 rigid modes; otherwise 6
+    geom_rank = torch.linalg.matrix_rank(coords3d.cpu(), tol=1e-8).item()
+    rigid_modes = 5 if geom_rank <= 2 else 6
+
+    total_modes = eigvals.numel()
+    rigid_modes = min(rigid_modes, max(0, total_modes - 2))
+    if rigid_modes == 0:
+        vib_sorted, _ = torch.sort(eigvals)
+        return vib_sorted, 0
+
+    abs_sorted_idx = torch.argsort(torch.abs(eigvals))
+    keep_idx = abs_sorted_idx[rigid_modes:]
+    if keep_idx.numel() == 0:
+        return None, rigid_modes
+
+    keep_idx, _ = torch.sort(keep_idx)
+    vibrational = eigvals[keep_idx]
+    vibrational_sorted, _ = torch.sort(vibrational)
+    return vibrational_sorted, rigid_modes
+
 # --- MODIFIED Core Dynamics Function (With Optional Kick Mechanism) ---
 class GADDynamics:
     def __init__(self, calculator, atomic_nums, stop_at_ts=False, kick_enabled=False,
@@ -137,15 +169,31 @@ class GADDynamics:
         # Calculate eigenvalues and eigenvectors
         hessian = _prepare_hessian(results["hessian"], self.num_atoms)
         freq_info = analyze_frequencies_torch(results["hessian"], coords, self.atomic_nums)
-        eigvals = freq_info["eigvals"]  # These are the projected eigenvalues
+        eigvals_raw = freq_info.get("eigvals")
+        vibrational_eigvals, rigid_modes_removed = _extract_vibrational_eigvals(eigvals_raw, coords)
+
+        eigvals_for_tracking: Optional[torch.Tensor] = None
+        using_vibrational = False
+        if vibrational_eigvals is not None and vibrational_eigvals.numel() >= 2:
+            eigvals_for_tracking = vibrational_eigvals
+            using_vibrational = True
+        elif isinstance(eigvals_raw, torch.Tensor) and eigvals_raw.numel() >= 2:
+            eigvals_for_tracking, _ = torch.sort(eigvals_raw.detach().to(torch.float64).flatten())
+            using_vibrational = False
+
+        eig0 = eig1 = eig_prod = None
+        neg_vibrational = None
+        if eigvals_for_tracking is not None and eigvals_for_tracking.numel() >= 2:
+            eig0 = float(eigvals_for_tracking[0].item())
+            eig1 = float(eigvals_for_tracking[1].item())
+            eig_prod = eig0 * eig1
+            if using_vibrational:
+                neg_vibrational = int((eigvals_for_tracking < 0).sum().item())
 
         # Get unprojected eigenvalues for full Hessian (for GAD direction)
         evals_full, evecs_full = torch.linalg.eigh(hessian)
 
         # Extract eigenvalue information
-        eig0 = eigvals[0].item() if eigvals.numel() >= 1 else None
-        eig1 = eigvals[1].item() if eigvals.numel() >= 2 else None
-        eig_prod = (eig0 * eig1) if (eig0 is not None and eig1 is not None) else None
         force_magnitude = forces.norm(dim=1).mean().item()
 
         # Check if we should apply a kick (escape local minimum or stagnation)
@@ -231,6 +279,9 @@ class GADDynamics:
             self.trajectory["eig0"].append(eig0)  # Track individual eigenvalues
             self.trajectory["eig1"].append(eig1)
             self.trajectory["neg_num"].append(freq_info.get("neg_num", -1))
+            self.trajectory["neg_vibrational"].append(neg_vibrational)
+            self.trajectory["rigid_modes_removed"].append(rigid_modes_removed)
+            self.trajectory["using_vibrational"].append(1 if using_vibrational else 0)
             self.trajectory["kick_applied"].append(1 if apply_kick else 0)
             self.trajectory["eigvec_follow_mode"].append(1 if self.eigvec_follow_active else 0)
 
@@ -242,21 +293,26 @@ class GADDynamics:
                 if eig_prod < self.min_eig_product_threshold:
                     if self.ts_candidate_step is None:
                         self.ts_candidate_step = current_step
-                        print(f"  [TS CANDIDATE] Found at step {current_step}, t={t:.4f}: λ₀*λ₁={eig_prod:.6e} (λ₀={eig0:.6f}, λ₁={eig1:.6f})")
+                        eig0_str = f"{eig0:.6f}" if eig0 is not None else "nan"
+                        eig1_str = f"{eig1:.6f}" if eig1 is not None else "nan"
+                        print(f"  [TS CANDIDATE] Found at step {current_step}, t={t:.4f}: λ₀*λ₁={eig_prod:.6e} (λ₀={eig0_str}, λ₁={eig1_str})")
 
                     # Stage 2: Confirm TS by checking if eigenvalue product magnitude is increasing
                     if current_step >= self.ts_candidate_step + self.confirmation_steps:
                         candidate_eig_prod = self.trajectory["eig_product"][self.ts_candidate_step - 1]
-                        # Check if product is getting MORE negative (magnitude increasing)
-                        magnitude_increase = abs(eig_prod) / (abs(candidate_eig_prod) + 1e-20)
+                        if candidate_eig_prod is not None:
+                            magnitude_increase = abs(eig_prod) / (abs(candidate_eig_prod) + 1e-20)
+                        else:
+                            magnitude_increase = None
 
-                        if magnitude_increase > 1.2:  # 20% increase in magnitude
+                        if magnitude_increase is not None and magnitude_increase > 1.2:  # 20% increase in magnitude
                             self.ts_found = True
                             print(f"  [TS CONFIRMED] at step {current_step}: λ₀*λ₁={eig_prod:.6e} (increased by {magnitude_increase:.2f}x)")
                         else:
                             # Check if λ₀ is becoming MORE negative
                             candidate_eig0 = self.trajectory["eig0"][self.ts_candidate_step - 1]
-                            if eig0 < candidate_eig0 * 1.1:  # λ₀ became 10% more negative
+                            if (eig0 is not None and candidate_eig0 is not None and
+                                    eig0 < candidate_eig0 * 1.1):  # λ₀ became 10% more negative
                                 self.ts_found = True
                                 print(f"  [TS CONFIRMED] at step {current_step}: λ₀={eig0:.6f} (more negative than {candidate_eig0:.6f})")
                 else:
@@ -271,7 +327,17 @@ class GADDynamics:
         return self.ts_found
 
 # --- Plotting ---
-def plot_trajectory(trajectory, sample_index, formula, out_dir, start_from, initial_neg_num, final_neg_num):
+def plot_trajectory(
+    trajectory,
+    sample_index,
+    formula,
+    out_dir,
+    start_from,
+    initial_neg_num,
+    final_neg_num,
+    initial_neg_vibrational,
+    final_neg_vibrational,
+):
     timesteps = np.array(trajectory.get("time", []))
     def _nanify(key): return np.array([v if v is not None else np.nan for v in trajectory.get(key, [])], dtype=float)
 
@@ -314,10 +380,37 @@ def plot_trajectory(trajectory, sample_index, formula, out_dir, start_from, init
     axes[3].legend(loc='best')
 
     # GAD magnitude
-    axes[4].plot(timesteps, _nanify("gad_mean"), marker=".", color="tab:green", lw=1.2)
+    axes[4].plot(timesteps, _nanify("gad_mean"), marker=".", color="tab:green", lw=1.2, label="Mean |GAD|")
     axes[4].set_ylabel("Mean |GAD| (Å)")
     axes[4].set_xlabel("Time (a.u.)")
     axes[4].set_title("GAD Vector Magnitude")
+
+    neg_vib = _nanify("neg_vibrational")
+    if neg_vib.size > 0 and not np.all(np.isnan(neg_vib)):
+        ax4b = axes[4].twinx()
+        ax4b.step(timesteps, neg_vib, where="post", color="tab:red", lw=1.2, label="# neg vib eig")
+        ax4b.set_ylabel("# Neg Vibrational")
+        valid_counts = neg_vib[~np.isnan(neg_vib)]
+        if valid_counts.size > 0:
+            ax4b.set_ylim(-0.5, max(valid_counts.max() + 0.5, 1.5))
+        handles, labels = axes[4].get_legend_handles_labels()
+        h2, l2 = ax4b.get_legend_handles_labels()
+        axes[4].legend(handles + h2, labels + l2, loc='best', fontsize=8)
+    else:
+        axes[4].legend(loc='best', fontsize=8)
+
+    axes[4].text(
+        0.98, 0.05,
+        (
+            f"neg eig (freq): {initial_neg_num} → {final_neg_num}\n"
+            f"neg eig (vib): {initial_neg_vibrational} → {final_neg_vibrational}"
+        ),
+        transform=axes[4].transAxes,
+        ha="right",
+        va="bottom",
+        fontsize=8,
+        bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.7),
+    )
 
     # Add visual indicators for mode switches
     if "eigvec_follow_mode" in trajectory:
@@ -423,6 +516,16 @@ if __name__ == "__main__":
             traj = dynamics_fn.trajectory
             initial_neg_num = traj["neg_num"][0] if traj["neg_num"] else -1
             final_neg_num = traj["neg_num"][-1] if traj["neg_num"] else -1
+            neg_vibrational_series = traj.get("neg_vibrational", [])
+            def _first_defined(seq):
+                for value in seq:
+                    if value is not None and not (isinstance(value, float) and np.isnan(value)):
+                        return value
+                return None
+            initial_neg_vibrational = _first_defined(neg_vibrational_series)
+            final_neg_vibrational = _first_defined(reversed(neg_vibrational_series)) if neg_vibrational_series else None
+            rigid_modes_series = [rm for rm in traj.get("rigid_modes_removed", []) if rm is not None]
+            rigid_modes_removed = int(rigid_modes_series[0]) if rigid_modes_series else None
 
             summary = {
                 "sample_index": i, "formula": batch.formula[0],
@@ -436,6 +539,9 @@ if __name__ == "__main__":
                 "final_eig1": traj["eig1"][-1] if traj["eig1"] else None,
                 "initial_neg_eigvals": initial_neg_num,
                 "final_neg_eigvals": final_neg_num,
+                "initial_neg_vibrational": initial_neg_vibrational,
+                "final_neg_vibrational": final_neg_vibrational,
+                "rigid_modes_removed": rigid_modes_removed,
                 "num_kicks": dynamics_fn.num_kicks,
                 "ts_candidate_step": dynamics_fn.ts_candidate_step,
                 "ts_confirmed": dynamics_fn.ts_found,
@@ -452,11 +558,23 @@ if __name__ == "__main__":
                     "gad": summary["final_mean_gad"]
                 })
 
-            plot_path = plot_trajectory(traj, i, batch.formula[0], out_dir, args.start_from, initial_neg_num, final_neg_num)
+            plot_path = plot_trajectory(
+                trajectory=traj,
+                sample_index=i,
+                formula=batch.formula[0],
+                out_dir=out_dir,
+                start_from=args.start_from,
+                initial_neg_num=initial_neg_num,
+                final_neg_num=final_neg_num,
+                initial_neg_vibrational=initial_neg_vibrational,
+                final_neg_vibrational=final_neg_vibrational,
+            )
 
             print("Result:")
             print(f"  Solver Steps: {summary['steps_taken']}, Final Time: {summary['final_time']:.3f}")
             print(f"  Neg Eigs: {summary['initial_neg_eigvals']} -> {summary['final_neg_eigvals']}")
+            if initial_neg_vibrational is not None or final_neg_vibrational is not None:
+                print(f"  Neg Vibrational Eigs: {initial_neg_vibrational} -> {final_neg_vibrational}")
             if args.enable_kick:
                 print(f"  Kicks applied: {dynamics_fn.num_kicks}")
 
@@ -476,6 +594,18 @@ if __name__ == "__main__":
             transitions[f"{r['initial_neg_eigvals']} -> {r['final_neg_eigvals']}"] += 1
         for key, count in sorted(transitions.items()):
             print(f"  {key}: {count} samples")
+
+        vib_transitions = defaultdict(int)
+        for r in results_summary:
+            init_vib = r.get("initial_neg_vibrational")
+            final_vib = r.get("final_neg_vibrational")
+            if init_vib is None and final_vib is None:
+                continue
+            vib_transitions[f"{init_vib} -> {final_vib}"] += 1
+        if vib_transitions:
+            print("\n[Analysis 1b: Vibrational Negative Eigenvalue Transitions]")
+            for key, count in sorted(vib_transitions.items()):
+                print(f"  {key}: {count} samples")
 
         # Analysis 2: Final State Distribution
         print("\n[Analysis 2: Final State Distribution]")
