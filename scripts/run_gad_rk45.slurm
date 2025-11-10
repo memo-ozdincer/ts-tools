@@ -38,9 +38,6 @@ python -m src.gad_rk45_search \
     --max-steps 100 \
     --min-eig-product-threshold -0.0001 \
     --confirmation-steps 10 \
-    --enable-kick \
-    --kick-force-threshold 0.01 \
-    --kick-magnitude 0.1 \
 
 # --- Example with kick mechanism enabled ---
 # Uncomment to enable kick mechanism to escape local minima:
