@@ -20,21 +20,21 @@ source ${VENV_DIR}/bin/activate
 echo ">>> Running Eigenvalue Descent script..."
 
 # Each type of loss f'n.
+# python -m src.gad_eigenvalue_descent \
+#     --max-samples 150 \
+#     --n-steps-opt 50 \
+#     --lr 0.01 \
+#     --start-from midpoint_rt \
+#     --loss-type targeted_magnitude \
+#     --target-eig0 -0.05 \
+#     --target-eig1 0.10 \
+#
 python -m src.gad_eigenvalue_descent \
     --max-samples 150 \
     --n-steps-opt 50 \
     --lr 0.01 \
     --start-from midpoint_rt \
-    --loss-type targeted_magnitude \
-    --target-eig0 -0.05 \
-    --target-eig1 0.10 \
-#
-# python -m src.gad_eigenvalue_descent \
-#     --max-samples 30 \
-#     --n-steps-opt 50 \
-#     --lr 0.01 \
-#     --start-from midpoint_rt \
-#     --loss-type midpoint_squared
+    --loss-type midpoint_squared
 #
 # python -m src.gad_eigenvalue_descent \
 #     --max-samples 30 \
