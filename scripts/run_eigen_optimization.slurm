@@ -37,7 +37,7 @@ echo ">>> Running Eigenvalue Descent script..."
 #     --loss-type midpoint_squared
 #
 python -m src.gad_eigenvalue_descent \
-    --max-samples 30 \
+    --max-samples 150 \
     --n-steps-opt 50 \
     --lr 0.01 \
     --start-from midpoint_rt \
