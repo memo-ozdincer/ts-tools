@@ -44,25 +44,25 @@ echo ">>> Running Eigenvalue Descent script..."
 #     --loss-type eig_product \
 #     --early-stop-eig-product 5e-4
 #
-python -m src.gad_eigenvalue_descent \
-    --max-samples 150 \
-    --n-steps-opt 200 \
-    --lr 0.01 \
-    --start-from midpoint_rt \
-    --loss-type relu
+# python -m src.gad_eigenvalue_descent \
+#     --max-samples 150 \
+#     --n-steps-opt 200 \
+#     --lr 0.01 \
+#     --start-from midpoint_rt \
+#     --loss-type relu
 
 # --- Optional: Adaptive target relaxation for targeted magnitude ---
-# python -m src.gad_eigenvalue_descent \
-#     --max-samples 30 \
-#     --n-steps-opt 250 \
-#     --lr 0.01 \
-#     --start-from reactant \
-#     --loss-type targeted_magnitude \
-#     --target-eig0 -0.10 \
-#     --target-eig1 0.15 \
-#     --adaptive-targets \
-#     --adaptive-relax-steps 50 \
-#     --adaptive-final-eig0 -0.02 \
-#     --adaptive-final-eig1 0.05
+python -m src.gad_eigenvalue_descent \
+    --max-samples 150 \
+    --n-steps-opt 250 \
+    --lr 0.01 \
+    --start-from reactant \
+    --loss-type targeted_magnitude \
+    --target-eig0 -0.10 \
+    --target-eig1 0.15 \
+    --adaptive-targets \
+    --adaptive-relax-steps 50 \
+    --adaptive-final-eig0 -0.02 \
+    --adaptive-final-eig1 0.05
 
 echo "✅ Job completed."
