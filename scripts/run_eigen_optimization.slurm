@@ -29,20 +29,20 @@ echo ">>> Running Eigenvalue Descent script..."
 #     --target-eig0 -0.05 \
 #     --target-eig1 0.10 \
 #
-python -m src.gad_eigenvalue_descent \
-    --max-samples 150 \
-    --n-steps-opt 50 \
-    --lr 0.01 \
-    --start-from midpoint_rt \
-    --loss-type midpoint_squared
-#
 # python -m src.gad_eigenvalue_descent \
-#     --max-samples 30 \
+#     --max-samples 150 \
 #     --n-steps-opt 50 \
 #     --lr 0.01 \
 #     --start-from midpoint_rt \
-#     --loss-type eig_product \
-#     --early-stop-eig-product 5e-4
+#     --loss-type midpoint_squared
+#
+python -m src.gad_eigenvalue_descent \
+    --max-samples 30 \
+    --n-steps-opt 50 \
+    --lr 0.01 \
+    --start-from midpoint_rt \
+    --loss-type eig_product \
+    --early-stop-eig-product 5e-4
 #
 # python -m src.gad_eigenvalue_descent \
 #     --max-samples 30 \
