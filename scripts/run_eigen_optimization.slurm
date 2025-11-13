@@ -36,20 +36,20 @@ echo ">>> Running Eigenvalue Descent script..."
 #     --start-from midpoint_rt \
 #     --loss-type midpoint_squared
 #
-python -m src.gad_eigenvalue_descent \
-    --max-samples 150 \
-    --n-steps-opt 50 \
-    --lr 0.01 \
-    --start-from midpoint_rt \
-    --loss-type eig_product \
-    --early-stop-eig-product 5e-4
-#
 # python -m src.gad_eigenvalue_descent \
-#     --max-samples 30 \
-#     --n-steps-opt 200 \
+#     --max-samples 150 \
+#     --n-steps-opt 50 \
 #     --lr 0.01 \
 #     --start-from midpoint_rt \
-#     --loss-type relu
+#     --loss-type eig_product \
+#     --early-stop-eig-product 5e-4
+#
+python -m src.gad_eigenvalue_descent \
+    --max-samples 150 \
+    --n-steps-opt 200 \
+    --lr 0.01 \
+    --start-from midpoint_rt \
+    --loss-type relu
 
 # --- Optional: Adaptive target relaxation for targeted magnitude ---
 # python -m src.gad_eigenvalue_descent \
