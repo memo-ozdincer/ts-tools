@@ -33,7 +33,7 @@ python -m src.gad_eigenvalue_descent \
     --max-samples 500 \
     --n-steps-opt 500 \
     --lr 0.01 \
-    --start-from midpoint_rt \
+    --start-from reactant \
     --loss-type sign_enforcer \
     --sign-neg-target -0.01 \
     --sign-pos-floor 0.1
