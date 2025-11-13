@@ -98,6 +98,8 @@ def compute_eigenvalue_statistics(
 
     try:
         with torch.no_grad():
+            # Ensure coords is on the correct device before using it
+            coords = coords.to(device)
             batch = coord_atoms_to_torch_geometric(coords, atomic_nums, device)
             _, _, out = model.forward(batch, otf_graph=True)
             hess_raw = out["hessian"].reshape(coords.numel(), coords.numel())
