@@ -19,8 +19,7 @@ source ${VENV_DIR}/bin/activate
 
 echo ">>> Running Eigenvalue Descent script..."
 
-# --- Main Experiment: Targeted magnitude loss (recommended) ---
-# Targets specific eigenvalue magnitudes to avoid numerical noise convergence
+# Each type of loss f'n.
 python -m src.gad_eigenvalue_descent \
     --max-samples 30 \
     --n-steps-opt 50 \
@@ -29,9 +28,30 @@ python -m src.gad_eigenvalue_descent \
     --loss-type targeted_magnitude \
     --target-eig0 -0.05 \
     --target-eig1 0.10
+#
+# python -m src.gad_eigenvalue_descent \
+#     --max-samples 30 \
+#     --n-steps-opt 50 \
+#     --lr 0.01 \
+#     --start-from midpoint_rt \
+#     --loss-type midpoint_squared
+#
+# python -m src.gad_eigenvalue_descent \
+#     --max-samples 30 \
+#     --n-steps-opt 50 \
+#     --lr 0.01 \
+#     --start-from midpoint_rt \
+#     --loss-type eig_product \
+#     --early-stop-eig-product 5e-4
+#
+# python -m src.gad_eigenvalue_descent \
+#     --max-samples 30 \
+#     --n-steps-opt 200 \
+#     --lr 0.01 \
+#     --start-from midpoint_rt \
+#     --loss-type relu
 
-# --- Example with adaptive target relaxation ---
-# Uncomment for flat barrier systems:
+# --- Optional: Adaptive target relaxation for targeted magnitude ---
 # python -m src.gad_eigenvalue_descent \
 #     --max-samples 30 \
 #     --n-steps-opt 250 \
@@ -44,13 +64,5 @@ python -m src.gad_eigenvalue_descent \
 #     --adaptive-relax-steps 50 \
 #     --adaptive-final-eig0 -0.02 \
 #     --adaptive-final-eig1 0.05
-
-# --- Example with original ReLU loss (for comparison) ---
-# python -m src.gad_eigenvalue_descent \
-#     --max-samples 30 \
-#     --n-steps-opt 200 \
-#     --lr 0.01 \
-#     --start-from midpoint_rt \
-#     --loss-type relu
 
 echo "✅ Job completed."

@@ -524,6 +524,9 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     calculator, dataloader, device, out_dir = setup_experiment(args, shuffle=False)
+    loss_dirname = _sanitize_formula(args.loss_type)
+    loss_out_dir = os.path.join(out_dir, "optimization", loss_dirname)
+    os.makedirs(loss_out_dir, exist_ok=True)
 
     print(f"Running Eigenvalue Descent to Find Transition States")
     print(f"Starting From: {args.start_from.upper()}, Steps: {args.n_steps_opt}, LR: {args.lr}")
@@ -592,7 +595,7 @@ if __name__ == "__main__":
                 history=opt_results["history"],
                 sample_index=i,
                 formula=batch.formula[0],
-                out_dir=out_dir,
+                out_dir=loss_out_dir,
                 start_from=args.start_from,
                 target_eig0=args.target_eig0,
                 target_eig1=args.target_eig1,
@@ -613,11 +616,11 @@ if __name__ == "__main__":
                 print(f"  Stop Reason: {summary['stop_reason']}")
             
         except Exception as e:
-            print(f"[ERROR] Sample {i} failed: {e}")
-            import traceback
-            traceback.print_exc()
+                print(f"[ERROR] Sample {i} failed: {e}")
+                import traceback
+                traceback.print_exc()
 
-    out_json = os.path.join(out_dir, f"eigdesc_{args.loss_type}_{args.start_from}_{len(results_summary)}.json")
+    out_json = os.path.join(loss_out_dir, f"eigdesc_{args.loss_type}_{args.start_from}_{len(results_summary)}.json")
     with open(out_json, "w") as f: json.dump(results_summary, f, indent=2)
     print(f"\nSaved summary to {out_json}")
 
