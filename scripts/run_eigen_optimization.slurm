@@ -35,8 +35,8 @@ python -m src.gad_eigenvalue_descent \
     --lr 0.01 \
     --start-from midpoint_rt \
     --loss-type sign_enforcer \
-    --sign-neg-target -5e-3 \
-    --sign-pos-floor 1e-3
+    --sign-neg-target -0.01 \
+    --sign-pos-floor 0.1
 #
 # python -m src.gad_eigenvalue_descent \
 #     --max-samples 500 \
