@@ -14,6 +14,7 @@ from hip.equiformer_torch_calculator import EquiformerTorchCalculator
 from hip.frequency_analysis import analyze_frequencies_torch
 from .differentiable_projection import differentiable_massweigh_and_eckartprojection_torch as massweigh_and_eckartprojection_torch
 from nets.prediction_utils import Z_TO_ATOM_SYMBOL
+from .experiment_logger import ExperimentLogger, RunResult, build_loss_type_flags
 
 import matplotlib
 matplotlib.use("Agg")
@@ -84,14 +85,18 @@ def plot_eig_descent_history(
     history: Dict[str, List[float]],
     sample_index: int,
     formula: str,
-    out_dir: str,
     start_from: str,
     target_eig0: float,
     target_eig1: float,
     final_neg_vibrational: int,
     final_neg_eigvals: int,
-) -> Optional[str]:
-    """Plot optimization traces for eigenvalue descent."""
+):
+    """
+    Plot optimization traces for eigenvalue descent.
+
+    Returns:
+        Tuple of (matplotlib Figure, suggested filename) or (None, None) if nothing to plot
+    """
     def _series(key: str) -> np.ndarray:
         values = history.get(key, [])
         if not values:
@@ -234,10 +239,7 @@ def plot_eig_descent_history(
 
     fig.tight_layout(rect=[0, 0, 1, 0.97])
     filename = f"eigdesc_{sample_index:03d}_{_sanitize_formula(formula)}_{start_from}_steps{loss.size}.png"
-    out_path = os.path.join(out_dir, filename)
-    fig.savefig(out_path, dpi=200)
-    plt.close(fig)
-    return out_path
+    return fig, filename
 
 # --- Core Optimization Function with Improved Loss Functions ---
 def run_eigenvalue_descent(
@@ -557,14 +559,50 @@ if __name__ == "__main__":
                         help="For 'sign_enforcer': target value (in eV/Å²) to push λ₀ below when no negatives.")
     parser.add_argument("--sign-pos-floor", type=float, default=1e-3,
                         help="For 'sign_enforcer': positive floor (in eV/Å²) to push additional negatives above.")
+
+    # W&B arguments
+    parser.add_argument("--wandb", action="store_true",
+                        help="Enable Weights & Biases logging")
+    parser.add_argument("--wandb-project", type=str, default="gad-ts-search",
+                        help="W&B project name (default: gad-ts-search)")
+    parser.add_argument("--wandb-entity", type=str, default=None,
+                        help="W&B entity/username (optional)")
+
     args = parser.parse_args()
 
     calculator, dataloader, device, out_dir = setup_experiment(args, shuffle=False)
-    loss_dirname = _sanitize_formula(args.loss_type)
-    loss_out_dir = os.path.join(out_dir, "optimization", loss_dirname)
-    os.makedirs(loss_out_dir, exist_ok=True)
+
+    # Set up experiment logger
+    loss_type_flags = build_loss_type_flags(args)
+
+    # Prepare W&B config
+    wandb_config = {
+        "script": "gad_eigenvalue_descent",
+        "loss_type": args.loss_type,
+        "start_from": args.start_from,
+        "n_steps_opt": args.n_steps_opt,
+        "lr": args.lr,
+        "target_eig0": args.target_eig0,
+        "target_eig1": args.target_eig1,
+        "adaptive_targets": args.adaptive_targets,
+        "max_samples": args.max_samples,
+    }
+
+    logger = ExperimentLogger(
+        base_dir=out_dir,
+        script_name="gad-eigdescent",
+        loss_type_flags=loss_type_flags,
+        max_graphs_per_transition=10,
+        random_seed=42,  # For reproducible sampling
+        use_wandb=args.wandb,
+        wandb_project=args.wandb_project if args.wandb else None,
+        wandb_entity=args.wandb_entity,
+        wandb_tags=[args.loss_type, args.start_from],
+        wandb_config=wandb_config,
+    )
 
     print(f"Running Eigenvalue Descent to Find Transition States")
+    print(f"Output directory: {logger.run_dir}")
     print(f"Starting From: {args.start_from.upper()}, Steps: {args.n_steps_opt}, LR: {args.lr}")
     print(f"Loss Type: {args.loss_type}")
     if args.early_stop_eig_product and args.early_stop_eig_product > 0:
@@ -585,8 +623,6 @@ if __name__ == "__main__":
     elif args.adaptive_targets:
         print("  [WARNING] Adaptive targets requested but only supported with 'targeted_magnitude'; disabling.")
         args.adaptive_targets = False
-
-    results_summary = []
     for i, batch in enumerate(dataloader):
         if i >= args.max_samples: break
         print(f"\n--- Processing Sample {i} (Formula: {batch.formula[0]}) ---")
@@ -619,77 +655,89 @@ if __name__ == "__main__":
                 _, _, final_out = calculator.potential.forward(final_batch, otf_graph=True)
                 final_freq_info = analyze_frequencies_torch(final_out['hessian'], opt_results['final_coords'].to(device), batch.z)
 
-            summary = {
-                "sample_index": i, "formula": batch.formula[0],
-                "final_loss": opt_results["final_loss"],
-                "final_eig_product": opt_results["final_eig_product"],
-                "final_eig0": opt_results["final_eig0"],
-                "final_eig1": opt_results["final_eig1"],
-                "final_neg_vibrational": opt_results["final_neg_vibrational"],
-                "final_neg_eigvals": int(final_freq_info.get("neg_num", -1)),
-                "rmsd_to_known_ts": align_ordered_and_get_rmsd(opt_results["final_coords"], batch.pos_transition),
-                "stop_reason": opt_results.get("stop_reason"),
-            }
-            results_summary.append(summary)
+            # Compute initial eigenvalues for transition tracking
+            initial_batch = coord_atoms_to_torch_geometric(initial_coords.to(device), batch.z, device)
+            _, _, initial_out = calculator.potential.forward(initial_batch, otf_graph=True)
+            initial_freq_info = analyze_frequencies_torch(initial_out['hessian'], initial_coords.to(device), batch.z)
 
-            plot_path = plot_eig_descent_history(
+            # Compute steps_to_ts: find first step where neg_vibrational == 1
+            steps_to_ts = None
+            neg_vib_history = opt_results["history"].get("neg_vibrational", [])
+            if neg_vib_history:
+                for step_idx, neg_vib in enumerate(neg_vib_history):
+                    if neg_vib == 1:
+                        steps_to_ts = step_idx
+                        break
+
+            # Create RunResult
+            result = RunResult(
+                sample_index=i,
+                formula=batch.formula[0],
+                initial_neg_eigvals=int(initial_freq_info.get("neg_num", -1)),
+                final_neg_eigvals=int(final_freq_info.get("neg_num", -1)),
+                initial_neg_vibrational=None,  # Could compute if needed
+                final_neg_vibrational=opt_results["final_neg_vibrational"],
+                steps_taken=len(opt_results["history"]["loss"]),
+                steps_to_ts=steps_to_ts,
+                final_time=None,  # Not applicable for optimization
+                final_eig0=opt_results["final_eig0"],
+                final_eig1=opt_results["final_eig1"],
+                final_eig_product=opt_results["final_eig_product"],
+                final_loss=opt_results["final_loss"],
+                rmsd_to_known_ts=align_ordered_and_get_rmsd(opt_results["final_coords"], batch.pos_transition),
+                stop_reason=opt_results.get("stop_reason"),
+                plot_path=None,  # Will be set below
+            )
+
+            # Add result to logger
+            logger.add_result(result)
+
+            # Create plot
+            fig_and_filename = plot_eig_descent_history(
                 history=opt_results["history"],
                 sample_index=i,
                 formula=batch.formula[0],
-                out_dir=loss_out_dir,
                 start_from=args.start_from,
                 target_eig0=args.target_eig0,
                 target_eig1=args.target_eig1,
-                final_neg_vibrational=summary["final_neg_vibrational"],
-                final_neg_eigvals=summary["final_neg_eigvals"],
+                final_neg_vibrational=result.final_neg_vibrational,
+                final_neg_eigvals=result.final_neg_eigvals,
             )
-            if plot_path:
-                summary["plot_path"] = plot_path
-                print(f"  Saved optimization plot to: {os.path.basename(plot_path)}")
+
+            # Save plot using logger (handles sampling)
+            if fig_and_filename[0] is not None:
+                fig, filename = fig_and_filename
+                plot_path = logger.save_graph(result, fig, filename)
+                if plot_path:
+                    result.plot_path = plot_path
+                    print(f"  Saved plot to: {plot_path}")
+                else:
+                    print(f"  Skipped plot (max samples for {result.transition_key} reached)")
+                plt.close(fig)
 
             print(f"Result for Sample {i}:")
-            print(f"  Final Loss: {summary['final_loss']:.6e}")
-            print(f"  Final λ₀: {summary['final_eig0']:.6f} eV/Å², λ₁: {summary['final_eig1']:.6f} eV/Å²")
-            print(f"  Final λ₀*λ₁: {summary['final_eig_product']:.6e}")
-            print(f"  Final Neg Vibrational: {summary['final_neg_vibrational']} (Freq Analysis Negs: {summary['final_neg_eigvals']})")
-            print(f"  RMSD to T1x TS: {summary['rmsd_to_known_ts']:.4f} Å")
-            if summary.get("stop_reason"):
-                print(f"  Stop Reason: {summary['stop_reason']}")
-            
+            print(f"  Transition: {result.transition_key}")
+            print(f"  Steps taken: {result.steps_taken}")
+            print(f"  Final Loss: {result.final_loss:.6e}")
+            print(f"  Final λ₀: {result.final_eig0:.6f} eV/Å², λ₁: {result.final_eig1:.6f} eV/Å²")
+            print(f"  Final λ₀*λ₁: {result.final_eig_product:.6e}")
+            print(f"  Final Neg Vibrational: {result.final_neg_vibrational} (Freq Analysis Negs: {result.final_neg_eigvals})")
+            print(f"  RMSD to T1x TS: {result.rmsd_to_known_ts:.4f} Å")
+            if result.stop_reason:
+                print(f"  Stop Reason: {result.stop_reason}")
+
         except Exception as e:
-                print(f"[ERROR] Sample {i} failed: {e}")
-                import traceback
-                traceback.print_exc()
+            print(f"[ERROR] Sample {i} failed: {e}")
+            import traceback
+            traceback.print_exc()
 
-    out_json = os.path.join(loss_out_dir, f"eigdesc_{args.loss_type}_{args.start_from}_{len(results_summary)}.json")
-    with open(out_json, "w") as f: json.dump(results_summary, f, indent=2)
-    print(f"\nSaved summary to {out_json}")
+    # Save all results and aggregate statistics
+    all_runs_path, aggregate_path = logger.save_all_results()
+    print(f"\nSaved all runs to: {all_runs_path}")
+    print(f"Saved aggregate stats to: {aggregate_path}")
 
-    # Print final statistics
-    if results_summary:
-        print("\n" + "="*60)
-        print(" " * 18 + "EIGENVALUE DESCENT SUMMARY")
-        print("="*60)
+    # Print summary
+    logger.print_summary()
 
-        avg_eig0 = np.mean([r["final_eig0"] for r in results_summary])
-        avg_eig1 = np.mean([r["final_eig1"] for r in results_summary])
-        avg_eig_prod = np.mean([r["final_eig_product"] for r in results_summary])
-        avg_rmsd = np.mean([r["rmsd_to_known_ts"] for r in results_summary])
-
-        print(f"\nAverage Final Values (across {len(results_summary)} samples):")
-        print(f"  λ₀: {avg_eig0:.6f} eV/Å²")
-        print(f"  λ₁: {avg_eig1:.6f} eV/Å²")
-        print(f"  λ₀*λ₁: {avg_eig_prod:.6e}")
-        print(f"  RMSD to known TS: {avg_rmsd:.4f} Å")
-
-        # Count how many have exactly 1 negative eigenvalue
-        one_neg = sum(1 for r in results_summary if r["final_neg_eigvals"] == 1)
-        print(f"\nSamples with exactly 1 negative eigenvalue (TS signature): {one_neg}/{len(results_summary)}")
-
-        # Show distribution
-        from collections import Counter
-        neg_dist = Counter(r["final_neg_eigvals"] for r in results_summary)
-        print(f"Distribution of negative eigenvalues:")
-        for key in sorted(neg_dist.keys()):
-            print(f"  {key} neg eig: {neg_dist[key]} samples")
-        print("="*60)
+    # Finish W&B run
+    logger.finish()

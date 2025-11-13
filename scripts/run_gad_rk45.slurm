@@ -25,6 +25,9 @@ module load python/${PYTHON_VERSION}
 echo ">>> Activating virtual environment..."
 source ${VENV_DIR}/bin/activate
 
+# Set up W&B API key for logging
+export WANDB_API_KEY="ed8d3e45635321a86859f77337bdb4dfb5ceb113"
+
 echo ">>> Running GAD-RK45 Search script..."
 
 # --- Main Experiment: Start from midpoint and search for TS ---
@@ -38,6 +41,8 @@ python -m src.gad_rk45_search \
     --max-steps 50 \
     --min-eig-product-threshold -0.0001 \
     --confirmation-steps 10 \
+    --wandb \
+    --wandb-project "gad-ts-search"
 
 # --- Example with kick mechanism enabled ---
 # Uncomment to enable kick mechanism to escape local minima:

@@ -26,6 +26,14 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+# W&B import (optional)
+try:
+    import wandb
+    WANDB_AVAILABLE = True
+except ImportError:
+    WANDB_AVAILABLE = False
+    wandb = None
+
 
 def coord_atoms_to_torch_geometric(coords, atomic_nums, device):
     """Convert coordinates and atomic numbers to a PyG batch for model inference."""
@@ -335,11 +343,46 @@ if __name__ == "__main__":
     parser.add_argument("--n-samples-per-noise", type=int, default=5,
                        help="Number of random samples per noise level (default: 5)")
 
+    # W&B arguments
+    parser.add_argument("--wandb", action="store_true",
+                        help="Enable Weights & Biases logging")
+    parser.add_argument("--wandb-project", type=str, default="gad-ts-search",
+                        help="W&B project name (default: gad-ts-search)")
+    parser.add_argument("--wandb-entity", type=str, default=None,
+                        help="W&B entity/username (optional)")
+
     args = parser.parse_args()
 
     calculator, dataloader, device, out_dir = setup_experiment(args, shuffle=False)
     stats_out_dir = os.path.join(out_dir, "starting_geometry_stats")
     os.makedirs(stats_out_dir, exist_ok=True)
+
+    # Initialize W&B if requested
+    wandb_run = None
+    use_wandb = args.wandb and WANDB_AVAILABLE
+
+    if use_wandb:
+        if not WANDB_AVAILABLE:
+            print("[WARNING] W&B requested but not installed. Install with: pip install wandb")
+            use_wandb = False
+        else:
+            # Prepare W&B config
+            wandb_config = {
+                "script": "starting_geometry_stats",
+                "noise_levels": args.noise_levels,
+                "n_samples_per_noise": args.n_samples_per_noise,
+                "max_samples": args.max_samples,
+            }
+
+            wandb_run = wandb.init(
+                project=args.wandb_project,
+                entity=args.wandb_entity,
+                name="starting-geom-stats",
+                tags=["starting-geometry", "eigenvalue-stats"],
+                config=wandb_config,
+                dir=str(stats_out_dir),
+            )
+            print(f"[W&B] Initialized run: {wandb_run.name} ({wandb_run.url})")
 
     print("=" * 70)
     print("STARTING GEOMETRY EIGENVALUE STATISTICS")
@@ -402,6 +445,15 @@ if __name__ == "__main__":
             sample_results.append(result)
             all_results.append(result)
 
+            # Log to W&B
+            if use_wandb and wandb_run is not None and stats["success"]:
+                wandb.log({
+                    "geometry/mol_index": mol_idx,
+                    "geometry/noise_level": geom["noise_level"],
+                    "geometry/neg_count": stats["neg_count"],
+                    "geometry/geometry_name": geom["name"],
+                })
+
         # Generate per-molecule plot
         plot_path = plot_eigenvalue_distribution(
             sample_results,
@@ -411,6 +463,13 @@ if __name__ == "__main__":
         )
         if plot_path:
             print(f"\nSaved plot: {os.path.basename(plot_path)}")
+
+            # Upload plot to W&B
+            if use_wandb and wandb_run is not None:
+                wandb.log({
+                    f"plots/molecule_{mol_idx}": wandb.Image(plot_path),
+                    "mol_index": mol_idx,
+                })
 
         # Compute per-molecule summary
         successful = [r for r in sample_results if r["success"]]
@@ -457,6 +516,10 @@ if __name__ == "__main__":
     if summary_plot:
         print(f"Saved summary plot: {os.path.basename(summary_plot)}")
 
+        # Upload summary plot to W&B
+        if use_wandb and wandb_run is not None:
+            wandb.log({"plots/summary": wandb.Image(summary_plot)})
+
     # Print final summary
     print("\n" + "=" * 70)
     print(" " * 20 + "FINAL SUMMARY")
@@ -489,4 +552,38 @@ if __name__ == "__main__":
             pct = 100 * counter[count] / len(all_neg_counts)
             print(f"  {count} neg eig: {counter[count]:4d} geometries ({pct:5.1f}%)")
 
+        # Log aggregate statistics to W&B
+        if use_wandb and wandb_run is not None:
+            # Summary metrics
+            wandb_run.summary["summary/total_molecules"] = len(all_samples_summary)
+            wandb_run.summary["summary/total_geometries"] = len(all_results)
+            wandb_run.summary["summary/mean_neg_count"] = overall_mean
+            wandb_run.summary["summary/std_neg_count"] = overall_std
+            wandb_run.summary["summary/pct_higher_order"] = overall_pct_higher
+
+            # Per-noise-level statistics
+            for noise in sorted(set(args.noise_levels + [0.0])):
+                noise_results = [r for r in all_results if r["success"] and r["noise_level"] == noise]
+                if noise_results:
+                    neg_counts = [r["neg_count"] for r in noise_results]
+                    pct_higher = 100 * sum(1 for c in neg_counts if c > 1) / len(neg_counts)
+                    noise_key = f"noise_{noise:.1f}A"
+                    wandb_run.summary[f"by_noise/{noise_key}/mean_neg_count"] = np.mean(neg_counts)
+                    wandb_run.summary[f"by_noise/{noise_key}/std_neg_count"] = np.std(neg_counts)
+                    wandb_run.summary[f"by_noise/{noise_key}/pct_higher_order"] = pct_higher
+
+            # Upload JSON files as artifacts
+            artifact = wandb.Artifact(
+                name="starting-geometry-stats",
+                type="results",
+                description="Starting geometry eigenvalue statistics"
+            )
+            artifact.add_file(results_json, name="all_geometry_stats.json")
+            wandb_run.log_artifact(artifact)
+
     print("=" * 70)
+
+    # Finish W&B run
+    if use_wandb and wandb_run is not None:
+        wandb.finish()
+        print("[W&B] Run finished")

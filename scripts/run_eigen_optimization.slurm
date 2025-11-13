@@ -17,6 +17,9 @@ module purge
 module load python/${PYTHON_VERSION}
 source ${VENV_DIR}/bin/activate
 
+# Set up W&B API key for logging
+export WANDB_API_KEY="ed8d3e45635321a86859f77337bdb4dfb5ceb113"
+
 echo ">>> Running Eigenvalue Descent script..."
 
 # Each type of loss f'n. Uncomment exactly one command below.
@@ -36,7 +39,9 @@ python -m src.gad_eigenvalue_descent \
     --start-from reactant \
     --loss-type sign_enforcer \
     --sign-neg-target -0.01 \
-    --sign-pos-floor 0.1
+    --sign-pos-floor 0.1 \
+    --wandb \
+    --wandb-project "gad-ts-search"
 #
 # python -m src.gad_eigenvalue_descent \
 #     --max-samples 500 \

@@ -17,13 +17,18 @@ module purge
 module load python/${PYTHON_VERSION}
 source ${VENV_DIR}/bin/activate
 
+# Set up W&B API key for logging
+export WANDB_API_KEY="ed8d3e45635321a86859f77337bdb4dfb5ceb113"
+
 echo ">>> Running Starting Geometry Statistics script..."
 
 # Test different noise levels to find distribution of higher-order saddle points
 python -m src.starting_geometry_stats \
     --max-samples 30 \
     --noise-levels 0.5 1.0 2.0 5.0 10.0 \
-    --n-samples-per-noise 5
+    --n-samples-per-noise 5 \
+    --wandb \
+    --wandb-project "gad-ts-search"
 
 # Alternative: Test more noise levels with fewer samples per level
 # python -m src.starting_geometry_stats \

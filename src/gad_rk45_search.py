@@ -13,6 +13,7 @@ from torch_geometric.data import Data as TGData, Batch as TGBatch
 from .common_utils import setup_experiment, add_common_args
 from hip.frequency_analysis import analyze_frequencies_torch
 from hip.equiformer_torch_calculator import EquiformerTorchCalculator
+from .experiment_logger import ExperimentLogger, RunResult, build_loss_type_flags
 
 import matplotlib
 matplotlib.use("Agg")
@@ -331,13 +332,18 @@ def plot_trajectory(
     trajectory,
     sample_index,
     formula,
-    out_dir,
     start_from,
     initial_neg_num,
     final_neg_num,
     initial_neg_vibrational,
     final_neg_vibrational,
 ):
+    """
+    Plot GAD trajectory.
+
+    Returns:
+        Tuple of (matplotlib Figure, suggested filename)
+    """
     timesteps = np.array(trajectory.get("time", []))
     def _nanify(key): return np.array([v if v is not None else np.nan for v in trajectory.get(key, [])], dtype=float)
 
@@ -426,10 +432,7 @@ def plot_trajectory(
 
     fig.tight_layout(rect=[0, 0, 1, 0.96])
     filename = f"traj_{sample_index:03d}_{_sanitize_formula(formula)}_from_{start_from}_{initial_neg_num}to{final_neg_num}.png"
-    out_path = os.path.join(out_dir, filename)
-    fig.savefig(out_path, dpi=200)
-    plt.close(fig)
-    return out_path
+    return fig, filename
 
 # --- Main script execution block (With Kick args) ---
 if __name__ == "__main__":
@@ -462,12 +465,52 @@ if __name__ == "__main__":
                         help="Enable eigenvector-following refinement after TS candidate found.")
     parser.add_argument("--eigvec-follow-delay", type=int, default=5,
                         help="Steps after TS candidate before switching to eigenvector following (default: 5).")
+
+    # W&B arguments
+    parser.add_argument("--wandb", action="store_true",
+                        help="Enable Weights & Biases logging")
+    parser.add_argument("--wandb-project", type=str, default="gad-ts-search",
+                        help="W&B project name (default: gad-ts-search)")
+    parser.add_argument("--wandb-entity", type=str, default=None,
+                        help="W&B entity/username (optional)")
+
     args = parser.parse_args()
 
     torch.set_grad_enabled(False)
     calculator, dataloader, device, out_dir = setup_experiment(args, shuffle=False)
 
+    # Set up experiment logger
+    loss_type_flags = build_loss_type_flags(args)
+
+    # Prepare W&B config
+    wandb_config = {
+        "script": "gad_rk45_search",
+        "start_from": args.start_from,
+        "t_end": args.t_end,
+        "max_steps": args.max_steps,
+        "stop_at_ts": args.stop_at_ts,
+        "enable_kick": args.enable_kick,
+        "kick_force_threshold": args.kick_force_threshold if args.enable_kick else None,
+        "kick_magnitude": args.kick_magnitude if args.enable_kick else None,
+        "eigenvector_following": args.eigenvector_following,
+        "max_samples": args.max_samples,
+    }
+
+    logger = ExperimentLogger(
+        base_dir=out_dir,
+        script_name="gad-rk45",
+        loss_type_flags=loss_type_flags,
+        max_graphs_per_transition=10,
+        random_seed=42,  # For reproducible sampling
+        use_wandb=args.wandb,
+        wandb_project=args.wandb_project if args.wandb else None,
+        wandb_entity=args.wandb_entity,
+        wandb_tags=[args.start_from, "rk45"],
+        wandb_config=wandb_config,
+    )
+
     print(f"Running GAD-RK45 Search. Start: {args.start_from.upper()}, Stop at TS: {args.stop_at_ts}")
+    print(f"Output directory: {logger.run_dir}")
     print(f"Kick enabled: {args.enable_kick}")
     if args.enable_kick:
         print(f"  Force threshold: {args.kick_force_threshold} eV/Å, Kick magnitude: {args.kick_magnitude} Å")
@@ -478,9 +521,6 @@ if __name__ == "__main__":
     if args.eigenvector_following:
         print(f"Eigenvector-following refinement: ENABLED")
         print(f"  Activation delay: {args.eigvec_follow_delay} steps after TS candidate")
-
-    results_summary = []
-    stalled_runs_data = []  # For 0 -> 0 transitions
     for i, batch in enumerate(dataloader):
         if i >= args.max_samples: break
         print(f"\n--- Processing Sample {i} (Formula: {batch.formula[0]}) ---")
@@ -527,42 +567,49 @@ if __name__ == "__main__":
             rigid_modes_series = [rm for rm in traj.get("rigid_modes_removed", []) if rm is not None]
             rigid_modes_removed = int(rigid_modes_series[0]) if rigid_modes_series else None
 
-            summary = {
-                "sample_index": i, "formula": batch.formula[0],
-                "steps_taken": len(traj["time"]) - 1,
-                "final_time": solver.t,
-                "initial_eig_product": traj["eig_product"][0],
-                "final_eig_product": traj["eig_product"][-1],
-                "initial_eig0": traj["eig0"][0] if traj["eig0"] else None,
-                "final_eig0": traj["eig0"][-1] if traj["eig0"] else None,
-                "initial_eig1": traj["eig1"][0] if traj["eig1"] else None,
-                "final_eig1": traj["eig1"][-1] if traj["eig1"] else None,
-                "initial_neg_eigvals": initial_neg_num,
-                "final_neg_eigvals": final_neg_num,
-                "initial_neg_vibrational": initial_neg_vibrational,
-                "final_neg_vibrational": final_neg_vibrational,
-                "rigid_modes_removed": rigid_modes_removed,
-                "num_kicks": dynamics_fn.num_kicks,
-                "ts_candidate_step": dynamics_fn.ts_candidate_step,
-                "ts_confirmed": dynamics_fn.ts_found,
-                "eigvec_follow_activated": dynamics_fn.eigvec_follow_active,
-                "final_mean_force": traj["force_mean"][-1],
-                "final_mean_gad": traj["gad_mean"][-1],
-            }
-            results_summary.append(summary)
+            # Compute steps_to_ts: use ts_candidate_step if TS was found
+            steps_to_ts = dynamics_fn.ts_candidate_step if dynamics_fn.ts_found else None
 
-            # Collect data for stalled runs analysis
-            if initial_neg_num == 0 and final_neg_num == 0:
-                stalled_runs_data.append({
-                    "force": summary["final_mean_force"],
-                    "gad": summary["final_mean_gad"]
-                })
+            # Create RunResult
+            result = RunResult(
+                sample_index=i,
+                formula=batch.formula[0],
+                initial_neg_eigvals=initial_neg_num,
+                final_neg_eigvals=final_neg_num,
+                initial_neg_vibrational=initial_neg_vibrational,
+                final_neg_vibrational=final_neg_vibrational,
+                steps_taken=len(traj["time"]) - 1,
+                steps_to_ts=steps_to_ts,
+                final_time=solver.t,
+                final_eig0=traj["eig0"][-1] if traj["eig0"] else None,
+                final_eig1=traj["eig1"][-1] if traj["eig1"] else None,
+                final_eig_product=traj["eig_product"][-1],
+                final_loss=None,  # Not applicable for RK45
+                rmsd_to_known_ts=None,  # Could compute if needed
+                stop_reason="ts_confirmed" if dynamics_fn.ts_found else None,
+                plot_path=None,  # Will be set below
+                extra_data={
+                    "initial_eig_product": traj["eig_product"][0],
+                    "initial_eig0": traj["eig0"][0] if traj["eig0"] else None,
+                    "initial_eig1": traj["eig1"][0] if traj["eig1"] else None,
+                    "rigid_modes_removed": rigid_modes_removed,
+                    "num_kicks": dynamics_fn.num_kicks,
+                    "ts_candidate_step": dynamics_fn.ts_candidate_step,
+                    "ts_confirmed": dynamics_fn.ts_found,
+                    "eigvec_follow_activated": dynamics_fn.eigvec_follow_active,
+                    "final_mean_force": traj["force_mean"][-1],
+                    "final_mean_gad": traj["gad_mean"][-1],
+                }
+            )
 
-            plot_path = plot_trajectory(
+            # Add result to logger
+            logger.add_result(result)
+
+            # Create plot
+            fig, filename = plot_trajectory(
                 trajectory=traj,
                 sample_index=i,
                 formula=batch.formula[0],
-                out_dir=out_dir,
                 start_from=args.start_from,
                 initial_neg_num=initial_neg_num,
                 final_neg_num=final_neg_num,
@@ -570,9 +617,19 @@ if __name__ == "__main__":
                 final_neg_vibrational=final_neg_vibrational,
             )
 
+            # Save plot using logger (handles sampling)
+            plot_path = logger.save_graph(result, fig, filename)
+            if plot_path:
+                result.plot_path = plot_path
+                print(f"  Saved plot to: {plot_path}")
+            else:
+                print(f"  Skipped plot (max samples for {result.transition_key} reached)")
+            plt.close(fig)
+
             print("Result:")
-            print(f"  Solver Steps: {summary['steps_taken']}, Final Time: {summary['final_time']:.3f}")
-            print(f"  Neg Eigs: {summary['initial_neg_eigvals']} -> {summary['final_neg_eigvals']}")
+            print(f"  Transition: {result.transition_key}")
+            print(f"  Solver Steps: {result.steps_taken}, Final Time: {result.final_time:.3f}")
+            print(f"  Neg Eigs: {result.initial_neg_eigvals} -> {result.final_neg_eigvals}")
             if initial_neg_vibrational is not None or final_neg_vibrational is not None:
                 print(f"  Neg Vibrational Eigs: {initial_neg_vibrational} -> {final_neg_vibrational}")
             if args.enable_kick:
@@ -581,56 +638,13 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"[ERROR] Sample {i} failed: {e}"); import traceback; traceback.print_exc()
 
-    # Comprehensive Final Summary Block
-    if results_summary:
-        print("\n" + "="*60)
-        print(" " * 22 + "FINAL RUN SUMMARY")
-        print("="*60)
+    # Save all results and aggregate statistics
+    all_runs_path, aggregate_path = logger.save_all_results()
+    print(f"\nSaved all runs to: {all_runs_path}")
+    print(f"Saved aggregate stats to: {aggregate_path}")
 
-        # Analysis 1: Negative Eigenvalue Transitions
-        print("\n[Analysis 1: Negative Eigenvalue Transitions]")
-        transitions = defaultdict(int)
-        for r in results_summary:
-            transitions[f"{r['initial_neg_eigvals']} -> {r['final_neg_eigvals']}"] += 1
-        for key, count in sorted(transitions.items()):
-            print(f"  {key}: {count} samples")
+    # Print summary
+    logger.print_summary()
 
-        vib_transitions = defaultdict(int)
-        for r in results_summary:
-            init_vib = r.get("initial_neg_vibrational")
-            final_vib = r.get("final_neg_vibrational")
-            if init_vib is None and final_vib is None:
-                continue
-            vib_transitions[f"{init_vib} -> {final_vib}"] += 1
-        if vib_transitions:
-            print("\n[Analysis 1b: Vibrational Negative Eigenvalue Transitions]")
-            for key, count in sorted(vib_transitions.items()):
-                print(f"  {key}: {count} samples")
-
-        # Analysis 2: Final State Distribution
-        print("\n[Analysis 2: Final State Distribution]")
-        final_states = defaultdict(int)
-        for r in results_summary:
-            final_states[r['final_neg_eigvals']] += 1
-        for key, count in sorted(final_states.items()):
-            label = "neg eig" if key != 1 else "neg eig "
-            print(f"  {key} {label}: {count} samples")
-
-        # Analysis 3: Stalled Runs (0 -> 0)
-        print("\n[Analysis 3: Stalled Runs (0 -> 0)]")
-        if stalled_runs_data:
-            avg_force = np.mean([d['force'] for d in stalled_runs_data])
-            avg_gad = np.mean([d['gad'] for d in stalled_runs_data])
-            print(f"  Number of stalled runs: {len(stalled_runs_data)}")
-            print(f"  Avg. final force magnitude: {avg_force:.5f} eV/Å")
-            print(f"  Avg. final GAD magnitude:   {avg_gad:.5f} Å")
-        else:
-            print("  No stalled (0 -> 0) runs were observed.")
-        print("="*60)
-
-    kick_suffix = "_kick" if args.enable_kick else ""
-    stop_suffix = "_stopts" if args.stop_at_ts else ""
-    filename = f"gad_rk45_{args.start_from}{stop_suffix}{kick_suffix}_{len(results_summary)}.json"
-    out_json = os.path.join(out_dir, filename)
-    with open(out_json, "w") as f: json.dump(results_summary, f, indent=2)
-    print(f"\nSaved summary to {out_json}")
+    # Finish W&B run
+    logger.finish()
