@@ -96,12 +96,30 @@ def plot_eig_descent_history(
         values = history.get(key, [])
         if not values:
             return np.array([], dtype=float)
-        return np.asarray(values, dtype=float)
+        cleaned: List[float] = []
+        for v in values:
+            if v is None:
+                cleaned.append(np.nan)
+            else:
+                try:
+                    cleaned.append(float(v))
+                except (TypeError, ValueError):
+                    cleaned.append(np.nan)
+        return np.asarray(cleaned, dtype=float)
+
+    def _isfinite_scalar(val) -> bool:
+        try:
+            return bool(np.isfinite(float(val)))
+        except (TypeError, ValueError):
+            return False
 
     loss = _series("loss")
     if loss.size == 0:
         return None  # Nothing to plot
     steps = np.arange(loss.size)
+    energy = _series("energy")
+    force_mean = _series("force_mean")
+    force_max = _series("force_max")
     eig0 = _series("eig0")
     eig1 = _series("eig1")
     eig_prod = _series("eig_product")
@@ -112,35 +130,82 @@ def plot_eig_descent_history(
     fig, axes = plt.subplots(5, 1, figsize=(8, 15), sharex=True)
     fig.suptitle(f"Eigenvalue Descent (Sample {sample_index}): {formula}", fontsize=14)
 
-    loss_for_plot = np.maximum(loss, 1e-12)
-    axes[0].plot(steps, loss_for_plot, marker=".", lw=1.2, color="tab:blue")
-    axes[0].set_ylabel("Loss")
-    axes[0].set_yscale("log")
-    axes[0].set_title("Optimization Loss (log scale)")
+    loss_for_plot = loss.copy()
+    finite_loss = np.isfinite(loss_for_plot)
+    loss_for_plot[finite_loss] = np.maximum(np.abs(loss_for_plot[finite_loss]), 1e-12)
+    has_energy = energy.size > 0 and np.isfinite(energy).any()
+    if has_energy:
+        axes[0].plot(steps, energy, marker=".", lw=1.2, color="tab:blue", label="Energy")
+        axes[0].set_ylabel("Energy (eV)")
+        axes[0].set_title("Energy & Loss")
+        ax0b = axes[0].twinx()
+        ax0b.plot(steps, loss_for_plot, marker=".", lw=1.2, color="tab:orange", label="|Loss|")
+        ax0b.set_ylabel("|Loss|")
+        ax0b.set_yscale("log")
+        handles0, labels0 = axes[0].get_legend_handles_labels()
+        handles0b, labels0b = ax0b.get_legend_handles_labels()
+        if handles0 or handles0b:
+            axes[0].legend(handles0 + handles0b, labels0 + labels0b, loc="best", fontsize=9)
+    else:
+        axes[0].plot(steps, loss_for_plot, marker=".", lw=1.2, color="tab:orange")
+        axes[0].set_ylabel("|Loss|")
+        axes[0].set_yscale("log")
+        axes[0].set_title("Optimization Loss (log scale)")
 
-    axes[1].plot(steps, eig0, marker=".", lw=1.2, color="tab:red", label="λ₀")
-    axes[1].plot(steps, eig1, marker=".", lw=1.2, color="tab:green", label="λ₁")
-    axes[1].axhline(target_eig0, color="tab:red", ls="--", lw=1, alpha=0.6, label="Target λ₀")
-    axes[1].axhline(target_eig1, color="tab:green", ls="--", lw=1, alpha=0.6, label="Target λ₁")
-    axes[1].axhline(0.0, color="grey", ls=":", lw=1)
-    axes[1].set_ylabel("Eigenvalue (eV/Å²)")
-    axes[1].set_title("Tracked Vibrational Eigenvalues")
-    axes[1].legend(loc="best", fontsize=9)
+    def _plot_log_series(ax, series: np.ndarray, color: str, label: str) -> bool:
+        if series.size == 0:
+            return False
+        finite = np.isfinite(series)
+        if not finite.any():
+            return False
+        data = series.copy()
+        data[finite] = np.maximum(np.abs(data[finite]), 1e-12)
+        ax.plot(steps, data, marker=".", lw=1.2, color=color, label=label)
+        return True
 
-    axes[2].plot(steps, eig_prod, marker=".", lw=1.2, color="tab:purple")
+    axes[1].set_yscale("log")
+    plotted_force = _plot_log_series(axes[1], force_mean, "tab:orange", "Mean |F|")
+    plotted_force |= _plot_log_series(axes[1], force_max, "tab:brown", "Max |F|")
+    plotted_grad = _plot_log_series(axes[1], grad_norm, "tab:purple", "‖∇loss‖")
+    axes[1].set_ylabel("Magnitude (log)")
+    axes[1].set_title("Force & Gradient Norms")
+    if axes[1].get_legend_handles_labels()[0]:
+        axes[1].legend(loc="best", fontsize=9)
+    if not (plotted_force or plotted_grad):
+        axes[1].set_yscale("linear")
+        axes[1].text(0.5, 0.5, "No force/grad data", transform=axes[1].transAxes,
+                     ha="center", va="center", fontsize=9, color="grey")
+
+    axes[2].plot(steps, eig0, marker=".", lw=1.2, color="tab:red", label="λ₀")
+    axes[2].plot(steps, eig1, marker=".", lw=1.2, color="tab:green", label="λ₁")
+    if _isfinite_scalar(target_eig0):
+        axes[2].axhline(target_eig0, color="tab:red", ls="--", lw=1, alpha=0.6, label="Target λ₀")
+    if _isfinite_scalar(target_eig1):
+        axes[2].axhline(target_eig1, color="tab:green", ls="--", lw=1, alpha=0.6, label="Target λ₁")
     axes[2].axhline(0.0, color="grey", ls=":", lw=1)
-    axes[2].set_ylabel("λ₀ · λ₁")
-    axes[2].set_title("Eigenvalue Product")
+    axes[2].set_ylabel("Eigenvalue (eV/Å²)")
+    axes[2].set_title("Tracked Vibrational Eigenvalues")
+    axes[2].legend(loc="best", fontsize=9)
+    if eig0.size and np.isfinite(eig0[-1]):
+        axes[2].text(0.98, 0.05, f"Final λ₀={eig0[-1]:.6f}", transform=axes[2].transAxes,
+                     ha="right", va="bottom", fontsize=9, color="tab:red")
+
+    axes[3].plot(steps, eig_prod, marker=".", lw=1.2, color="tab:purple")
+    axes[3].axhline(0.0, color="grey", ls=":", lw=1)
+    axes[3].set_ylabel("λ₀ · λ₁")
+    axes[3].set_title("Eigenvalue Product")
     if eig_prod.size:
-        axes[2].text(0.02, 0.9, f"Start {eig_prod[0]:.3e}", transform=axes[2].transAxes, ha="left", va="top", fontsize=9, color="tab:purple")
-        axes[2].text(0.98, 0.9, f"End {eig_prod[-1]:.3e}", transform=axes[2].transAxes, ha="right", va="top", fontsize=9, color="tab:purple")
+        if np.isfinite(eig_prod[0]):
+            axes[3].text(0.02, 0.9, f"Start {eig_prod[0]:.3e}", transform=axes[3].transAxes,
+                         ha="left", va="top", fontsize=9, color="tab:purple")
+        if np.isfinite(eig_prod[-1]):
+            axes[3].text(0.98, 0.9, f"End {eig_prod[-1]:.3e}", transform=axes[3].transAxes,
+                         ha="right", va="top", fontsize=9, color="tab:purple")
 
-    axes[3].plot(steps, np.maximum(grad_norm, 1e-12), marker=".", lw=1.2, color="tab:orange")
-    axes[3].set_ylabel("‖∇‖")
-    axes[3].set_yscale("log")
-    axes[3].set_title("Gradient Norm (log scale)")
-
-    axes[4].plot(steps, max_disp, marker=".", lw=1.2, color="tab:cyan", label="Max atom Δ (Å)")
+    max_disp_plot = max_disp.copy()
+    finite_disp = np.isfinite(max_disp_plot)
+    max_disp_plot[finite_disp] = np.maximum(max_disp_plot[finite_disp], 0.0)
+    axes[4].plot(steps, max_disp_plot, marker=".", lw=1.2, color="tab:cyan", label="Max atom Δ (Å)")
     axes[4].axhline(0.2, color="tab:cyan", ls="--", lw=1, alpha=0.6, label="Clamp limit")
     axes[4].set_ylabel("Displacement (Å)")
     axes[4].set_xlabel("Optimization Step")
@@ -153,8 +218,10 @@ def plot_eig_descent_history(
         handles, labels = axes[4].get_legend_handles_labels()
         handles2, labels2 = ax4b.get_legend_handles_labels()
         axes[4].legend(handles + handles2, labels + labels2, loc="best", fontsize=9)
-        ax4b.set_ylim(-0.5, max(np.max(neg_vib) + 0.5, 1.5))
-        ax4b.set_yticks(sorted(set(int(v) for v in neg_vib)))
+        finite_neg = neg_vib[np.isfinite(neg_vib)]
+        if finite_neg.size:
+            ax4b.set_ylim(-0.5, max(finite_neg.max() + 0.5, 1.5))
+            ax4b.set_yticks(sorted(set(int(v) for v in finite_neg)))
     else:
         axes[4].legend(loc="best", fontsize=9)
 
@@ -196,6 +263,7 @@ def run_eigenvalue_descent(
             - "relu": Original ReLU loss (allows infinitesimal eigenvalues)
             - "targeted_magnitude": Target specific eigenvalue magnitudes (RECOMMENDED)
             - "midpoint_squared": Minimize squared midpoint between eigenvalues
+            - "eig_product": Direct gradient descent on λ₀·λ₁
         target_eig0: Initial target value for most negative eigenvalue (eV/Å²)
         target_eig1: Initial target value for second smallest eigenvalue (eV/Å²)
         adaptive_targets: Enable adaptive target relaxation over final steps
@@ -266,6 +334,7 @@ def run_eigenvalue_descent(
 
                 eig0 = vibrational_eigvals[0]
                 eig1 = vibrational_eigvals[1]
+                eig_product = eig0 * eig1
                 neg_vibrational = (vibrational_eigvals < 0).sum().item()
                 final_eigvals = vibrational_eigvals
 
@@ -283,6 +352,10 @@ def run_eigenvalue_descent(
                     # Minimize squared midpoint (from your description)
                     midpoint = (eig0 + eig1) / 2.0
                     loss = midpoint**2
+
+                elif loss_type == "eig_product":
+                    # Direct gradient descent on the product of the first two vibrational eigenvalues
+                    loss = eig_product
 
                 else:
                     raise ValueError(f"Unknown loss_type: {loss_type}")
@@ -305,6 +378,28 @@ def run_eigenvalue_descent(
                 break
             else:
                 raise  # Re-raise if it's a different error
+
+        # Track auxiliary statistics for plotting/logging
+        energy_value = float("nan")
+        force_mean_value = float("nan")
+        force_max_value = float("nan")
+
+        energy_tensor = out.get("energy") if isinstance(out, dict) else None
+        if isinstance(energy_tensor, torch.Tensor):
+            energy_value = float(energy_tensor.detach().reshape(-1)[0].item())
+        elif isinstance(energy_tensor, (float, int)):
+            energy_value = float(energy_tensor)
+
+        forces_tensor = out.get("forces") if isinstance(out, dict) else None
+        if isinstance(forces_tensor, torch.Tensor):
+            forces_detached = forces_tensor.detach()
+            if forces_detached.dim() == 3 and forces_detached.shape[0] == 1:
+                forces_detached = forces_detached[0]
+            if forces_detached.numel() > 0:
+                force_vectors = forces_detached.reshape(-1, 3)
+                force_norms = force_vectors.norm(dim=1)
+                force_mean_value = float(force_norms.mean().item())
+                force_max_value = float(force_norms.max().item())
 
         with torch.no_grad():
             # Gradient clipping to prevent exploding gradients
@@ -345,6 +440,9 @@ def run_eigenvalue_descent(
         history["neg_vibrational"].append(neg_vibrational)
         history["grad_norm"].append(grad_norm_value)
         history["max_atom_disp"].append(max_atom_disp_value)
+        history["energy"].append(energy_value)
+        history["force_mean"].append(force_mean_value)
+        history["force_max"].append(force_max_value)
 
         if eig_product_threshold is not None:
             if eig_prod_value < 0 and abs(eig_prod_value) >= eig_product_threshold:
@@ -404,7 +502,7 @@ if __name__ == "__main__":
 
     # Loss function arguments
     parser.add_argument("--loss-type", type=str, default="targeted_magnitude",
-                        choices=["relu", "targeted_magnitude", "midpoint_squared"],
+                        choices=["relu", "targeted_magnitude", "midpoint_squared", "eig_product"],
                         help="Loss function type (default: targeted_magnitude)")
     parser.add_argument("--target-eig0", type=float, default=-0.05,
                         help="Initial target for most negative eigenvalue in eV/Å² (default: -0.05)")
@@ -442,6 +540,9 @@ if __name__ == "__main__":
             print(f"    Relax over final {args.adaptive_relax_steps} steps")
             print(f"    Final Target λ₀: {args.adaptive_final_eig0:.4f} eV/Å²")
             print(f"    Final Target λ₁: {args.adaptive_final_eig1:.4f} eV/Å²")
+    elif args.adaptive_targets:
+        print("  [WARNING] Adaptive targets requested but only supported with 'targeted_magnitude'; disabling.")
+        args.adaptive_targets = False
 
     results_summary = []
     for i, batch in enumerate(dataloader):
@@ -508,6 +609,8 @@ if __name__ == "__main__":
             print(f"  Final λ₀*λ₁: {summary['final_eig_product']:.6e}")
             print(f"  Final Neg Vibrational: {summary['final_neg_vibrational']} (Freq Analysis Negs: {summary['final_neg_eigvals']})")
             print(f"  RMSD to T1x TS: {summary['rmsd_to_known_ts']:.4f} Å")
+            if summary.get("stop_reason"):
+                print(f"  Stop Reason: {summary['stop_reason']}")
             
         except Exception as e:
             print(f"[ERROR] Sample {i} failed: {e}")
