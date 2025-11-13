@@ -19,37 +19,46 @@ source ${VENV_DIR}/bin/activate
 
 echo ">>> Running Eigenvalue Descent script..."
 
-# Each type of loss f'n.
+# Each type of loss f'n. Uncomment exactly one command below.
+# python -m src.gad_eigenvalue_descent \
+#     --max-samples 500 \
+#     --n-steps-opt 500 \
+#     --lr 0.01 \
+#     --start-from reactant \
+#     --loss-type targeted_magnitude \
+#     --target-eig0 -0.05 \
+#     --target-eig1 0.10
+#
 python -m src.gad_eigenvalue_descent \
     --max-samples 500 \
     --n-steps-opt 500 \
     --lr 0.01 \
     --start-from reactant \
-    --loss-type targeted_magnitude \
-    --target-eig0 -0.05 \
-    --target-eig1 0.10 \
-
-python -m src.gad_eigenvalue_descent \
-    --max-samples 500 \
-    --n-steps-opt 500 \
-    --lr 0.01 \
-    --start-from reactant \
-    --loss-type midpoint_squared
-
-python -m src.gad_eigenvalue_descent \
-    --max-samples 1000 \
-    --n-steps-opt 500 \
-    --lr 0.01 \
-    --start-from reactant \
-    --loss-type eig_product \
-    --early-stop-eig-product 5e-4
-
-python -m src.gad_eigenvalue_descent \
-    --max-samples 1000 \
-    --n-steps-opt 500 \
-    --lr 0.01 \
-    --start-from reactant \
-    --loss-type relu
+    --loss-type sign_enforcer \
+    --sign-neg-target -5e-3 \
+    --sign-pos-floor 1e-3
+#
+# python -m src.gad_eigenvalue_descent \
+#     --max-samples 500 \
+#     --n-steps-opt 500 \
+#     --lr 0.01 \
+#     --start-from reactant \
+#     --loss-type midpoint_squared
+#
+# python -m src.gad_eigenvalue_descent \
+#     --max-samples 1000 \
+#     --n-steps-opt 500 \
+#     --lr 0.01 \
+#     --start-from reactant \
+#     --loss-type eig_product \
+#     --early-stop-eig-product 5e-4
+#
+# python -m src.gad_eigenvalue_descent \
+#     --max-samples 1000 \
+#     --n-steps-opt 500 \
+#     --lr 0.01 \
+#     --start-from reactant \
+#     --loss-type relu
 
 # --- Optional: Adaptive target relaxation for targeted magnitude ---
 # python -m src.gad_eigenvalue_descent \

@@ -254,6 +254,8 @@ def run_eigenvalue_descent(
     adaptive_final_eig0: float = -0.02,
     adaptive_final_eig1: float = 0.05,
     early_stop_eig_product_threshold: Optional[float] = 5e-4,
+    sign_neg_target: float = -5e-3,
+    sign_pos_floor: float = 1e-3,
 ) -> Dict[str, Any]:
     """
     Run gradient descent on eigenvalues to find transition states.
@@ -264,6 +266,7 @@ def run_eigenvalue_descent(
             - "targeted_magnitude": Target specific eigenvalue magnitudes (RECOMMENDED)
             - "midpoint_squared": Minimize squared midpoint between eigenvalues
             - "eig_product": Direct gradient descent on λ₀·λ₁
+            - "sign_enforcer": Dynamically push eigenvalues into the TS pattern
         target_eig0: Initial target value for most negative eigenvalue (eV/Å²)
         target_eig1: Initial target value for second smallest eigenvalue (eV/Å²)
         adaptive_targets: Enable adaptive target relaxation over final steps
@@ -271,6 +274,8 @@ def run_eigenvalue_descent(
         adaptive_final_eig0: Final relaxed target for λ₀ (eV/Å²)
         adaptive_final_eig1: Final relaxed target for λ₁ (eV/Å²)
         early_stop_eig_product_threshold: Stop once λ₀·λ₁ ≤ -THRESH (set ≤0 to disable)
+        sign_neg_target: Target (slightly negative) value for λ₀ when no negatives exist
+        sign_pos_floor: Minimum positive floor for secondary negative eigenvalues
     """
     model = calculator.potential
     device = model.device
@@ -357,6 +362,26 @@ def run_eigenvalue_descent(
                     # Direct gradient descent on the product of the first two vibrational eigenvalues
                     loss = eig_product
 
+                elif loss_type == "sign_enforcer":
+                    # Dynamically enforce "exactly one negative eigenvalue" pattern.
+                    neg_target = eig0.new_tensor(sign_neg_target)
+                    pos_floor = eig0.new_tensor(sign_pos_floor)
+
+                    if neg_vibrational == 0:
+                        # No negative eigenvalues: push λ₀ below a small negative target.
+                        loss = torch.relu(eig0 - neg_target)**2
+                    elif neg_vibrational == 1:
+                        # Desired configuration: nothing to optimize.
+                        loss = eig0.new_tensor(0.0)
+                    else:
+                        # More than one negative: leave λ₀ alone and push the rest positive.
+                        trailing_eigs = vibrational_eigvals[1:]
+                        if trailing_eigs.numel() == 0:
+                            loss = eig0.new_tensor(0.0)
+                        else:
+                            penalties = torch.relu(pos_floor - trailing_eigs)**2
+                            loss = penalties.sum()
+
                 else:
                     raise ValueError(f"Unknown loss_type: {loss_type}")
 
@@ -367,6 +392,13 @@ def run_eigenvalue_descent(
                 elif loss_type in ["targeted_magnitude", "midpoint_squared"] and loss.item() < 1e-6:
                     print(f"  Stopping early at step {step}: Converged (Loss < 1e-6).")
                     break
+                elif loss_type == "sign_enforcer":
+                    if neg_vibrational == 1:
+                        print(f"  Stopping early at step {step}: Exactly one negative eigenvalue achieved.")
+                        break
+                    if neg_vibrational == 0 and loss.item() < 1e-8:
+                        print(f"  Stopping early at step {step}: λ₀ pushed below target ({sign_neg_target}).")
+                        break
 
                 grad = torch.autograd.grad(loss, coords)[0]
 
@@ -502,7 +534,7 @@ if __name__ == "__main__":
 
     # Loss function arguments
     parser.add_argument("--loss-type", type=str, default="targeted_magnitude",
-                        choices=["relu", "targeted_magnitude", "midpoint_squared", "eig_product"],
+                        choices=["relu", "targeted_magnitude", "midpoint_squared", "eig_product", "sign_enforcer"],
                         help="Loss function type (default: targeted_magnitude)")
     parser.add_argument("--target-eig0", type=float, default=-0.05,
                         help="Initial target for most negative eigenvalue in eV/Å² (default: -0.05)")
@@ -521,6 +553,10 @@ if __name__ == "__main__":
     parser.add_argument("--early-stop-eig-product", type=float, default=5e-4,
                         help="Stop optimization once λ₀·λ₁ ≤ -THRESH (default: 5e-4). "
                              "Set to ≤0 to disable.")
+    parser.add_argument("--sign-neg-target", type=float, default=-5e-3,
+                        help="For 'sign_enforcer': target value (in eV/Å²) to push λ₀ below when no negatives.")
+    parser.add_argument("--sign-pos-floor", type=float, default=1e-3,
+                        help="For 'sign_enforcer': positive floor (in eV/Å²) to push additional negatives above.")
     args = parser.parse_args()
 
     calculator, dataloader, device, out_dir = setup_experiment(args, shuffle=False)
@@ -543,6 +579,9 @@ if __name__ == "__main__":
             print(f"    Relax over final {args.adaptive_relax_steps} steps")
             print(f"    Final Target λ₀: {args.adaptive_final_eig0:.4f} eV/Å²")
             print(f"    Final Target λ₁: {args.adaptive_final_eig1:.4f} eV/Å²")
+    elif args.loss_type == "sign_enforcer":
+        print(f"  λ₀ target when all positive: {args.sign_neg_target:.4f} eV/Å²")
+        print(f"  Positive floor for extra negatives: {args.sign_pos_floor:.4f} eV/Å²")
     elif args.adaptive_targets:
         print("  [WARNING] Adaptive targets requested but only supported with 'targeted_magnitude'; disabling.")
         args.adaptive_targets = False
@@ -571,6 +610,8 @@ if __name__ == "__main__":
                 adaptive_final_eig0=args.adaptive_final_eig0,
                 adaptive_final_eig1=args.adaptive_final_eig1,
                 early_stop_eig_product_threshold=args.early_stop_eig_product,
+                sign_neg_target=args.sign_neg_target,
+                sign_pos_floor=args.sign_pos_floor,
             )
 
             with torch.no_grad():
