@@ -10,7 +10,7 @@ import torch
 import numpy as np
 from torch_geometric.data import Data as TGData, Batch as TGBatch
 
-from .common_utils import setup_experiment, add_common_args
+from .common_utils import setup_experiment, add_common_args, parse_starting_geometry
 from hip.frequency_analysis import analyze_frequencies_torch
 from hip.equiformer_torch_calculator import EquiformerTorchCalculator
 from .experiment_logger import ExperimentLogger, RunResult, build_loss_type_flags
@@ -440,7 +440,9 @@ if __name__ == "__main__":
     parser = add_common_args(parser)
     parser.add_argument("--t-end", type=float, default=2.0, help="Total integration time for the solver.")
     parser.add_argument("--max-steps", type=int, default=10000, help="Maximum number of integration steps.")
-    parser.add_argument("--start-from", type=str, default="reactant", choices=["ts", "reactant", "midpoint_rt", "three_quarter_rt"])
+    parser.add_argument("--start-from", type=str, default="reactant",
+                        help="Starting geometry: 'reactant', 'ts', 'midpoint_rt', 'three_quarter_rt', "
+                             "or add noise: 'reactant_noise0.5A', 'reactant_noise1A', 'reactant_noise2A', 'reactant_noise10A', etc.")
     parser.add_argument("--stop-at-ts", action="store_true", help="Stop simulation as soon as a TS is found.")
 
     # Kick mechanism arguments
@@ -525,10 +527,8 @@ if __name__ == "__main__":
         if i >= args.max_samples: break
         print(f"\n--- Processing Sample {i} (Formula: {batch.formula[0]}) ---")
         try:
-            if args.start_from == "reactant": initial_coords = batch.pos_reactant
-            elif args.start_from == "midpoint_rt": initial_coords = 0.5 * batch.pos_reactant + 0.5 * batch.pos_transition
-            elif args.start_from == "three_quarter_rt": initial_coords = 0.25 * batch.pos_reactant + 0.75 * batch.pos_transition
-            else: initial_coords = batch.pos_transition
+            # Use parse_starting_geometry to handle both standard and noisy starting points
+            initial_coords = parse_starting_geometry(args.start_from, batch, noise_seed=42)
 
             dynamics_fn = GADDynamics(
                 calculator, batch.z.numpy(),

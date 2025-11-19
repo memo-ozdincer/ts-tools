@@ -93,6 +93,91 @@ def add_common_args(parser: argparse.ArgumentParser):
     parser.add_argument("--out-dir", type=str, default=os.path.join(PROJECT, "large-files", "graphs", "out"))
     return parser
 
+# --- Noise Generation Helper ---
+def add_gaussian_noise_to_coords(coords: torch.Tensor, noise_rms_angstrom: float) -> torch.Tensor:
+    """
+    Add Gaussian noise to coordinates with specified RMS amplitude.
+
+    Args:
+        coords: (N, 3) or (3N,) tensor of coordinates
+        noise_rms_angstrom: Target RMS displacement in Angstroms
+
+    Returns:
+        Noisy coordinates with same shape as input
+    """
+    original_shape = coords.shape
+    coords_flat = coords.reshape(-1, 3)
+
+    # Generate Gaussian noise with std = noise_rms_angstrom
+    # This gives RMS displacement ≈ noise_rms_angstrom
+    noise = torch.randn_like(coords_flat) * noise_rms_angstrom
+
+    noisy_coords = coords_flat + noise
+    return noisy_coords.reshape(original_shape)
+
+
+def parse_starting_geometry(start_from: str, batch, noise_seed: Optional[int] = None):
+    """
+    Parse starting geometry specification and apply noise if requested.
+
+    Supports formats like:
+    - "reactant", "ts", "midpoint_rt", "three_quarter_rt" (standard geometries)
+    - "reactant_noise0.5A", "reactant_noise1A", etc. (noisy geometries)
+
+    Args:
+        start_from: String specifying the starting geometry
+        batch: Data batch containing pos_reactant, pos_transition, etc.
+        noise_seed: Optional random seed for reproducible noise
+
+    Returns:
+        torch.Tensor: Starting coordinates
+    """
+    # Check if noise is requested
+    if "_noise" in start_from:
+        # Parse format: "reactant_noise1A" or "reactant_noise0.5A"
+        parts = start_from.split("_noise")
+        base_geom = parts[0]
+        noise_str = parts[1].rstrip("A")  # Remove trailing 'A'
+        try:
+            noise_level = float(noise_str)
+        except ValueError:
+            raise ValueError(f"Invalid noise level in '{start_from}'. Expected format: 'reactant_noise1A'")
+
+        # Get base geometry
+        if base_geom == "reactant":
+            initial_coords = batch.pos_reactant
+        elif base_geom == "ts":
+            initial_coords = batch.pos_transition
+        elif base_geom == "midpoint_rt":
+            initial_coords = 0.5 * batch.pos_reactant + 0.5 * batch.pos_transition
+        elif base_geom == "three_quarter_rt":
+            initial_coords = 0.25 * batch.pos_reactant + 0.75 * batch.pos_transition
+        else:
+            raise ValueError(f"Unknown base geometry '{base_geom}' in '{start_from}'")
+
+        # Set random seed if provided for reproducibility
+        if noise_seed is not None:
+            torch.manual_seed(noise_seed)
+
+        # Add noise
+        initial_coords = add_gaussian_noise_to_coords(initial_coords.clone(), noise_level)
+
+    else:
+        # Standard geometries (no noise)
+        if start_from == "reactant":
+            initial_coords = batch.pos_reactant
+        elif start_from == "ts":
+            initial_coords = batch.pos_transition
+        elif start_from == "midpoint_rt":
+            initial_coords = 0.5 * batch.pos_reactant + 0.5 * batch.pos_transition
+        elif start_from == "three_quarter_rt":
+            initial_coords = 0.25 * batch.pos_reactant + 0.75 * batch.pos_transition
+        else:
+            raise ValueError(f"Unknown starting geometry: {start_from}")
+
+    return initial_coords
+
+
 # --- Shared Experiment Setup Function ---
 def setup_experiment(args: argparse.Namespace, batch_size: int = 1, shuffle: bool = False, dataset_load_multiplier: int = 1) -> Tuple[EquiformerTorchCalculator, DataLoader, str, str]:
     """
