@@ -33,10 +33,10 @@ echo ">>> Running Eigenvalue Descent script..."
 #     --target-eig1 0.10
 #
 python -m src.gad_eigenvalue_descent \
-    --max-samples 500 \
-    --n-steps-opt 500 \
+    --max-samples 300 \
+    --n-steps-opt 50 \
     --lr 0.01 \
-    --start-from reactant \
+    --start-from reactant_noise1A \
     --loss-type sign_enforcer \
     --sign-neg-target -0.01 \
     --sign-pos-floor 0.1 \
