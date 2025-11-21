@@ -34,12 +34,16 @@ echo ">>> Running Eigenvalue Descent script..."
 #
 python -m src.gad_eigenvalue_descent \
     --max-samples 300 \
-    --n-steps-opt 50 \
+    --n-steps-opt 200 \
     --lr 0.01 \
     --start-from reactant_noise1A \
     --loss-type sign_enforcer \
     --sign-neg-target -0.01 \
     --sign-pos-floor 0.1 \
+    --use-line-search \
+    --adaptive-max-displacement \
+    --initial-max-displacement 2.0 \
+    --final-max-displacement 0.1 \
     --wandb \
     --wandb-project "gad-ts-search"
 #
@@ -78,5 +82,27 @@ python -m src.gad_eigenvalue_descent \
 #     --adaptive-relax-steps 50 \
 #     --adaptive-final-eig0 -0.02 \
 #     --adaptive-final-eig1 0.05
+
+# --- Adaptive Step Size for Noisy Starting Geometries ---
+# The following parameters help with noisy starting geometries (noise levels: 0.5, 1, 2 Å):
+#
+# --use-line-search: Tests multiple step sizes [0.25×, 0.5×, 1×, 2×, 4×] and chooses the best
+# --adaptive-max-displacement: Gradually reduces max displacement from initial to final
+# --initial-max-displacement 2.0: Start with large steps (2.0 Å) for noisy geometries
+# --final-max-displacement 0.1: End with small steps (0.1 Å) for fine-tuning
+#
+# Example with different noise levels:
+python -m src.gad_eigenvalue_descent \
+    --max-samples 300 \
+    --n-steps-opt 200 \
+    --lr 0.01 \
+    --start-from reactant_noise2A \
+    --loss-type eig_product \
+    --use-line-search \
+    --adaptive-max-displacement \
+    --initial-max-displacement 3.0 \
+    --final-max-displacement 0.1 \
+    --wandb \
+    --wandb-project "gad-ts-search"
 
 echo "✅ Job completed."

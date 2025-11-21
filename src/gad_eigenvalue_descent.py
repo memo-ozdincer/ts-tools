@@ -241,6 +241,93 @@ def plot_eig_descent_history(
     filename = f"eigdesc_{sample_index:03d}_{_sanitize_formula(formula)}_{start_from}_steps{loss.size}.png"
     return fig, filename
 
+# --- Helper function for line search ---
+def evaluate_step(
+    coords: torch.Tensor,
+    atomic_nums: torch.Tensor,
+    calculator: EquiformerTorchCalculator,
+    loss_type: str,
+    target_eig0: float,
+    target_eig1: float,
+    sign_neg_target: float,
+    sign_pos_floor: float,
+) -> tuple[float, float, float, float, int]:
+    """
+    Evaluate loss and eigenvalues at given coordinates.
+
+    Returns:
+        (loss_value, eig0, eig1, eig_product, neg_vibrational)
+    """
+    model = calculator.potential
+    device = model.device
+    atomsymbols = [Z_TO_ATOM_SYMBOL[z.item()] for z in atomic_nums]
+
+    try:
+        with torch.no_grad():
+            batch = coord_atoms_to_torch_geometric(coords, atomic_nums, device)
+            _, _, out = model.forward(batch, otf_graph=True)
+            hess_raw = out["hessian"].reshape(coords.numel(), coords.numel())
+            hess_proj = massweigh_and_eckartprojection_torch(hess_raw, coords, atomsymbols)
+            eigvals, _ = torch.linalg.eigh(hess_proj)
+
+            # Remove rigid-body modes
+            coords_cent = coords.detach().reshape(-1, 3).to(torch.float64)
+            coords_cent = coords_cent - coords_cent.mean(dim=0, keepdim=True)
+            geom_rank = torch.linalg.matrix_rank(coords_cent.cpu(), tol=1e-8).item()
+            expected_rigid = 5 if geom_rank <= 2 else 6
+            total_modes = eigvals.shape[0]
+            expected_rigid = min(expected_rigid, max(0, total_modes - 2))
+            abs_sorted_idx = torch.argsort(torch.abs(eigvals))
+            keep_idx = abs_sorted_idx[expected_rigid:]
+            keep_idx, _ = torch.sort(keep_idx)
+            vibrational_eigvals = eigvals[keep_idx]
+
+            if vibrational_eigvals.numel() < 2:
+                return float('inf'), float('nan'), float('nan'), float('inf'), -1
+
+            eig0 = vibrational_eigvals[0]
+            eig1 = vibrational_eigvals[1]
+            eig_product = eig0 * eig1
+            neg_vibrational = (vibrational_eigvals < 0).sum().item()
+
+            # Compute loss based on loss type
+            if loss_type == "relu":
+                loss = torch.relu(eig0) + torch.relu(-eig1)
+            elif loss_type == "targeted_magnitude":
+                loss = (eig0 - target_eig0)**2 + (eig1 - target_eig1)**2
+            elif loss_type == "midpoint_squared":
+                midpoint = (eig0 + eig1) / 2.0
+                loss = midpoint**2
+            elif loss_type == "eig_product":
+                loss = eig_product
+            elif loss_type == "sign_enforcer":
+                neg_target = eig0.new_tensor(sign_neg_target)
+                pos_floor = eig0.new_tensor(sign_pos_floor)
+                if neg_vibrational == 0:
+                    loss = torch.relu(eig0 - neg_target)**2
+                elif neg_vibrational == 1:
+                    loss = eig0.new_tensor(0.0)
+                else:
+                    trailing_eigs = vibrational_eigvals[1:]
+                    if trailing_eigs.numel() == 0:
+                        loss = eig0.new_tensor(0.0)
+                    else:
+                        penalties = torch.relu(pos_floor - trailing_eigs)**2
+                        loss = penalties.sum()
+            else:
+                raise ValueError(f"Unknown loss_type: {loss_type}")
+
+            return (
+                loss.item(),
+                eig0.item(),
+                eig1.item(),
+                eig_product.item(),
+                neg_vibrational
+            )
+    except Exception:
+        return float('inf'), float('nan'), float('nan'), float('inf'), -1
+
+
 # --- Core Optimization Function with Improved Loss Functions ---
 def run_eigenvalue_descent(
     calculator: EquiformerTorchCalculator,
@@ -258,6 +345,10 @@ def run_eigenvalue_descent(
     early_stop_eig_product_threshold: Optional[float] = 5e-4,
     sign_neg_target: float = -5e-3,
     sign_pos_floor: float = 1e-3,
+    use_line_search: bool = True,
+    adaptive_max_displacement: bool = True,
+    initial_max_displacement: float = 2.0,
+    final_max_displacement: float = 0.1,
 ) -> Dict[str, Any]:
     """
     Run gradient descent on eigenvalues to find transition states.
@@ -278,6 +369,10 @@ def run_eigenvalue_descent(
         early_stop_eig_product_threshold: Stop once λ₀·λ₁ ≤ -THRESH (set ≤0 to disable)
         sign_neg_target: Target (slightly negative) value for λ₀ when no negatives exist
         sign_pos_floor: Minimum positive floor for secondary negative eigenvalues
+        use_line_search: Enable line search to find optimal step size
+        adaptive_max_displacement: Adaptively adjust max displacement based on progress
+        initial_max_displacement: Starting max displacement per atom (Å)
+        final_max_displacement: Final max displacement per atom (Å)
     """
     model = calculator.potential
     device = model.device
@@ -444,25 +539,99 @@ def run_eigenvalue_descent(
                 grad = grad * (max_grad_norm / grad_norm)
                 grad_norm_value = float(max_grad_norm)
 
-            # Compute proposed update
-            update = lr * grad
+            # Adaptive maximum displacement based on progress
+            if adaptive_max_displacement:
+                # Linearly interpolate max displacement from initial to final
+                progress = step / max(n_steps - 1, 1)
+                max_displacement_per_atom = (
+                    initial_max_displacement * (1 - progress) +
+                    final_max_displacement * progress
+                )
+            else:
+                max_displacement_per_atom = 0.2  # Original fixed value
 
-            # Limit maximum displacement per atom to prevent atoms from flying apart
-            # Max displacement per atom should be ~0.1-0.3 Å per step
-            max_displacement_per_atom = 0.2  # Angstroms
-            update_per_atom = update.reshape(-1, 3)
-            atom_displacements = torch.norm(update_per_atom, dim=1)
-            max_atom_disp = atom_displacements.max()
+            # Compute base update direction (normalized)
+            base_update = lr * grad
 
-            if max_atom_disp > max_displacement_per_atom:
-                scale_factor = max_displacement_per_atom / max_atom_disp
-                update = update * scale_factor
-                atom_displacements = atom_displacements * scale_factor
-                max_atom_disp = max_atom_disp * scale_factor
+            # Line search: try multiple step sizes if enabled
+            if use_line_search:
+                # Test multiple step sizes: [0.25×, 0.5×, 1×, 2×, 4×] of base update
+                # This allows both smaller steps (for fine-tuning) and larger steps (for noisy starts)
+                step_multipliers = [0.25, 0.5, 1.0, 2.0, 4.0]
+                best_loss = loss.item()
+                best_multiplier = 1.0
+                best_coords = coords.clone()
+                best_eig0 = eig0.item()
+                best_eig1 = eig1.item()
+                best_eig_prod = eig_product.item()
+                best_neg_vib = neg_vibrational
 
-            max_atom_disp_value = max_atom_disp.item()
+                for multiplier in step_multipliers:
+                    # Compute candidate update
+                    candidate_update = base_update * multiplier
 
-            coords -= update
+                    # Apply displacement limit to candidate
+                    update_per_atom = candidate_update.reshape(-1, 3)
+                    atom_displacements = torch.norm(update_per_atom, dim=1)
+                    max_atom_disp = atom_displacements.max()
+
+                    if max_atom_disp > max_displacement_per_atom:
+                        scale_factor = max_displacement_per_atom / max_atom_disp
+                        candidate_update = candidate_update * scale_factor
+
+                    # Evaluate candidate position
+                    candidate_coords = coords - candidate_update
+                    candidate_loss, cand_eig0, cand_eig1, cand_eig_prod, cand_neg_vib = evaluate_step(
+                        candidate_coords,
+                        atomic_nums,
+                        calculator,
+                        loss_type,
+                        target_eig0,
+                        target_eig1,
+                        sign_neg_target,
+                        sign_pos_floor,
+                    )
+
+                    # Accept step if it improves loss (or if it's the first valid step)
+                    if candidate_loss < best_loss or (best_loss == float('inf') and candidate_loss != float('inf')):
+                        best_loss = candidate_loss
+                        best_multiplier = multiplier
+                        best_coords = candidate_coords
+                        best_eig0 = cand_eig0
+                        best_eig1 = cand_eig1
+                        best_eig_prod = cand_eig_prod
+                        best_neg_vib = cand_neg_vib
+
+                # Compute actual displacement for logging (before updating coords)
+                displacement = (coords - best_coords).reshape(-1, 3)
+                max_atom_disp_value = torch.norm(displacement, dim=1).max().item()
+
+                # Apply best step found
+                coords = best_coords
+                # Update tracked values with best step's values
+                final_eigvals = torch.tensor([best_eig0, best_eig1], device=device)
+                neg_vibrational = best_neg_vib
+                loss = torch.tensor(best_loss, device=device)
+                eig_product = torch.tensor(best_eig_prod, device=device)
+
+                if step % 10 == 0 and best_multiplier != 1.0:
+                    print(f"    [Line search] Selected step multiplier: {best_multiplier:.2f}×")
+
+            else:
+                # Original behavior: fixed step size with displacement clamping
+                update = base_update
+                update_per_atom = update.reshape(-1, 3)
+                atom_displacements = torch.norm(update_per_atom, dim=1)
+                max_atom_disp = atom_displacements.max()
+
+                if max_atom_disp > max_displacement_per_atom:
+                    scale_factor = max_displacement_per_atom / max_atom_disp
+                    update = update * scale_factor
+                    atom_displacements = atom_displacements * scale_factor
+                    max_atom_disp = max_atom_disp * scale_factor
+
+                max_atom_disp_value = max_atom_disp.item()
+                coords -= update
 
         coords.requires_grad = True
 
@@ -560,6 +729,20 @@ if __name__ == "__main__":
     parser.add_argument("--sign-pos-floor", type=float, default=1e-3,
                         help="For 'sign_enforcer': positive floor (in eV/Å²) to push additional negatives above.")
 
+    # Adaptive step size arguments
+    parser.add_argument("--use-line-search", action="store_true", default=True,
+                        help="Enable line search to find optimal step size (default: True)")
+    parser.add_argument("--no-line-search", action="store_false", dest="use_line_search",
+                        help="Disable line search (use fixed step size)")
+    parser.add_argument("--adaptive-max-displacement", action="store_true", default=True,
+                        help="Adaptively adjust max displacement based on progress (default: True)")
+    parser.add_argument("--no-adaptive-max-displacement", action="store_false", dest="adaptive_max_displacement",
+                        help="Disable adaptive max displacement (use fixed 0.2 Å)")
+    parser.add_argument("--initial-max-displacement", type=float, default=2.0,
+                        help="Starting max displacement per atom in Å (default: 2.0)")
+    parser.add_argument("--final-max-displacement", type=float, default=0.1,
+                        help="Final max displacement per atom in Å (default: 0.1)")
+
     # W&B arguments
     parser.add_argument("--wandb", action="store_true",
                         help="Enable Weights & Biases logging")
@@ -623,6 +806,18 @@ if __name__ == "__main__":
     elif args.adaptive_targets:
         print("  [WARNING] Adaptive targets requested but only supported with 'targeted_magnitude'; disabling.")
         args.adaptive_targets = False
+
+    # Print adaptive step size settings
+    print(f"\nAdaptive Step Size Settings:")
+    print(f"  Line Search: {'ENABLED' if args.use_line_search else 'DISABLED'}")
+    if args.use_line_search:
+        print(f"    Testing step multipliers: [0.25×, 0.5×, 1×, 2×, 4×]")
+    print(f"  Adaptive Max Displacement: {'ENABLED' if args.adaptive_max_displacement else 'DISABLED'}")
+    if args.adaptive_max_displacement:
+        print(f"    Initial: {args.initial_max_displacement:.2f} Å → Final: {args.final_max_displacement:.2f} Å")
+    else:
+        print(f"    Fixed: 0.2 Å")
+
     for i, batch in enumerate(dataloader):
         if i >= args.max_samples: break
         print(f"\n--- Processing Sample {i} (Formula: {batch.formula[0]}) ---")
@@ -646,6 +841,10 @@ if __name__ == "__main__":
                 early_stop_eig_product_threshold=args.early_stop_eig_product,
                 sign_neg_target=args.sign_neg_target,
                 sign_pos_floor=args.sign_pos_floor,
+                use_line_search=args.use_line_search,
+                adaptive_max_displacement=args.adaptive_max_displacement,
+                initial_max_displacement=args.initial_max_displacement,
+                final_max_displacement=args.final_max_displacement,
             )
 
             with torch.no_grad():
