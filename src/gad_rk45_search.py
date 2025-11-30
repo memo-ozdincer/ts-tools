@@ -286,41 +286,18 @@ class GADDynamics:
             self.trajectory["kick_applied"].append(1 if apply_kick else 0)
             self.trajectory["eigvec_follow_mode"].append(1 if self.eigvec_follow_active else 0)
 
-            # Multi-stage early stopping logic
+            # Early stopping logic: stop when eigenvalue product becomes negative
             if self.stop_at_ts and eig_prod is not None:
                 current_step = len(self.trajectory["time"])
 
-                # Stage 1: Check if eigenvalue product is meaningfully negative
-                if eig_prod < self.min_eig_product_threshold:
+                # Stop when eigenvalue product is negative (TS found)
+                if eig_prod < 0:
                     if self.ts_candidate_step is None:
                         self.ts_candidate_step = current_step
                         eig0_str = f"{eig0:.6f}" if eig0 is not None else "nan"
                         eig1_str = f"{eig1:.6f}" if eig1 is not None else "nan"
-                        print(f"  [TS CANDIDATE] Found at step {current_step}, t={t:.4f}: λ₀*λ₁={eig_prod:.6e} (λ₀={eig0_str}, λ₁={eig1_str})")
-
-                    # Stage 2: Confirm TS by checking if eigenvalue product magnitude is increasing
-                    if current_step >= self.ts_candidate_step + self.confirmation_steps:
-                        candidate_eig_prod = self.trajectory["eig_product"][self.ts_candidate_step - 1]
-                        if candidate_eig_prod is not None:
-                            magnitude_increase = abs(eig_prod) / (abs(candidate_eig_prod) + 1e-20)
-                        else:
-                            magnitude_increase = None
-
-                        if magnitude_increase is not None and magnitude_increase > 1.2:  # 20% increase in magnitude
-                            self.ts_found = True
-                            print(f"  [TS CONFIRMED] at step {current_step}: λ₀*λ₁={eig_prod:.6e} (increased by {magnitude_increase:.2f}x)")
-                        else:
-                            # Check if λ₀ is becoming MORE negative
-                            candidate_eig0 = self.trajectory["eig0"][self.ts_candidate_step - 1]
-                            if (eig0 is not None and candidate_eig0 is not None and
-                                    eig0 < candidate_eig0 * 1.1):  # λ₀ became 10% more negative
-                                self.ts_found = True
-                                print(f"  [TS CONFIRMED] at step {current_step}: λ₀={eig0:.6f} (more negative than {candidate_eig0:.6f})")
-                else:
-                    # Reset candidate if we drift back to positive or less negative
-                    if self.ts_candidate_step is not None and current_step < self.ts_candidate_step + self.confirmation_steps:
-                        print(f"  [TS CANDIDATE RESET] Drifted back: λ₀*λ₁={eig_prod:.6e}")
-                    self.ts_candidate_step = None
+                        print(f"  [TS FOUND] at step {current_step}, t={t:.4f}: λ₀*λ₁={eig_prod:.6e} (λ₀={eig0_str}, λ₁={eig1_str})")
+                        self.ts_found = True
 
         return velocity.cpu().numpy().flatten()
 
