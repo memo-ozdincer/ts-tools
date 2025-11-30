@@ -178,6 +178,47 @@ def parse_starting_geometry(start_from: str, batch, noise_seed: Optional[int] = 
     return initial_coords
 
 
+def extract_vibrational_eigenvalues(hessian_proj: torch.Tensor, coords: torch.Tensor) -> torch.Tensor:
+    """
+    Extract vibrational eigenvalues from projected Hessian.
+
+    Removes rigid-body modes (6 smallest by absolute value for non-linear molecules,
+    5 for linear molecules) and returns sorted vibrational spectrum. This logic is
+    currently duplicated across eigenvalue descent, RK45, and Euler methods -
+    centralizing here reduces code duplication and ensures consistency.
+
+    Args:
+        hessian_proj: Eckart-projected Hessian (3N, 3N) in mass-weighted coordinates
+        coords: Atomic coordinates (N, 3) for determining molecular linearity
+
+    Returns:
+        vibrational_eigvals: Sorted vibrational eigenvalues in ascending order
+                            (negative eigenvalues first, then positive)
+
+    Note:
+        The function automatically detects if the molecule is linear by checking
+        the rank of the coordinate matrix. Linear molecules have 5 rigid modes
+        (3 translations + 2 rotations), while non-linear have 6 (3 + 3).
+    """
+    # Compute full eigenvalue spectrum
+    eigvals, _ = torch.linalg.eigh(hessian_proj)
+
+    # Determine number of rigid modes to remove based on molecular geometry
+    coords_cent = coords.detach().reshape(-1, 3).to(torch.float64)
+    geom_rank = torch.linalg.matrix_rank(coords_cent.cpu(), tol=1e-8).item()
+    expected_rigid = 5 if geom_rank <= 2 else 6  # Linear vs non-linear
+    total_modes = eigvals.shape[0]
+    expected_rigid = min(expected_rigid, max(0, total_modes - 2))
+
+    # Remove rigid modes (smallest by absolute value)
+    abs_sorted_idx = torch.argsort(torch.abs(eigvals))
+    keep_idx = abs_sorted_idx[expected_rigid:]  # Keep all but smallest (by |λ|)
+    keep_idx, _ = torch.sort(keep_idx)  # Re-sort to maintain ascending order
+    vibrational_eigvals = eigvals[keep_idx]
+
+    return vibrational_eigvals
+
+
 # --- Shared Experiment Setup Function ---
 def setup_experiment(args: argparse.Namespace, batch_size: int = 1, shuffle: bool = False, dataset_load_multiplier: int = 1) -> Tuple[EquiformerTorchCalculator, DataLoader, str, str]:
     """
