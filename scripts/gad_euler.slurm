@@ -27,14 +27,19 @@ module load python/${PYTHON_VERSION}
 echo ">>> Activating virtual environment..."
 source ${VENV_DIR}/bin/activate
 
+# Set up W&B API key for logging
+export WANDB_API_KEY="ed8d3e45635321a86859f77337bdb4dfb5ceb113"
+
 echo ">>> Running Euler RMSD script..."
 # ARGS ARE HERE NOW
 python -m src.gad_gad_euler_rmsd \
-    --max-samples 300 \
-    --n-steps 1000 \
+    --max-samples 20 \
+    --n-steps 150 \
     --start-from midpoint_rt \
     --stop-at-ts \
-    --dt 0.001
+    --dt 0.001 \
+    --wandb \
+    --wandb-project "gad-ts-search"
 
 # --- Example with kick mechanism enabled ---
 # Uncomment to enable kick mechanism to escape local minima:
