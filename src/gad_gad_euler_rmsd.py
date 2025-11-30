@@ -10,9 +10,10 @@ import torch
 import numpy as np
 from torch_geometric.data import Batch
 
-from .common_utils import setup_experiment, add_common_args
+from .common_utils import setup_experiment, add_common_args, parse_starting_geometry
 from hip.frequency_analysis import analyze_frequencies_torch
 from hip.equiformer_torch_calculator import EquiformerTorchCalculator
+from .experiment_logger import ExperimentLogger, RunResult, build_loss_type_flags
 
 import matplotlib
 matplotlib.use("Agg")
@@ -219,7 +220,20 @@ def _sanitize_formula(formula: str) -> str:
     safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", formula)
     return (safe.strip("_") or "sample")
 
-def plot_trajectory(trajectory: Dict[str, List[Optional[float]]], sample_index: int, formula: str, out_dir: str) -> str:
+def plot_trajectory_new(
+    trajectory: Dict[str, List[Optional[float]]],
+    sample_index: int,
+    formula: str,
+    start_from: str,
+    initial_neg_num: int,
+    final_neg_num: int,
+) -> tuple:
+    """
+    Plot GAD trajectory.
+
+    Returns:
+        Tuple of (matplotlib Figure, suggested filename)
+    """
     num_steps = len(trajectory.get("energy", []))
     timesteps = np.arange(num_steps)
 
@@ -227,40 +241,51 @@ def plot_trajectory(trajectory: Dict[str, List[Optional[float]]], sample_index: 
         return np.array([v if v is not None else np.nan for v in values], dtype=float)
 
     fig, axes = plt.subplots(4, 1, figsize=(8, 12), sharex=True)
-    fig.suptitle(f"GAD Trajectory for Sample {sample_index}: {formula}", fontsize=14)
-    
+    fig.suptitle(f"GAD Euler Trajectory for Sample {sample_index}: {formula}", fontsize=14)
+
     axes[0].plot(timesteps, _nanify(trajectory["energy"]), marker=".", lw=1.2)
     axes[0].set_ylabel("Energy (eV)"); axes[0].set_title("Energy")
-    
+
     axes[1].plot(timesteps, _nanify(trajectory["force_mean"]), marker=".", color="tab:orange", lw=1.2)
     axes[1].set_ylabel("Mean |F| (eV/Å)"); axes[1].set_title("Force Magnitude")
 
     eig_ax = axes[2]
     eig_product = _nanify(trajectory["eig_product"])
-    
-    eig_ax.plot(timesteps, eig_product, marker=".", color="tab:purple", lw=1.2, label="λ_0 * λ_1")
+
+    eig_ax.plot(timesteps, eig_product, marker=".", color="tab:purple", lw=1.2, label="λ₀ * λ₁")
     eig_ax.axhline(0, color='grey', linestyle='--', linewidth=1, zorder=1)
-    
+
     if len(eig_product) > 0 and not np.isnan(eig_product[0]):
-        eig_ax.text(0.02, 0.95, f"Start: {eig_product[0]:.4f}", 
-                    transform=eig_ax.transAxes, ha='left', va='top', 
+        eig_ax.text(0.02, 0.95, f"Start: {eig_product[0]:.4f}",
+                    transform=eig_ax.transAxes, ha='left', va='top',
                     color='tab:purple', fontsize=9)
     if len(eig_product) > 0 and not np.isnan(eig_product[-1]):
-        eig_ax.text(0.98, 0.95, f"End: {eig_product[-1]:.4f}", 
-                    transform=eig_ax.transAxes, ha='right', va='top', 
+        eig_ax.text(0.98, 0.95, f"End: {eig_product[-1]:.4f}",
+                    transform=eig_ax.transAxes, ha='right', va='top',
                     color='tab:purple', fontsize=9)
 
-    eig_ax.set_ylabel("Eigenvalue Product"); eig_ax.set_title("Product of Two Smallest Hessian Eigenvalues")
+    eig_ax.set_ylabel("Eigenvalue Product")
+    eig_ax.set_title("Product of Two Smallest Hessian Eigenvalues")
     eig_ax.legend(loc='best')
-    
+
     axes[3].plot(timesteps, _nanify(trajectory["gad_mean"]), marker=".", color="tab:green", lw=1.2)
-    axes[3].set_ylabel("Mean |GAD| (Å)"); axes[3].set_xlabel("Step"); axes[3].set_title("GAD Vector Magnitude")
-    
+    axes[3].set_ylabel("Mean |GAD| (Å)")
+    axes[3].set_xlabel("Step")
+    axes[3].set_title("GAD Vector Magnitude")
+
+    axes[3].text(
+        0.98, 0.05,
+        f"neg eig: {initial_neg_num} → {final_neg_num}",
+        transform=axes[3].transAxes,
+        ha="right",
+        va="bottom",
+        fontsize=8,
+        bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.7),
+    )
+
     fig.tight_layout(rect=[0, 0, 1, 0.96])
-    filename = f"t1x_gad_traj_{sample_index:03d}_{_sanitize_formula(formula)}.png"
-    out_path = os.path.join(out_dir, filename)
-    fig.savefig(out_path, dpi=200); plt.close(fig)
-    return out_path
+    filename = f"traj_{sample_index:03d}_{_sanitize_formula(formula)}_from_{start_from}_{initial_neg_num}to{final_neg_num}.png"
+    return fig, filename
 
 
 if __name__ == "__main__":
@@ -287,47 +312,67 @@ if __name__ == "__main__":
     parser.add_argument("--kick-magnitude", type=float, default=0.1,
                         help="Magnitude of kick displacement in Å (default: 0.1).")
 
+    # W&B arguments
+    parser.add_argument("--wandb", action="store_true",
+                        help="Enable Weights & Biases logging")
+    parser.add_argument("--wandb-project", type=str, default="gad-ts-search",
+                        help="W&B project name (default: gad-ts-search)")
+    parser.add_argument("--wandb-entity", type=str, default=None,
+                        help="W&B entity/username (optional)")
+
     args = parser.parse_args()
-    
+
+    torch.set_grad_enabled(False)
     calculator, dataloader, device, out_dir = setup_experiment(args, shuffle=True, dataset_load_multiplier=args.dataset_load_multiplier if args.unique_formulas else 1)
-    results_summary: List[Dict[str, Any]] = []
-    plot_dir = os.path.join(out_dir, "gad_trajectories"); os.makedirs(plot_dir, exist_ok=True)
-    
-    print(f"Starting GAD from: {args.start_from.upper()}")
-    mode_str = "Search until TS found (eig_prod < 0)" if args.stop_at_ts else f"Fixed trajectory ({args.n_steps} steps)"
-    print(f"Mode: {mode_str}")
+
+    # Set up experiment logger
+    loss_type_flags = build_loss_type_flags(args)
+
+    # Prepare W&B config
+    wandb_config = {
+        "script": "gad_gad_euler_rmsd",
+        "start_from": args.start_from,
+        "n_steps": args.n_steps,
+        "dt": args.dt,
+        "stop_at_ts": args.stop_at_ts,
+        "enable_kick": args.enable_kick,
+        "kick_force_threshold": args.kick_force_threshold if args.enable_kick else None,
+        "kick_magnitude": args.kick_magnitude if args.enable_kick else None,
+        "max_samples": args.max_samples,
+    }
+
+    logger = ExperimentLogger(
+        base_dir=out_dir,
+        script_name="gad-euler",
+        loss_type_flags=loss_type_flags,
+        max_graphs_per_transition=10,
+        random_seed=42,  # For reproducible sampling
+        use_wandb=args.wandb,
+        wandb_project=args.wandb_project if args.wandb else None,
+        wandb_entity=args.wandb_entity,
+        wandb_tags=[args.start_from, "euler"],
+        wandb_config=wandb_config,
+    )
+
+    print(f"Running GAD-Euler Search. Start: {args.start_from.upper()}, Stop at TS: {args.stop_at_ts}")
+    print(f"Output directory: {logger.run_dir}")
+    print(f"Mode: {'Search until TS found (eig_prod < 0)' if args.stop_at_ts else f'Fixed trajectory ({args.n_steps} steps)'}")
     print(f"Processing up to {args.max_samples} samples (dt={args.dt})")
     print(f"Kick enabled: {args.enable_kick}")
     if args.enable_kick:
         print(f"  Force threshold: {args.kick_force_threshold} eV/Å, Kick magnitude: {args.kick_magnitude} Å")
 
-    seen_formulas, processed_count, converged_count = set(), 0, 0
-    final_rms_forces = []
-    neg_eig_transitions = defaultdict(int)
-    steps_taken_list = []
-
-    for dataset_idx, batch in enumerate(dataloader):
-        if processed_count >= args.max_samples: break
+    for i, batch in enumerate(dataloader):
+        if i >= args.max_samples: break
+        print(f"\n--- Processing Sample {i} (Formula: {batch.formula[0]}) ---")
         try:
-            if args.start_from == "reactant":
-                if not hasattr(batch, 'pos_reactant'): continue
-                batch.pos = batch.pos_reactant
-            elif args.start_from == "midpoint_rt":
-                if not (hasattr(batch, 'pos_reactant') and hasattr(batch, 'pos_transition')): continue
-                batch.pos = 0.5 * batch.pos_reactant + 0.5 * batch.pos_transition
-            elif args.start_from == "three_quarter_rt":
-                if not (hasattr(batch, 'pos_reactant') and hasattr(batch, 'pos_transition')): continue
-                batch.pos = 0.25 * batch.pos_reactant + 0.75 * batch.pos_transition
-
-            formula = getattr(batch, "formula", [""])[0]
-            if isinstance(formula, bytes): formula = formula.decode("utf-8", "ignore")
-            if args.unique_formulas and formula in seen_formulas: continue
-            seen_formulas.add(formula)
-
+            # Use parse_starting_geometry to handle both standard and noisy starting points
+            initial_coords = parse_starting_geometry(args.start_from, batch, noise_seed=42)
+            batch.pos = initial_coords
             batch.natoms = torch.tensor([batch.pos.shape[0]], dtype=torch.long)
             batch = batch.to(device)
-            
-            # Pass the new flags and kick parameters
+
+            # Run GAD Euler
             out = run_gad_euler_on_batch(
                 calculator, batch,
                 n_steps=args.n_steps,
@@ -337,69 +382,91 @@ if __name__ == "__main__":
                 kick_force_threshold=args.kick_force_threshold,
                 kick_magnitude=args.kick_magnitude
             )
-            
-            final_rms_forces.append(out['rms_force_end'])
-            steps_taken_list.append(out['steps_taken'])
 
-            # Convergence check (for statistics, separate from stopping condition)
-            is_converged = (out['rms_force_end'] < args.convergence_rms_force and out['max_atom_force_end'] < args.convergence_max_force)
-            if is_converged: converged_count += 1
-            
-            start_n, end_n = out['neg_eigvals_start'], out['neg_eigvals_end']
-            if start_n >= 0 and end_n >= 0:
-                neg_eig_transitions[f"{start_n} -> {end_n}"] += 1
-            
-            plot_path = plot_trajectory(out["trajectory"], processed_count, formula, plot_dir)
-            result = {"dataset_index": dataset_idx, "sample_order": processed_count, "formula": formula, "plot_path": os.path.relpath(plot_path, out_dir), "converged": is_converged, **out}
-            results_summary.append(result)
-            
-            # Updated print to show steps taken and kicks
-            stop_reason = "Found TS" if (args.stop_at_ts and out['steps_taken'] < args.n_steps) else "Max Steps"
-            kick_str = f", kicks={out['num_kicks']}" if args.enable_kick else ""
-            print(f"[sample {processed_count}] N={out['natoms']}, Steps={out['steps_taken']}({stop_reason}), neg_eigs: {start_n}->{end_n}, RMS|F|_end={out['rms_force_end']:.3f}{kick_str}, formula={formula}")
-            processed_count += 1
+            # Extract final results from trajectory
+            traj = out["trajectory"]
+            initial_neg_num = out['neg_eigvals_start']
+            final_neg_num = out['neg_eigvals_end']
+
+            # Compute steps_to_ts: find first step where eig_product < 0
+            steps_to_ts = None
+            eig_prod_series = traj.get("eig_product", [])
+            if eig_prod_series:
+                for step_idx, eig_prod in enumerate(eig_prod_series):
+                    if eig_prod is not None and eig_prod < -1e-5:
+                        steps_to_ts = step_idx
+                        break
+
+            # Create RunResult
+            result = RunResult(
+                sample_index=i,
+                formula=batch.formula[0],
+                initial_neg_eigvals=initial_neg_num,
+                final_neg_eigvals=final_neg_num,
+                initial_neg_vibrational=None,  # Not tracked in euler
+                final_neg_vibrational=None,
+                steps_taken=out['steps_taken'],
+                steps_to_ts=steps_to_ts,
+                final_time=None,  # Euler uses discrete steps
+                final_eig0=None,  # Not separately tracked
+                final_eig1=None,
+                final_eig_product=out['eig_product_end'],
+                final_loss=None,  # Not applicable for Euler
+                rmsd_to_known_ts=out['rmsd'],
+                stop_reason="ts_found" if (args.stop_at_ts and out['steps_taken'] < args.n_steps) else None,
+                plot_path=None,  # Will be set below
+                extra_data={
+                    "initial_eig_product": out['eig_product_start'],
+                    "rms_force_end": out['rms_force_end'],
+                    "max_atom_force_end": out['max_atom_force_end'],
+                    "num_kicks": out['num_kicks'],
+                    "mean_displacement": out['mean_displacement'],
+                    "max_displacement": out['max_displacement'],
+                }
+            )
+
+            # Add result to logger
+            logger.add_result(result)
+
+            # Create and save plot
+            fig, filename = plot_trajectory_new(
+                trajectory=traj,
+                sample_index=i,
+                formula=batch.formula[0],
+                start_from=args.start_from,
+                initial_neg_num=initial_neg_num,
+                final_neg_num=final_neg_num,
+            )
+
+            # Save plot using logger (handles sampling)
+            plot_path = logger.save_graph(result, fig, filename)
+            if plot_path:
+                result.plot_path = plot_path
+                print(f"  Saved plot to: {plot_path}")
+            else:
+                print(f"  Skipped plot (max samples for {result.transition_key} reached)")
+            plt.close(fig)
+
+            print("Result:")
+            print(f"  Transition: {result.transition_key}")
+            print(f"  Steps: {result.steps_taken}")
+            print(f"  Neg Eigs: {result.initial_neg_eigvals} -> {result.final_neg_eigvals}")
+            print(f"  RMS Force: {out['rms_force_end']:.3e} eV/Å")
+            if args.enable_kick:
+                print(f"  Kicks applied: {out['num_kicks']}")
+
         except Exception as e:
-            print(f"[{dataset_idx}] ERROR: {e}")
+            print(f"[ERROR] Sample {i} failed: {e}")
             import traceback
             traceback.print_exc()
 
-    if processed_count > 0:
-        print("\n" + "="*50)
-        print(" " * 15 + "RUN SUMMARY")
-        print("="*50)
-        print(f"Total samples processed: {processed_count}")
-        
-        print("\nNegative Eigenvalue Transitions (Start -> End):")
-        if not neg_eig_transitions:
-            print("  No successful frequency analyses.")
-        else:
-            found_ts_count = 0
-            for key, count in sorted(neg_eig_transitions.items()):
-                print(f"  {key}: {count} samples")
-                if key.endswith(" -> 1"): found_ts_count += count
-            print(f"  Total ending in TS (1 neg eig): {found_ts_count} ({found_ts_count/processed_count*100:.1f}%)")
+    # Save all results and aggregate statistics
+    all_runs_path, aggregate_path = logger.save_all_results()
+    print(f"\nSaved all runs to: {all_runs_path}")
+    print(f"Saved aggregate stats to: {aggregate_path}")
 
-        steps_np = np.array(steps_taken_list)
-        print(f"\nSteps taken (Mean): {np.mean(steps_np):.1f}")
-        print(f"Steps taken (Median): {np.median(steps_np):.1f}")
+    # Print summary
+    logger.print_summary()
 
-        # Histogram of final forces
-        forces_np = np.array(final_rms_forces)
-        plt.figure(figsize=(10, 6))
-        plt.hist(forces_np, bins=50, alpha=0.7)
-        plt.xlabel("Final RMS Force (eV/Å)"); plt.ylabel("Count"); plt.title("Final RMS Force Distribution")
-        kick_suffix = "_kick" if args.enable_kick else ""
-        hist_path = os.path.join(out_dir, f"force_hist_{processed_count}_{args.start_from}{'_stopts' if args.stop_at_ts else ''}{kick_suffix}.png")
-        plt.savefig(hist_path, dpi=100); plt.close()
-
-    print("="*50)
-
-    # Append _stopts and _kick to filename if flags are active
-    filename_suffix = f"from_{args.start_from}"
-    if args.stop_at_ts: filename_suffix += "_stopts"
-    if args.enable_kick: filename_suffix += "_kick"
-
-    out_json = os.path.join(out_dir, f"t1x_gad_rmsd_{filename_suffix}_{len(results_summary)}.json")
-    with open(out_json, "w") as f:
-        json.dump(results_summary, f, indent=2)
-    print(f"\nSaved summary → {out_json}")
+    # Finish W&B run
+    logger.finish()

@@ -646,6 +646,7 @@ def run_eigenvalue_descent(
         history["energy"].append(energy_value)
         history["force_mean"].append(force_mean_value)
         history["force_max"].append(force_max_value)
+        history["step"].append(step)
 
         if eig_product_threshold is not None:
             if eig_prod_value < 0 and abs(eig_prod_value) >= eig_product_threshold:
