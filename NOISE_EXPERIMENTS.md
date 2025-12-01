@@ -33,22 +33,15 @@ Current methods use fixed or geometry-agnostic step sizes, which are inappropria
    - **Order-1 (TS)**: 0.5× smaller steps for refinement
    - **Order-0 (minimum)**: 1× normal steps
 
-4. **NEW: Hybrid Force-GAD Dynamics** (RK45 only):
-   The key innovation for noisy geometries that solves the "plateau problem":
+4. **Adaptive Step Sizing with GAD** (RK45):
+   Always uses GAD dynamics, but scales step size based on saddle order:
    
-   **The Problem**: Pure eigenvalue optimization (including GAD) plateaus at higher-order
-   saddles because it fights against steep energy gradients. Noisy geometries often land
-   in high-energy, unstable regions with 2+ negative eigenvalues.
+   - **Higher-order saddles (order ≥ 2)**: Use LARGER steps to escape faster
+   - **Order-1 (TS candidate)**: Use SMALLER steps for precise convergence
+   - **Order-0 (minimum)**: Normal steps
    
-   **The Solution**: Saddle-order-aware dynamics switching:
-   - **Phase 1 (Escape)**: At higher-order saddles (order ≥ 2), use **force descent**
-     (follow the force direction) to escape unstable high-energy regions
-   - **Phase 2 (GAD)**: Once at order-0 or order-1, switch to standard GAD dynamics
-     to find and converge to the transition state
-   
-   This is minimalistic (reuses existing infrastructure), physically motivated
-   (unstable regions should be relaxed first), and directly addresses the plateau
-   problem without introducing complex mode-following logic.
+   This preserves the GAD equation throughout (critical for the sensitive ML Hessian)
+   while adapting the step size to the local curvature landscape.
 
 ### Modified Files
 
@@ -65,15 +58,13 @@ Current methods use fixed or geometry-agnostic step sizes, which are inappropria
 
 #### 2. RK45-GAD (`src/gad_rk45_search.py`) ✅ COMPLETE
 - Added imports for saddle detection and centralized eigenvalue extraction
-- **NEW: Hybrid Force-GAD dynamics** - The key innovation for noisy geometries
+- **Always uses GAD dynamics** - just with adaptive step sizing based on saddle order
 - Added CLI flags:
-  - `--hybrid-mode`: Enable hybrid dynamics (force descent at higher-order saddles)
-  - `--adaptive-step-sizing`: Saddle-order-aware step scaling
-  - `--higher-order-multiplier`: Step multiplier for higher-order saddles
-  - `--ts-multiplier`: Step multiplier near TS
-  - `--force-descent-threshold`: Saddle order threshold for force descent
-- Tracks saddle order, step scale, and dynamics mode in trajectory
-- Updated plotting to show saddle order evolution and dynamics mode
+  - `--adaptive-step-sizing`: Enable saddle-order-aware step scaling
+  - `--higher-order-multiplier`: Step multiplier for higher-order saddles (default: 5.0)
+  - `--ts-multiplier`: Step multiplier near TS (default: 0.5)
+- Tracks saddle order and step scale in trajectory
+- Updated plotting to show saddle order evolution and step scaling
 - Created `scripts/run_gad_rk45_noisy.slurm` for noisy experiments
 
 #### 3. Euler-GAD (`src/gad_gad_euler_rmsd.py`) ⏳ TODO
@@ -92,7 +83,7 @@ Add `--adaptive-step-sizing` flag to enable the new behavior.
 ## Methods Being Tested
 
 1. **Eigenvalue descent** with adaptive line search ✅
-2. **RK45-GAD** with Hybrid Force-GAD dynamics ✅ (RECOMMENDED)
+2. **RK45-GAD** with adaptive step sizing ✅ (RECOMMENDED)
 3. **Euler-GAD** with adaptive dt ⏳ (optional)
 
 ## Parameters
