@@ -43,6 +43,8 @@ python -m src.gad_gad_euler_rmsd \
     --max-samples 30 \
     --start-from reactant_noise2A \
     --enable-minimization-fallback \
+    --eig-descent-lr 0.01 \
+    --eig-descent-max-step 0.1 \
     --stop-at-ts \
     --n-steps 500 \
     --dt 0.005 \
