@@ -122,5 +122,7 @@ echo ">>> Running Eigenvalue Descent script..."
       --start-from reactant_noise2A \
       --loss-type eig_product \
       --use-line-search
+      --wandb \
+      --wandb-project "gad-noise-experiments"
 
 echo "✅ Job completed."
