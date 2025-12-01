@@ -45,9 +45,10 @@ python -m src.gad_gad_euler_rmsd \
     --enable-minimization-fallback \
     --stop-at-ts \
     --n-steps 500 \
-    --dt 0.01 \
+    --dt 0.005 \
     --wandb \
     --wandb-project "gad-noise-experiments"
+    
 
 # --- Noise Level: 1Å ---
 # python -m src.gad_gad_euler_rmsd \
