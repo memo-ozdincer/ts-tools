@@ -123,6 +123,6 @@ python -m src.gad_eigenvalue_descent \
     --loss-type eig_product \
     --use-line-search \
     --wandb \
-    --wandb-project "gad-noise-experiments"
+    --wandb-project "gad-ts-search"
 
 echo "✅ Job completed."
