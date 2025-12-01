@@ -58,7 +58,7 @@ python -m src.gad_eigenvalue_descent \
     --max-samples 30 \
     --n-steps-opt 150 \
     --lr 0.01 \
-    --start-from reactant \
+    --start-from midpoint_rt \
     --loss-type eig_product \
     --early-stop-eig-product 5e-4 \
     --wandb \
