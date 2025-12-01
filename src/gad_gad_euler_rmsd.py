@@ -80,8 +80,8 @@ def detect_stall(
     eig_product_history: List[Optional[float]],
     disp_history: List[float],
     window: int = 50,
-    disp_threshold: float = 0.001,
-    eig_change_threshold: float = 1.0,
+    disp_threshold: float = 0.02,
+    eig_change_threshold: float = 5.0,
 ) -> bool:
     """
     Detect if GAD optimization has stalled.
@@ -133,7 +133,7 @@ def run_gad_euler_on_batch(
     calculator: EquiformerTorchCalculator, batch: Batch, n_steps: int, dt: float, stop_at_ts: bool = False,
     kick_enabled: bool = False, kick_force_threshold: float = 0.015, kick_magnitude: float = 0.1,
     minimization_fallback: bool = False, stall_window: int = 50, 
-    stall_disp_threshold: float = 0.001, stall_eig_change_threshold: float = 1.0,
+    stall_disp_threshold: float = 0.02, stall_eig_change_threshold: float = 5.0,
 ) -> Dict[str, Any]:
     """
     Runs GAD Euler updates, optionally stopping when a TS signature is found.
@@ -206,6 +206,15 @@ def run_gad_euler_on_batch(
                     disp_threshold=stall_disp_threshold,
                     eig_change_threshold=stall_eig_change_threshold,
                 )
+                # Debug output every 50 steps to see stall metrics
+                if step_i % 50 == 0 and len(trajectory["disp_from_last"]) >= stall_window:
+                    recent_disps = trajectory["disp_from_last"][-stall_window:]
+                    recent_eigs = [e for e in trajectory["eig_product"][-stall_window:] if e is not None]
+                    avg_disp = np.mean(recent_disps) if recent_disps else 0
+                    eig_change = abs(recent_eigs[-1] - recent_eigs[0]) if len(recent_eigs) >= 2 else 0
+                    print(f"  [STALL CHECK] step {step_i}: avg_disp={avg_disp:.4f} (thresh={stall_disp_threshold}), "
+                          f"eig_change={eig_change:.4f} (thresh={stall_eig_change_threshold}), stalled={is_stalled}")
+                
                 if is_stalled:
                     current_mode = 1  # Switch to minimization mode
                     mode_switch_step = step_i
@@ -491,10 +500,10 @@ if __name__ == "__main__":
                              "Minimization follows forces to find a local minimum.")
     parser.add_argument("--stall-window", type=int, default=50,
                         help="Number of steps to check for stall detection (default: 50).")
-    parser.add_argument("--stall-disp-threshold", type=float, default=0.001,
-                        help="Minimum average displacement (Å) to not be considered stalled (default: 0.001).")
-    parser.add_argument("--stall-eig-change-threshold", type=float, default=1.0,
-                        help="Minimum eigenvalue product change to not be stalled (default: 1.0).")
+    parser.add_argument("--stall-disp-threshold", type=float, default=0.02,
+                        help="Minimum average displacement (Å) to not be considered stalled (default: 0.02).")
+    parser.add_argument("--stall-eig-change-threshold", type=float, default=5.0,
+                        help="Minimum eigenvalue product change to not be stalled (default: 5.0).")
 
     # W&B arguments
     parser.add_argument("--wandb", action="store_true",
