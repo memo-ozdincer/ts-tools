@@ -140,17 +140,19 @@ def _extract_vibrational_eigvals(eigvals: torch.Tensor, coords: torch.Tensor) ->
     vibrational_sorted, _ = torch.sort(vibrational)
     return vibrational_sorted, rigid_modes
 
-# --- Core GAD Dynamics with Adaptive Step Sizing ---
+# --- MODIFIED Core Dynamics Function (With Hybrid Force-GAD for Noisy Geometries) ---
 class GADDynamics:
     """
-    GAD dynamics with adaptive step sizing for robust TS search from noisy geometries.
+    Hybrid Force-GAD dynamics for robust TS search from noisy starting geometries.
     
-    Always uses the GAD equation: dx/dt = F + 2(-F·v)v
+    The key innovation is saddle-order-aware dynamics switching:
+    - Higher-order saddles (2+ negative eigenvalues): Follow FORCE direction to escape
+      unstable high-energy regions (these are where noisy geometries often land)
+    - Order-1 (TS candidate): Use GAD or eigenvector-following for precise convergence
+    - Order-0 (minimum): Use standard GAD to climb toward TS
     
-    Adaptive step sizing scales steps based on saddle order:
-    - Higher-order saddles (2+ negative eigenvalues): LARGER steps to escape faster
-    - Order-1 (TS candidate): SMALLER steps for precise convergence
-    - Order-0 (minimum): Normal steps
+    This solves the plateau problem where pure eigenvalue optimization gets stuck
+    at higher-order saddles because it fights against steep energy gradients.
     """
     
     def __init__(self, calculator, atomic_nums, stop_at_ts=False, kick_enabled=False,
@@ -158,17 +160,11 @@ class GADDynamics:
                  min_eig_product_threshold=-1e-4, confirmation_steps=10,
                  stagnation_check_window=20, stagnation_variance_threshold=1e-6,
                  eigenvector_following=False, eigvec_follow_delay=5,
-                 # Adaptive step sizing for noisy geometries
-                 adaptive_step_sizing=False,
-                 higher_order_multiplier=5.0, ts_multiplier=0.5):
+                 # New: Hybrid Force-GAD and adaptive step sizing
+                 hybrid_mode=False, adaptive_step_sizing=False,
+                 higher_order_multiplier=5.0, ts_multiplier=0.5,
+                 force_descent_threshold=2):
         """
-        GAD dynamics with adaptive step sizing for robust TS search from noisy geometries.
-        
-        Always uses GAD dynamics. Adaptive step sizing scales step size based on saddle order:
-        - Higher-order saddles (2+ negative eigenvalues): LARGER steps to escape faster
-        - Order-1 (TS candidate): SMALLER steps for precise convergence
-        - Order-0 (minimum): Normal steps
-        
         Args:
             kick_enabled: Enable kick mechanism to escape local minima
             kick_force_threshold: Force threshold in eV/Å below which kick is considered (default: 0.015)
@@ -179,9 +175,12 @@ class GADDynamics:
             stagnation_variance_threshold: Variance threshold for detecting stagnation (default: 1e-6)
             eigenvector_following: Enable eigenvector-following refinement after TS candidate found (default: False)
             eigvec_follow_delay: Steps after TS candidate before switching to eigenvector following (default: 5)
+            hybrid_mode: Enable hybrid Force-GAD dynamics (RECOMMENDED for noisy starts)
             adaptive_step_sizing: Enable saddle-order-aware step size scaling
             higher_order_multiplier: Step multiplier for higher-order saddles (default: 5.0)
             ts_multiplier: Step multiplier near TS for refinement (default: 0.5)
+            force_descent_threshold: Saddle order threshold for force descent (default: 2)
+                                    Orders >= this use force descent instead of GAD
         """
         self.calculator = calculator
         self.atomic_nums = torch.tensor(atomic_nums, dtype=torch.long)
@@ -197,10 +196,12 @@ class GADDynamics:
         self.stagnation_variance_threshold = stagnation_variance_threshold
         self.eigenvector_following = eigenvector_following
         self.eigvec_follow_delay = eigvec_follow_delay
-        # Adaptive step sizing
+        # New: Hybrid mode and adaptive step sizing
+        self.hybrid_mode = hybrid_mode
         self.adaptive_step_sizing = adaptive_step_sizing
         self.higher_order_multiplier = higher_order_multiplier
         self.ts_multiplier = ts_multiplier
+        self.force_descent_threshold = force_descent_threshold
         self.device = next(calculator.potential.parameters()).device
         self.trajectory = defaultdict(list)
         self.ts_found = False
@@ -298,10 +299,13 @@ class GADDynamics:
                     print(f"  [KICK {self.num_kicks}] {kick_reason}")
 
         # Determine which dynamics mode to use
-        dynamics_mode = "gad"  # default - ALWAYS use GAD
+        dynamics_mode = "gad"  # default
         
         if apply_kick:
             dynamics_mode = "kick"
+        elif self.hybrid_mode and saddle_order >= self.force_descent_threshold:
+            # HYBRID MODE: At higher-order saddles, use force descent to escape
+            dynamics_mode = "force_descent"
         elif self.eigenvector_following and self.ts_candidate_step is not None:
             current_step = len(self.trajectory["time"]) + 1
             if current_step >= self.ts_candidate_step + self.eigvec_follow_delay:
@@ -317,6 +321,14 @@ class GADDynamics:
             kick_direction = torch.randn_like(coords)
             kick_direction = kick_direction / (kick_direction.norm() + 1e-12)
             velocity = kick_direction * self.kick_magnitude
+            
+        elif dynamics_mode == "force_descent":
+            # FORCE DESCENT: Follow force direction to escape higher-order saddles
+            # This is the key to handling noisy geometries - they often land in 
+            # high-energy unstable regions where we should relax first
+            velocity = forces  # Simply follow the force (steepest descent on energy)
+            if record_stats and len(self.trajectory["time"]) % 10 == 0:
+                print(f"  [HYBRID] Order-{saddle_order} saddle: using force descent (scale={self.current_step_scale:.1f}×)")
                 
         elif dynamics_mode == "eigvec_follow":
             # Eigenvector-following mode: maximize uphill motion along lowest eigenvector
@@ -333,18 +345,13 @@ class GADDynamics:
             velocity_flat = -f_flat + 2.0 * projection_onto_mode * min_mode_flat
             velocity = velocity_flat.reshape(self.num_atoms, 3)
             
-        else:  # dynamics_mode == "gad" - ALWAYS GAD, with adaptive step sizing
-            # Standard GAD velocity: F + 2(-F·v)v
+        else:  # dynamics_mode == "gad"
+            # Standard GAD velocity
             v = evecs_full[:, 0].to(forces.dtype)
             v /= (torch.norm(v) + 1e-12)
             f_flat = forces.reshape(-1)
             gad_flat = f_flat + 2.0 * torch.dot(-f_flat, v) * v
             velocity = gad_flat.reshape(self.num_atoms, 3)
-            
-            # Log adaptive step sizing info (step scaling happens in RK45 solver)
-            if self.adaptive_step_sizing and record_stats and len(self.trajectory["time"]) % 10 == 0:
-                if self.current_step_scale != 1.0:
-                    print(f"  [ADAPTIVE] Order-{saddle_order} saddle: step scale={self.current_step_scale:.1f}×")
 
         # Record trajectory statistics
         if record_stats:
@@ -394,9 +401,10 @@ def plot_trajectory(
     final_neg_num,
     initial_neg_vibrational,
     final_neg_vibrational,
+    hybrid_mode=False,
 ):
     """
-    Plot GAD trajectory with saddle order and step scaling visualization.
+    Plot GAD trajectory with optional hybrid mode visualization.
 
     Returns:
         Tuple of (matplotlib Figure, suggested filename)
@@ -404,7 +412,7 @@ def plot_trajectory(
     timesteps = np.array(trajectory.get("time", []))
     def _nanify(key): return np.array([v if v is not None else np.nan for v in trajectory.get(key, [])], dtype=float)
 
-    # Create 6 subplots if we have saddle order info, else 5
+    # Create 6 subplots if hybrid mode shows saddle order, else 5
     has_saddle_order = "saddle_order" in trajectory and len(trajectory["saddle_order"]) > 0
     n_plots = 6 if has_saddle_order else 5
     fig, axes = plt.subplots(n_plots, 1, figsize=(8, 3 * n_plots), sharex=True)
@@ -450,15 +458,32 @@ def plot_trajectory(
     axes[ax_idx].legend(loc='best')
     ax_idx += 1
     
-    # Saddle Order and Step Scale
+    # Saddle Order (new plot for hybrid mode)
     if has_saddle_order:
         saddle_order = _nanify("saddle_order")
         axes[ax_idx].step(timesteps, saddle_order, where="post", color="tab:brown", lw=1.5, label="Saddle Order")
         axes[ax_idx].axhline(1, color='green', ls='--', lw=1, alpha=0.7, label="TS (order-1)")
         axes[ax_idx].set_ylabel("Saddle Order")
-        axes[ax_idx].set_title("Saddle Order (# Negative Eigenvalues) & Step Scale")
+        axes[ax_idx].set_title("Saddle Order (# Negative Eigenvalues) & Dynamics Mode")
         axes[ax_idx].set_ylim(-0.5, max(np.nanmax(saddle_order) + 0.5, 3.5))
-        axes[ax_idx].legend(loc='upper left')
+        
+        # Show dynamics mode as background shading
+        if "dynamics_mode" in trajectory:
+            modes = trajectory["dynamics_mode"]
+            for i, mode in enumerate(modes):
+                if i < len(timesteps) - 1:
+                    color = {'force_descent': 'red', 'gad': 'blue', 'eigvec_follow': 'green', 'kick': 'orange'}.get(mode, 'grey')
+                    axes[ax_idx].axvspan(timesteps[i], timesteps[i+1], alpha=0.1, color=color)
+            # Add legend for dynamics modes
+            from matplotlib.patches import Patch
+            mode_patches = [
+                Patch(facecolor='red', alpha=0.3, label='Force Descent'),
+                Patch(facecolor='blue', alpha=0.3, label='GAD'),
+                Patch(facecolor='green', alpha=0.3, label='Eigvec Follow'),
+            ]
+            axes[ax_idx].legend(handles=mode_patches, loc='upper right', fontsize=7)
+        else:
+            axes[ax_idx].legend(loc='best')
         
         # Add step scale on secondary axis
         if "step_scale" in trajectory:
@@ -467,14 +492,13 @@ def plot_trajectory(
             ax_scale.plot(timesteps, step_scale, color="tab:cyan", lw=1, alpha=0.7, label="Step Scale")
             ax_scale.set_ylabel("Step Scale", color="tab:cyan")
             ax_scale.tick_params(axis='y', labelcolor='tab:cyan')
-            ax_scale.legend(loc='upper right')
         ax_idx += 1
 
     # GAD magnitude (last plot)
-    axes[ax_idx].plot(timesteps, _nanify("gad_mean"), marker=".", color="tab:green", lw=1.2, label="Mean |GAD|")
-    axes[ax_idx].set_ylabel("Mean |GAD| (Å)")
+    axes[ax_idx].plot(timesteps, _nanify("gad_mean"), marker=".", color="tab:green", lw=1.2, label="Mean |Velocity|")
+    axes[ax_idx].set_ylabel("Mean |Velocity| (Å)")
     axes[ax_idx].set_xlabel("Time (a.u.)")
-    axes[ax_idx].set_title("GAD Velocity Magnitude")
+    axes[ax_idx].set_title("Velocity Magnitude")
 
     neg_vib = _nanify("neg_vibrational")
     if neg_vib.size > 0 and not np.all(np.isnan(neg_vib)):
@@ -551,16 +575,20 @@ if __name__ == "__main__":
     parser.add_argument("--eigvec-follow-delay", type=int, default=5,
                         help="Steps after TS candidate before switching to eigenvector following (default: 5).")
     
-    # === Adaptive Step Sizing for Noisy Geometries ===
-    # Always uses GAD dynamics, but scales step size based on saddle order
+    # === NEW: Hybrid Force-GAD and Adaptive Step Sizing for Noisy Geometries ===
+    parser.add_argument("--hybrid-mode", action="store_true",
+                        help="Enable hybrid Force-GAD dynamics (RECOMMENDED for noisy starting geometries). "
+                             "Uses force descent at higher-order saddles to escape unstable regions.")
     parser.add_argument("--adaptive-step-sizing", action="store_true",
-                        help="Enable adaptive step sizing based on saddle order. "
-                             "Larger steps at higher-order saddles, smaller near TS.")
+                        help="Enable adaptive step sizing based on saddle order.")
     parser.add_argument("--higher-order-multiplier", type=float, default=5.0,
                         help="Step size multiplier for higher-order saddles (default: 5.0). "
                              "Order-2 uses 5×, Order-3 uses 10×, etc.")
     parser.add_argument("--ts-multiplier", type=float, default=0.5,
                         help="Step size multiplier near TS (order-1) for refinement (default: 0.5).")
+    parser.add_argument("--force-descent-threshold", type=int, default=2,
+                        help="Saddle order threshold for force descent (default: 2). "
+                             "Orders >= this use force descent instead of GAD.")
 
     # W&B arguments
     parser.add_argument("--wandb", action="store_true",
@@ -590,10 +618,12 @@ if __name__ == "__main__":
         "kick_magnitude": args.kick_magnitude if args.enable_kick else None,
         "eigenvector_following": args.eigenvector_following,
         "max_samples": args.max_samples,
-        # Adaptive step sizing
+        # New: Hybrid mode and adaptive step sizing
+        "hybrid_mode": args.hybrid_mode,
         "adaptive_step_sizing": args.adaptive_step_sizing,
         "higher_order_multiplier": args.higher_order_multiplier if args.adaptive_step_sizing else None,
         "ts_multiplier": args.ts_multiplier if args.adaptive_step_sizing else None,
+        "force_descent_threshold": args.force_descent_threshold if args.hybrid_mode else None,
     }
 
     logger = ExperimentLogger(
@@ -612,12 +642,16 @@ if __name__ == "__main__":
     print(f"Running GAD-RK45 Search. Start: {args.start_from.upper()}, Stop at TS: {args.stop_at_ts}")
     print(f"Output directory: {logger.run_dir}")
     
-    # Print adaptive step sizing settings (for noisy geometries)
+    # Print hybrid mode settings (key for noisy geometries)
+    if args.hybrid_mode:
+        print(f"\n=== HYBRID FORCE-GAD MODE (for noisy geometries) ===")
+        print(f"  Force descent threshold: Order-{args.force_descent_threshold}+ saddles")
+        print(f"  Strategy: Force descent at high-order saddles → GAD near TS")
+    
     if args.adaptive_step_sizing:
-        print(f"\n=== ADAPTIVE STEP SIZING (for noisy geometries) ===")
-        print(f"  Higher-order saddle multiplier: {args.higher_order_multiplier}×")
-        print(f"  TS (order-1) multiplier: {args.ts_multiplier}×")
-        print(f"  Always using GAD dynamics, just scaling step size by saddle order")
+        print(f"\n=== ADAPTIVE STEP SIZING ===")
+        print(f"  Higher-order multiplier: {args.higher_order_multiplier}×")
+        print(f"  TS multiplier: {args.ts_multiplier}×")
     
     print(f"\nKick enabled: {args.enable_kick}")
     if args.enable_kick:
@@ -648,10 +682,12 @@ if __name__ == "__main__":
                 stagnation_variance_threshold=args.stagnation_variance_threshold,
                 eigenvector_following=args.eigenvector_following,
                 eigvec_follow_delay=args.eigvec_follow_delay,
-                # Adaptive step sizing
+                # New: Hybrid mode and adaptive step sizing
+                hybrid_mode=args.hybrid_mode,
                 adaptive_step_sizing=args.adaptive_step_sizing,
                 higher_order_multiplier=args.higher_order_multiplier,
                 ts_multiplier=args.ts_multiplier,
+                force_descent_threshold=args.force_descent_threshold,
             )
             
             # Pass step_scale_fn to RK45 if adaptive step sizing is enabled
@@ -697,12 +733,19 @@ if __name__ == "__main__":
                 "final_mean_gad": traj["gad_mean"][-1],
             }
             
-            # Add saddle order and step scaling statistics if available
+            # Add hybrid mode statistics if available
             if "saddle_order" in traj and traj["saddle_order"]:
                 saddle_orders = traj["saddle_order"]
                 extra_data["initial_saddle_order"] = saddle_orders[0] if saddle_orders else None
                 extra_data["final_saddle_order"] = saddle_orders[-1] if saddle_orders else None
                 extra_data["avg_saddle_order"] = float(np.mean(saddle_orders))
+                
+                # Count dynamics mode usage
+                if "dynamics_mode" in traj:
+                    modes = traj["dynamics_mode"]
+                    extra_data["steps_force_descent"] = sum(1 for m in modes if m == "force_descent")
+                    extra_data["steps_gad"] = sum(1 for m in modes if m == "gad")
+                    extra_data["steps_eigvec_follow"] = sum(1 for m in modes if m == "eigvec_follow")
                 
                 # Step scale statistics
                 if "step_scale" in traj and traj["step_scale"]:
@@ -744,6 +787,7 @@ if __name__ == "__main__":
                 final_neg_num=final_neg_num,
                 initial_neg_vibrational=initial_neg_vibrational,
                 final_neg_vibrational=final_neg_vibrational,
+                hybrid_mode=args.hybrid_mode,
             )
 
             # Save plot using logger (handles sampling)
@@ -763,11 +807,12 @@ if __name__ == "__main__":
                 print(f"  Neg Vibrational Eigs: {initial_neg_vibrational} -> {final_neg_vibrational}")
             if args.enable_kick:
                 print(f"  Kicks applied: {dynamics_fn.num_kicks}")
-            # Print adaptive step sizing statistics
-            if args.adaptive_step_sizing and "initial_saddle_order" in extra_data:
+            # Print hybrid mode statistics
+            if args.hybrid_mode and "steps_force_descent" in extra_data:
+                fd_steps = extra_data.get("steps_force_descent", 0)
+                gad_steps = extra_data.get("steps_gad", 0)
+                print(f"  Dynamics: Force Descent={fd_steps} steps, GAD={gad_steps} steps")
                 print(f"  Saddle Order: {extra_data.get('initial_saddle_order', '?')} -> {extra_data.get('final_saddle_order', '?')}")
-                if "avg_step_scale" in extra_data:
-                    print(f"  Avg Step Scale: {extra_data['avg_step_scale']:.2f}×")
 
         except Exception as e:
             print(f"[ERROR] Sample {i} failed: {e}"); import traceback; traceback.print_exc()

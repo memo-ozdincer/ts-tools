@@ -28,19 +28,26 @@ source ${VENV_DIR}/bin/activate
 # Set up W&B API key for logging
 export WANDB_API_KEY="ed8d3e45635321a86859f77337bdb4dfb5ceb113"
 
-echo ">>> Running GAD-RK45 Search with ADAPTIVE STEP SIZING for noisy geometries..."
+echo ">>> Running GAD-RK45 Search with HYBRID MODE for noisy geometries..."
 
-# === ADAPTIVE STEP SIZING FOR NOISY GEOMETRIES ===
-# Always uses GAD dynamics, but scales step size based on saddle order:
-#   - Higher-order saddles (2+ negative eigenvalues): LARGER steps to escape faster
-#   - Order-1 (TS candidate): SMALLER steps for precise convergence  
-#   - Order-0 (minimum): Normal steps
+# === HYBRID FORCE-GAD MODE ===
+# This mode is designed for noisy starting geometries (noise levels: 0.5, 1, 2 Å).
+# 
+# Key innovation: Saddle-order-aware dynamics switching:
+#   - At higher-order saddles (2+ negative eigenvalues): Use FORCE DESCENT
+#     to escape unstable high-energy regions where noisy geometries often land
+#   - At order-1 (TS candidate): Use GAD for precise convergence
+#   - At order-0 (minimum): Use standard GAD to climb toward TS
+#
+# This solves the "plateau problem" where pure eigenvalue optimization gets stuck
+# because it fights against steep energy gradients at higher-order saddles.
 #
 # Parameters:
-#   --adaptive-step-sizing: Enable saddle-order-aware step scaling
+#   --hybrid-mode: Enable hybrid Force-GAD dynamics (CRITICAL for noisy starts)
+#   --adaptive-step-sizing: Larger steps at higher-order saddles, smaller near TS
 #   --higher-order-multiplier: Scale factor for higher-order saddles (default: 5.0)
-#                             Order-2 uses 5×, Order-3 uses 10×, etc.
 #   --ts-multiplier: Scale factor near TS for refinement (default: 0.5)
+#   --force-descent-threshold: Saddle order threshold for force descent (default: 2)
 
 # --- Noise Level: 2Å (most challenging) ---
 python -m src.gad_rk45_search \
@@ -49,9 +56,11 @@ python -m src.gad_rk45_search \
     --stop-at-ts \
     --t-end 5.0 \
     --max-steps 500 \
+    --hybrid-mode \
     --adaptive-step-sizing \
     --higher-order-multiplier 10.0 \
     --ts-multiplier 0.5 \
+    --force-descent-threshold 2 \
     --wandb \
     --wandb-project "gad-noise-experiments"
 
@@ -62,11 +71,12 @@ python -m src.gad_rk45_search \
 #     --stop-at-ts \
 #     --t-end 3.0 \
 #     --max-steps 300 \
+#     --hybrid-mode \
 #     --adaptive-step-sizing \
 #     --higher-order-multiplier 5.0 \
 #     --ts-multiplier 0.5 \
 #     --wandb \
-#     --wandb-project "gad-noise-experiments"
+#     --wandb-project "gad-ts-search"
 
 # --- Noise Level: 0.5Å (easier) ---
 # python -m src.gad_rk45_search \
@@ -75,14 +85,15 @@ python -m src.gad_rk45_search \
 #     --stop-at-ts \
 #     --t-end 2.0 \
 #     --max-steps 200 \
+#     --hybrid-mode \
 #     --adaptive-step-sizing \
 #     --higher-order-multiplier 3.0 \
 #     --ts-multiplier 0.5 \
 #     --wandb \
-#     --wandb-project "gad-noise-experiments"
+#     --wandb-project "gad-ts-search"
 
-# --- Baseline comparison (no adaptive step sizing) ---
-# Run this to compare with adaptive step sizing:
+# --- Baseline comparison (no hybrid mode) ---
+# Run this to compare with hybrid mode:
 # python -m src.gad_rk45_search \
 #     --max-samples 30 \
 #     --start-from reactant_noise2A \
@@ -90,9 +101,9 @@ python -m src.gad_rk45_search \
 #     --t-end 5.0 \
 #     --max-steps 500 \
 #     --wandb \
-#     --wandb-project "gad-noise-experiments"
+#     --wandb-project "gad-ts-search"
 
-# --- Combined: Adaptive + Kick for very noisy geometries ---
+# --- Combined: Hybrid + Kick for very noisy geometries ---
 # For very noisy geometries that get completely stuck:
 # python -m src.gad_rk45_search \
 #     --max-samples 30 \
@@ -100,12 +111,12 @@ python -m src.gad_rk45_search \
 #     --stop-at-ts \
 #     --t-end 10.0 \
 #     --max-steps 1000 \
+#     --hybrid-mode \
 #     --adaptive-step-sizing \
 #     --higher-order-multiplier 15.0 \
 #     --enable-kick \
 #     --kick-magnitude 0.2 \
 #     --wandb \
-#     --wandb-project "gad-noise-experiments"
+#     --wandb-project "gad-ts-search"
 
 echo "✅ Job completed successfully."
-
