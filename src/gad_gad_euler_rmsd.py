@@ -10,10 +10,13 @@ import torch
 import numpy as np
 from torch_geometric.data import Batch
 
-from .common_utils import setup_experiment, add_common_args, parse_starting_geometry
+from .common_utils import setup_experiment, add_common_args, parse_starting_geometry, extract_vibrational_eigenvalues
 from hip.frequency_analysis import analyze_frequencies_torch
 from hip.equiformer_torch_calculator import EquiformerTorchCalculator
 from .experiment_logger import ExperimentLogger, RunResult, build_loss_type_flags
+from .differentiable_projection import differentiable_massweigh_and_eckartprojection_torch as massweigh_and_eckartprojection_torch
+from torch_geometric.data import Data as TGData
+from nets.prediction_utils import Z_TO_ATOM_SYMBOL
 
 import matplotlib
 matplotlib.use("Agg")
@@ -76,6 +79,34 @@ def _mean_vector_magnitude(vec: torch.Tensor) -> float:
     return float(vec.detach().cpu().norm(dim=1).mean().item())
 
 
+def coord_atoms_to_torch_geometric(coords, atomic_nums, device):
+    """Convert coordinates and atomic numbers to a PyG batch for model inference.
+
+    Important: Must move batch to device AFTER creating it from data list.
+    Matches the format expected by Equiformer models.
+    """
+    # Ensure coords has the right shape (num_atoms, 3)
+    if isinstance(coords, torch.Tensor) and coords.dim() == 1:
+        coords = coords.reshape(-1, 3)
+
+    # Safety check: ensure coordinates are valid
+    if isinstance(coords, torch.Tensor):
+        if torch.isnan(coords).any() or torch.isinf(coords).any():
+            raise ValueError("Invalid coordinates detected (NaN or Inf)")
+
+    # Create TGData with all required fields (CPU tensors first)
+    data = TGData(
+        pos=torch.as_tensor(coords, dtype=torch.float32).reshape(-1, 3),
+        z=torch.as_tensor(atomic_nums, dtype=torch.int64),
+        charges=torch.as_tensor(atomic_nums, dtype=torch.int64),
+        natoms=torch.tensor([len(atomic_nums)], dtype=torch.int64),
+        cell=None,
+        pbc=torch.tensor(False, dtype=torch.bool),
+    )
+    # Create batch and THEN move to device
+    return Batch.from_data_list([data]).to(device)
+
+
 def detect_stall(
     eig_product_history: List[Optional[float]],
     disp_history: List[float],
@@ -128,27 +159,148 @@ def detect_stall(
     return small_displacement and small_eig_change
 
 
-# --- MODIFIED FUNCTION IMPLEMENTING EARLY STOPPING, KICK, AND MINIMIZATION FALLBACK ---
+def eig_product_descent_step(
+    coords: torch.Tensor,
+    atomic_nums: torch.Tensor,
+    model,
+    device: str,
+    lr: float = 0.01,
+    max_step: float = 0.1,
+) -> Dict[str, Any]:
+    """
+    Perform one step of eigenvalue product descent.
+    
+    Directly minimizes λ₀ * λ₁ to find transition states (where product < 0).
+    
+    Args:
+        coords: Current coordinates (will be cloned, original not modified)
+        atomic_nums: Atomic numbers
+        model: The Equiformer model (calculator.potential)
+        device: Device string
+        lr: Learning rate for gradient descent
+        max_step: Maximum displacement per atom (Å)
+        
+    Returns:
+        Dictionary with:
+            - new_coords: Updated coordinates
+            - eig0, eig1: Current eigenvalues
+            - eig_product: Current λ₀ * λ₁
+            - loss: Same as eig_product
+            - grad_norm: Norm of the gradient
+            - max_atom_disp: Maximum displacement applied
+            - success: Whether step was successful
+    """
+    atomsymbols = [Z_TO_ATOM_SYMBOL[z.item()] for z in atomic_nums]
+    
+    # Clone coords and enable gradients
+    coords_opt = coords.clone().detach().to(torch.float32).to(device)
+    coords_opt.requires_grad = True
+    
+    try:
+        with torch.enable_grad():
+            # Forward pass
+            batch = coord_atoms_to_torch_geometric(coords_opt, atomic_nums, device)
+            _, _, out = model.forward(batch, otf_graph=True)
+            
+            # Get projected Hessian
+            hess_raw = out["hessian"].reshape(coords_opt.numel(), coords_opt.numel())
+            hess_proj = massweigh_and_eckartprojection_torch(hess_raw, coords_opt, atomsymbols)
+            
+            # Extract vibrational eigenvalues
+            vibrational_eigvals = extract_vibrational_eigenvalues(hess_proj, coords_opt)
+            
+            if vibrational_eigvals.numel() < 2:
+                return {
+                    "new_coords": coords,
+                    "eig0": float('nan'),
+                    "eig1": float('nan'),
+                    "eig_product": float('inf'),
+                    "loss": float('inf'),
+                    "grad_norm": 0.0,
+                    "max_atom_disp": 0.0,
+                    "success": False,
+                }
+            
+            eig0 = vibrational_eigvals[0]
+            eig1 = vibrational_eigvals[1]
+            loss = eig0 * eig1  # Minimize this to make it negative (TS condition)
+            
+            # Compute gradient
+            grad = torch.autograd.grad(loss, coords_opt)[0]
+            
+        # Apply gradient descent with step size control
+        with torch.no_grad():
+            grad_norm = grad.norm().item()
+            
+            # Clamp gradient to prevent exploding updates
+            max_grad_norm = 100.0
+            if grad.norm() > max_grad_norm:
+                grad = grad * (max_grad_norm / grad.norm())
+            
+            # Compute update
+            update = lr * grad
+            update_per_atom = update.reshape(-1, 3)
+            atom_displacements = torch.norm(update_per_atom, dim=1)
+            max_atom_disp = atom_displacements.max().item()
+            
+            # Clamp to max step
+            if max_atom_disp > max_step:
+                scale = max_step / max_atom_disp
+                update = update * scale
+                max_atom_disp = max_step
+            
+            # Apply update (gradient descent: subtract gradient)
+            new_coords = coords_opt.detach() - update
+            
+        return {
+            "new_coords": new_coords,
+            "eig0": eig0.item(),
+            "eig1": eig1.item(),
+            "eig_product": loss.item(),
+            "loss": loss.item(),
+            "grad_norm": grad_norm,
+            "max_atom_disp": max_atom_disp,
+            "success": True,
+        }
+        
+    except Exception as e:
+        print(f"    [EIG DESCENT] Step failed: {e}")
+        return {
+            "new_coords": coords,
+            "eig0": float('nan'),
+            "eig1": float('nan'),
+            "eig_product": float('inf'),
+            "loss": float('inf'),
+            "grad_norm": 0.0,
+            "max_atom_disp": 0.0,
+            "success": False,
+        }
+
+
+# --- MODIFIED FUNCTION IMPLEMENTING EARLY STOPPING, KICK, AND EIGENVALUE PRODUCT DESCENT FALLBACK ---
 def run_gad_euler_on_batch(
     calculator: EquiformerTorchCalculator, batch: Batch, n_steps: int, dt: float, stop_at_ts: bool = False,
     kick_enabled: bool = False, kick_force_threshold: float = 0.015, kick_magnitude: float = 0.1,
     minimization_fallback: bool = False, stall_window: int = 100, 
     stall_disp_threshold: float = 0.005, stall_eig_change_threshold: float = 2.0,
+    eig_descent_lr: float = 0.01, eig_descent_max_step: float = 0.1,
 ) -> Dict[str, Any]:
     """
     Runs GAD Euler updates, optionally stopping when a TS signature is found.
     
-    Can fallback to minimization mode when GAD stalls, which follows forces
-    directly to find a local minimum (all eigenvalues positive).
+    Can fallback to eigenvalue product descent when GAD stalls, which directly
+    minimizes λ₀*λ₁ to find transition states (where product < 0).
 
     Args:
         kick_enabled: Enable kick mechanism to escape local minima
         kick_force_threshold: Force threshold in eV/Å below which kick is considered
         kick_magnitude: Magnitude of kick displacement in Å
-        minimization_fallback: Enable fallback to minimization when GAD stalls
+        minimization_fallback: Enable fallback to eigenvalue product descent when GAD stalls
         stall_window: Number of steps to check for stall detection
         stall_disp_threshold: Minimum displacement to not be considered stalled (Å)
         stall_eig_change_threshold: Minimum eigenvalue product change to not be stalled
+        eig_descent_lr: Learning rate for eigenvalue product descent (default: 0.01)
+        eig_descent_max_step: Maximum displacement per atom in eigenvalue descent (default: 0.1 Å)
     """
     assert int(batch.batch.max().item()) + 1 == 1, "Use batch_size=1."
     start_pos = batch.pos.detach().clone()
@@ -159,7 +311,7 @@ def run_gad_euler_on_batch(
     current_mode = 0  # Start in GAD mode
     mode_switch_step = None  # Step at which we switched to minimization
 
-    trajectory = {k: [] for k in ["energy", "force_mean", "gad_mean", "eig_product", "kick_applied",
+    trajectory = {k: [] for k in ["energy", "force_mean", "eig0", "eig1", "eig_product", "kick_applied",
                                    "disp_from_last", "disp_from_start", "mode"]}
 
     # Modified to return the product and freq_info for checking
@@ -168,7 +320,6 @@ def run_gad_euler_on_batch(
                      mode: int = 0) -> tuple:
         trajectory["energy"].append(_scalar_from(predictions, "energy"))
         trajectory["force_mean"].append(_mean_vector_magnitude(predictions["forces"]))
-        trajectory["gad_mean"].append(_mean_vector_magnitude(gad_vec) if gad_vec is not None else None)
         trajectory["kick_applied"].append(1 if kick_applied else 0)
         trajectory["disp_from_last"].append(disp_from_last)
         trajectory["disp_from_start"].append(disp_from_start)
@@ -177,9 +328,20 @@ def run_gad_euler_on_batch(
             # Use projected analysis for the product check
             freq_info = analyze_frequencies_torch(predictions["hessian"], batch.pos, batch.z)
             eig_prod = _extract_eig_product(freq_info)
+            # Extract individual eigenvalues
+            eigvals = freq_info.get("eigvals")
+            if eigvals is not None and isinstance(eigvals, torch.Tensor) and eigvals.numel() >= 2:
+                eigvals_sorted, _ = torch.sort(eigvals.detach().cpu().flatten())
+                trajectory["eig0"].append(float(eigvals_sorted[0].item()))
+                trajectory["eig1"].append(float(eigvals_sorted[1].item()))
+            else:
+                trajectory["eig0"].append(None)
+                trajectory["eig1"].append(None)
         except Exception:
             eig_prod = None
             freq_info = {}
+            trajectory["eig0"].append(None)
+            trajectory["eig1"].append(None)
         trajectory["eig_product"].append(eig_prod)
         return eig_prod, freq_info
 
@@ -242,25 +404,32 @@ def run_gad_euler_on_batch(
                 batch.pos = batch.pos + kick_direction * kick_magnitude
                 gad = kick_direction * kick_magnitude
             elif current_mode == 1:
-                # MINIMIZATION MODE: Follow forces with controlled step size
-                # Forces = -gradient of energy, so following forces decreases energy
-                forces = results["forces"]
+                # EIGENVALUE PRODUCT DESCENT MODE: Minimize λ₀*λ₁ directly
+                # This targets the TS condition (product < 0) instead of energy minimization
+                descent_result = eig_product_descent_step(
+                    coords=batch.pos,
+                    atomic_nums=batch.z,
+                    model=calculator.potential,
+                    device=str(batch.pos.device),
+                    lr=eig_descent_lr,
+                    max_step=eig_descent_max_step,
+                )
                 
-                # Normalize forces and apply fixed step size for stable minimization
-                force_norms = forces.norm(dim=1, keepdim=True)
-                max_force = force_norms.max()
-                
-                # Use a fixed max step of 0.05 Å per atom, scaled by relative force magnitude
-                max_step_per_atom = 0.05  # Å
-                if max_force > 1e-6:
-                    # Scale step so max displacement is max_step_per_atom
-                    step_scale = max_step_per_atom / max_force
-                    gad = forces * step_scale
+                if descent_result["success"]:
+                    # Update position
+                    batch.pos = descent_result["new_coords"]
+                    # Create a pseudo-gad for tracking (the actual displacement)
+                    gad = descent_result["new_coords"] - prev_pos
+                    
+                    # Log progress every 10 steps
+                    if step_i % 10 == 0:
+                        print(f"    [EIG DESCENT] step {step_i}: λ₀*λ₁={descent_result['eig_product']:.4f}, "
+                              f"λ₀={descent_result['eig0']:.4f}, λ₁={descent_result['eig1']:.4f}, "
+                              f"‖∇‖={descent_result['grad_norm']:.4f}")
                 else:
-                    gad = forces * 0.01  # Very small forces, use small step
-                
-                # Apply step
-                batch.pos = batch.pos + gad
+                    # Step failed, use small random perturbation
+                    gad = torch.randn_like(batch.pos) * 0.01
+                    batch.pos = batch.pos + gad
             else:
                 # GAD MODE: Use GAD direction
                 # 1. Get GAD direction from Hessian
@@ -294,12 +463,11 @@ def run_gad_euler_on_batch(
             if stop_at_ts and current_eig_prod is not None and current_eig_prod < -1e-5:
                 break
             
-            # --- MINIMIZATION CONVERGENCE CHECK ---
-            # In minimization mode, stop if forces become very small (found a minimum)
-            if current_mode == 1:
-                force_magnitude = results["forces"].norm(dim=1).mean().item()
-                if force_magnitude < 0.01:  # Converged to minimum
-                    print(f"  [MINIMIZATION] Converged to minimum at step {step_i}: |F|={force_magnitude:.6f} eV/Å")
+            # --- EIGENVALUE DESCENT CONVERGENCE CHECK ---
+            # In eigenvalue descent mode, stop if eigenvalue product becomes negative (found TS!)
+            if current_mode == 1 and current_eig_prod is not None:
+                if current_eig_prod < -1e-5:  # Found TS condition: λ₀*λ₁ < 0
+                    print(f"  [EIG DESCENT] Found TS at step {step_i}: λ₀*λ₁={current_eig_prod:.6f}")
                     break
 
     # Final analysis of the point where we stopped
@@ -435,12 +603,22 @@ def plot_trajectory_new(
     ax.set_xlabel("Step")
     ax.legend(loc='best', fontsize=8)
 
-    # Panel 4 (1,1): GAD Vector Magnitude
+    # Panel 4 (1,1): Two Smallest Eigenvalues (λ₀, λ₁)
     ax = axes[1, 1]
-    ax.plot(timesteps, _nanify(trajectory["gad_mean"]), marker=".", color="tab:green", lw=1.2, markersize=3)
-    ax.set_ylabel("Mean |GAD| (Å)")
-    ax.set_title("GAD Vector Magnitude")
+    eig0 = _nanify(trajectory.get("eig0", []))
+    eig1 = _nanify(trajectory.get("eig1", []))
+    ax.plot(timesteps, eig0, marker=".", color="tab:red", lw=1.2, markersize=3, label="λ₀")
+    ax.plot(timesteps, eig1, marker=".", color="tab:green", lw=1.2, markersize=3, label="λ₁")
+    ax.axhline(0, color='grey', linestyle=':', linewidth=1, zorder=1)
+    ax.set_ylabel("Eigenvalue (eV/Å²)")
+    ax.set_title("Smallest Eigenvalues (λ₀, λ₁)")
     ax.set_xlabel("Step")
+    ax.legend(loc='best', fontsize=8)
+    if len(eig0) > 0 and not np.isnan(eig0[-1]):
+        ax.text(0.98, 0.05, f"Final λ₀={eig0[-1]:.4f}",
+                transform=ax.transAxes, ha='right', va='bottom', fontsize=9, color="tab:red")
+    if mode_switch_step is not None:
+        ax.axvline(mode_switch_step, color='red', linestyle=':', linewidth=2, alpha=0.7)
 
     # Panel 5 (2,0): Displacement from Last Step
     ax = axes[2, 0]
@@ -449,11 +627,15 @@ def plot_trajectory_new(
     ax.set_ylabel("Mean Disp (Å)")
     ax.set_title("Displacement from Last Step")
     ax.set_xlabel("Step")
-    if len(disp_last) > 1:
-        valid_disp = disp_last[1:]  # Skip step 0
-        valid_disp = valid_disp[~np.isnan(valid_disp)]
-        if len(valid_disp) > 0:
-            ax.text(0.98, 0.95, f"Avg: {np.mean(valid_disp):.4f} Å",
+    # Set y-axis limits based on steps after the initial transient (skip first 10 steps)
+    if len(disp_last) > 10:
+        later_disp = disp_last[10:]
+        later_disp_valid = later_disp[~np.isnan(later_disp)]
+        if len(later_disp_valid) > 0:
+            y_max = np.percentile(later_disp_valid, 99) * 1.2  # 99th percentile with margin
+            y_max = max(y_max, 0.01)  # Minimum visible range
+            ax.set_ylim(0, y_max)
+            ax.text(0.98, 0.95, f"Avg (>10): {np.mean(later_disp_valid):.4f} Å",
                     transform=ax.transAxes, ha='right', va='top', fontsize=9)
 
     # Panel 6 (2,1): Displacement from Start
@@ -463,6 +645,14 @@ def plot_trajectory_new(
     ax.set_ylabel("Mean Disp (Å)")
     ax.set_title("Displacement from Start")
     ax.set_xlabel("Step")
+    # Set y-axis limits based on steps after the initial transient (skip first 10 steps)
+    if len(disp_start) > 10:
+        later_disp_start = disp_start[10:]
+        later_disp_start_valid = later_disp_start[~np.isnan(later_disp_start)]
+        if len(later_disp_start_valid) > 0:
+            y_min = np.percentile(later_disp_start_valid, 1) * 0.9  # 1st percentile with margin
+            y_max = np.percentile(later_disp_start_valid, 99) * 1.1  # 99th percentile with margin
+            ax.set_ylim(max(0, y_min), y_max)
     if len(disp_start) > 0 and not np.isnan(disp_start[-1]):
         ax.text(0.98, 0.95, f"Final: {disp_start[-1]:.4f} Å",
                 transform=ax.transAxes, ha='right', va='top', fontsize=9)
@@ -516,8 +706,10 @@ if __name__ == "__main__":
                         help="Minimum average displacement (Å) to not be considered stalled (default: 0.005).")
     parser.add_argument("--stall-eig-change-threshold", type=float, default=2.0,
                         help="Minimum eigenvalue product change to not be stalled (default: 2.0).")
-    parser.add_argument("--minimization-dt-scale", type=float, default=0.1,
-                        help="Scale factor for dt in minimization mode (default: 0.1, i.e., 10x smaller steps).")
+    parser.add_argument("--eig-descent-lr", type=float, default=0.01,
+                        help="Learning rate for eigenvalue product descent (default: 0.01).")
+    parser.add_argument("--eig-descent-max-step", type=float, default=0.1,
+                        help="Maximum displacement per atom in eigenvalue descent (default: 0.1 Å).")
 
     # W&B arguments
     parser.add_argument("--wandb", action="store_true",
@@ -549,6 +741,8 @@ if __name__ == "__main__":
         "stall_window": args.stall_window if args.enable_minimization_fallback else None,
         "stall_disp_threshold": args.stall_disp_threshold if args.enable_minimization_fallback else None,
         "stall_eig_change_threshold": args.stall_eig_change_threshold if args.enable_minimization_fallback else None,
+        "eig_descent_lr": args.eig_descent_lr if args.enable_minimization_fallback else None,
+        "eig_descent_max_step": args.eig_descent_max_step if args.enable_minimization_fallback else None,
         "max_samples": args.max_samples,
     }
 
@@ -572,11 +766,13 @@ if __name__ == "__main__":
     print(f"Kick enabled: {args.enable_kick}")
     if args.enable_kick:
         print(f"  Force threshold: {args.kick_force_threshold} eV/Å, Kick magnitude: {args.kick_magnitude} Å")
-    print(f"Minimization fallback enabled: {args.enable_minimization_fallback}")
+    print(f"Eigenvalue product descent fallback: {args.enable_minimization_fallback}")
     if args.enable_minimization_fallback:
         print(f"  Stall window: {args.stall_window} steps")
         print(f"  Stall displacement threshold: {args.stall_disp_threshold} Å")
         print(f"  Stall eig product change threshold: {args.stall_eig_change_threshold}")
+        print(f"  Eig descent learning rate: {args.eig_descent_lr}")
+        print(f"  Eig descent max step: {args.eig_descent_max_step} Å")
 
     for i, batch in enumerate(dataloader):
         if i >= args.max_samples: break
@@ -601,6 +797,8 @@ if __name__ == "__main__":
                 stall_window=args.stall_window,
                 stall_disp_threshold=args.stall_disp_threshold,
                 stall_eig_change_threshold=args.stall_eig_change_threshold,
+                eig_descent_lr=args.eig_descent_lr,
+                eig_descent_max_step=args.eig_descent_max_step,
             )
 
             # Extract final results from trajectory
