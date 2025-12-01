@@ -116,7 +116,7 @@ def add_gaussian_noise_to_coords(coords: torch.Tensor, noise_rms_angstrom: float
     return noisy_coords.reshape(original_shape)
 
 
-def parse_starting_geometry(start_from: str, batch, noise_seed: Optional[int] = None):
+def parse_starting_geometry(start_from: str, batch, noise_seed: Optional[int] = None, sample_index: int = 0):
     """
     Parse starting geometry specification and apply noise if requested.
 
@@ -128,6 +128,7 @@ def parse_starting_geometry(start_from: str, batch, noise_seed: Optional[int] = 
         start_from: String specifying the starting geometry
         batch: Data batch containing pos_reactant, pos_transition, etc.
         noise_seed: Optional random seed for reproducible noise
+        sample_index: Index of the current sample (used to generate unique noise per sample)
 
     Returns:
         torch.Tensor: Starting coordinates
@@ -156,8 +157,9 @@ def parse_starting_geometry(start_from: str, batch, noise_seed: Optional[int] = 
             raise ValueError(f"Unknown base geometry '{base_geom}' in '{start_from}'")
 
         # Set random seed if provided for reproducibility
+        # Use noise_seed + sample_index to get unique noise per sample
         if noise_seed is not None:
-            torch.manual_seed(noise_seed)
+            torch.manual_seed(noise_seed + sample_index)
 
         # Add noise
         initial_coords = add_gaussian_noise_to_coords(initial_coords.clone(), noise_level)

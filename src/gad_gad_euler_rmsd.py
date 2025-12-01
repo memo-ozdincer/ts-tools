@@ -76,10 +76,11 @@ def _mean_vector_magnitude(vec: torch.Tensor) -> float:
     return float(vec.detach().cpu().norm(dim=1).mean().item())
 
 
-# --- MODIFIED FUNCTION IMPLEMENTING EARLY STOPPING AND KICK MECHANISM ---
+# --- MODIFIED FUNCTION IMPLEMENTING EARLY STOPPING, KICK, AND PLATEAU DETECTION ---
 def run_gad_euler_on_batch(
     calculator: EquiformerTorchCalculator, batch: Batch, n_steps: int, dt: float, stop_at_ts: bool = False,
-    kick_enabled: bool = False, kick_force_threshold: float = 0.015, kick_magnitude: float = 0.1
+    kick_enabled: bool = False, kick_force_threshold: float = 0.015, kick_magnitude: float = 0.1,
+    plateau_threshold: float = 0.005, plateau_window: int = 20, descent_steps: int = 10
 ) -> Dict[str, Any]:
     """
     Runs GAD Euler updates, optionally stopping when a TS signature is found.
@@ -88,24 +89,32 @@ def run_gad_euler_on_batch(
         kick_enabled: Enable kick mechanism to escape local minima
         kick_force_threshold: Force threshold in eV/Å below which kick is considered
         kick_magnitude: Magnitude of kick displacement in Å
+        plateau_threshold: Displacement threshold (Å) below which plateau is detected
+        plateau_window: Consecutive steps below threshold to trigger descent mode
+        descent_steps: Number of steepest descent steps when plateau detected
     """
     assert int(batch.batch.max().item()) + 1 == 1, "Use batch_size=1."
     start_pos = batch.pos.detach().clone()
     prev_pos = start_pos.clone()  # Track previous position for step-wise displacement
     num_kicks = 0
+    num_descent_interventions = 0
+    plateau_count = 0
+    descent_steps_remaining = 0
 
     trajectory = {k: [] for k in ["energy", "force_mean", "gad_mean", "eig_product", "kick_applied",
-                                   "disp_from_last", "disp_from_start"]}
+                                   "disp_from_last", "disp_from_start", "mode"]}
 
     # Modified to return the product and freq_info for checking
     def _record_step(predictions: Dict[str, Any], gad_vec: Optional[torch.Tensor], 
-                     disp_from_last: float, disp_from_start: float, kick_applied: bool = False) -> tuple:
+                     disp_from_last: float, disp_from_start: float, kick_applied: bool = False,
+                     mode: str = "gad") -> tuple:
         trajectory["energy"].append(_scalar_from(predictions, "energy"))
         trajectory["force_mean"].append(_mean_vector_magnitude(predictions["forces"]))
         trajectory["gad_mean"].append(_mean_vector_magnitude(gad_vec) if gad_vec is not None else None)
         trajectory["kick_applied"].append(1 if kick_applied else 0)
         trajectory["disp_from_last"].append(disp_from_last)
         trajectory["disp_from_start"].append(disp_from_start)
+        trajectory["mode"].append(mode)
         try:
             # Use projected analysis for the product check
             freq_info = analyze_frequencies_torch(predictions["hessian"], batch.pos, batch.z)
@@ -118,7 +127,7 @@ def run_gad_euler_on_batch(
 
     # Initial state (no displacement at step 0)
     results = calculator.predict(batch, do_hessian=True)
-    current_eig_prod, freq_info = _record_step(results, gad_vec=None, disp_from_last=0.0, disp_from_start=0.0)
+    current_eig_prod, freq_info = _record_step(results, gad_vec=None, disp_from_last=0.0, disp_from_start=0.0, mode="init")
 
     steps_taken = 0
     # Check if we start at a TS and early stopping is enabled
@@ -129,6 +138,7 @@ def run_gad_euler_on_batch(
         # GAD loop
         for step_i in range(1, n_steps + 1):
             steps_taken = step_i
+            current_mode = "gad"  # Default mode
 
             # Check if we should apply a kick (escape local minimum)
             apply_kick = False
@@ -149,6 +159,18 @@ def run_gad_euler_on_batch(
                 kick_direction = kick_direction / (kick_direction.norm() + 1e-12)
                 batch.pos = batch.pos + kick_direction * kick_magnitude
                 gad = kick_direction * kick_magnitude
+                current_mode = "kick"
+                # Reset plateau counter after kick
+                plateau_count = 0
+            elif descent_steps_remaining > 0:
+                # In steepest descent mode - follow forces to minimize energy
+                forces = results["forces"]
+                batch.pos = batch.pos + dt * forces
+                gad = dt * forces
+                descent_steps_remaining -= 1
+                current_mode = "descent"
+                if descent_steps_remaining == 0:
+                    print(f"  [DESCENT END] at step {step_i}: Resuming GAD")
             else:
                 # 1. Get GAD direction from Hessian
                 hess_full = _prepare_hessian(results["hessian"], batch.pos.shape[0])
@@ -163,6 +185,7 @@ def run_gad_euler_on_batch(
 
                 # 3. Euler step
                 batch.pos = batch.pos + dt * gad
+                current_mode = "gad"
 
             # 4. Calculate new state
             results = calculator.predict(batch, do_hessian=True)
@@ -172,7 +195,23 @@ def run_gad_euler_on_batch(
             disp_from_start = (batch.pos - start_pos).norm(dim=1).mean().item()
             prev_pos = batch.pos.detach().clone()  # Update for next iteration
             
-            current_eig_prod, freq_info = _record_step(results, gad, disp_from_last, disp_from_start, kick_applied=apply_kick)
+            current_eig_prod, freq_info = _record_step(results, gad, disp_from_last, disp_from_start, 
+                                                        kick_applied=apply_kick, mode=current_mode)
+
+            # --- PLATEAU DETECTION ---
+            # Only check for plateau when in GAD mode (not during descent or kick)
+            if current_mode == "gad" and descent_steps_remaining == 0:
+                if disp_from_last < plateau_threshold:
+                    plateau_count += 1
+                else:
+                    plateau_count = 0
+                
+                # If plateau detected, switch to steepest descent
+                if plateau_count >= plateau_window:
+                    num_descent_interventions += 1
+                    descent_steps_remaining = descent_steps
+                    plateau_count = 0
+                    print(f"  [PLATEAU {num_descent_interventions}] at step {step_i}: disp={disp_from_last:.6f} Å < {plateau_threshold} Å for {plateau_window} steps. Starting {descent_steps} descent steps.")
 
             # --- EARLY STOPPING CHECK ---
             # If product is negative, we have exactly one negative eigenvalue (assuming ordered e0 < e1)
@@ -209,7 +248,7 @@ def run_gad_euler_on_batch(
     displacement = (end_pos - start_pos).norm(dim=1)
 
     return {
-        "steps_taken": steps_taken, # NEW
+        "steps_taken": steps_taken,
         "rmsd": align_ordered_and_get_rmsd(start_pos, end_pos),
         "rms_force_end": forces_end.pow(2).mean().sqrt().item(),
         "max_atom_force_end": forces_end.norm(dim=1).max().item(),
@@ -224,6 +263,7 @@ def run_gad_euler_on_batch(
         "neg_eigvals_start": neg_eigvals_start,
         "neg_eigvals_end": neg_eigvals_end,
         "num_kicks": num_kicks,
+        "num_descent_interventions": num_descent_interventions,
     }
 
 # --- (Plotting and helper functions remain unchanged) ---
@@ -241,7 +281,7 @@ def plot_trajectory_new(
     steps_to_ts: Optional[int] = None,
 ) -> tuple:
     """
-    Plot GAD trajectory with 6 panels.
+    Plot GAD trajectory with 6 panels in a 3x2 grid.
 
     Returns:
         Tuple of (matplotlib Figure, suggested filename)
@@ -252,78 +292,86 @@ def plot_trajectory_new(
     def _nanify(values: List[Optional[float]]) -> np.ndarray:
         return np.array([v if v is not None else np.nan for v in values], dtype=float)
 
-    fig, axes = plt.subplots(6, 1, figsize=(8, 18), sharex=True)
-    fig.suptitle(f"GAD Euler Trajectory for Sample {sample_index}: {formula}", fontsize=14)
+    # Extract noise level from start_from for title (e.g., "reactant_noise2A" -> "noise 2Å")
+    noise_info = ""
+    if "_noise" in start_from:
+        noise_str = start_from.split("_noise")[1]
+        noise_info = f" (noise {noise_str})"
 
-    # Panel 1: Energy
-    axes[0].plot(timesteps, _nanify(trajectory["energy"]), marker=".", lw=1.2)
-    axes[0].set_ylabel("Energy (eV)")
-    axes[0].set_title("Energy")
+    fig, axes = plt.subplots(3, 2, figsize=(12, 10))
+    fig.suptitle(f"Sample {sample_index}: {formula}{noise_info}", fontsize=14)
 
-    # Panel 2: Force Magnitude
-    axes[1].plot(timesteps, _nanify(trajectory["force_mean"]), marker=".", color="tab:orange", lw=1.2)
-    axes[1].set_ylabel("Mean |F| (eV/Å)")
-    axes[1].set_title("Force Magnitude")
+    # Panel 1 (0,0): Energy
+    ax = axes[0, 0]
+    ax.plot(timesteps, _nanify(trajectory["energy"]), marker=".", lw=1.2, markersize=3)
+    ax.set_ylabel("Energy (eV)")
+    ax.set_title("Energy")
+    ax.set_xlabel("Step")
 
-    # Panel 3: Eigenvalue Product
-    eig_ax = axes[2]
+    # Panel 2 (0,1): Force Magnitude
+    ax = axes[0, 1]
+    ax.plot(timesteps, _nanify(trajectory["force_mean"]), marker=".", color="tab:orange", lw=1.2, markersize=3)
+    ax.set_ylabel("Mean |F| (eV/Å)")
+    ax.set_title("Force Magnitude")
+    ax.set_xlabel("Step")
+
+    # Panel 3 (1,0): Eigenvalue Product
+    ax = axes[1, 0]
     eig_product = _nanify(trajectory["eig_product"])
-    eig_ax.plot(timesteps, eig_product, marker=".", color="tab:purple", lw=1.2, label="λ₀ * λ₁")
-    eig_ax.axhline(0, color='grey', linestyle='--', linewidth=1, zorder=1)
+    ax.plot(timesteps, eig_product, marker=".", color="tab:purple", lw=1.2, markersize=3, label="λ₀ * λ₁")
+    ax.axhline(0, color='grey', linestyle='--', linewidth=1, zorder=1)
     if len(eig_product) > 0 and not np.isnan(eig_product[0]):
-        eig_ax.text(0.02, 0.95, f"Start: {eig_product[0]:.4f}",
-                    transform=eig_ax.transAxes, ha='left', va='top',
-                    color='tab:purple', fontsize=9)
+        ax.text(0.02, 0.95, f"Start: {eig_product[0]:.4f}",
+                transform=ax.transAxes, ha='left', va='top', color='tab:purple', fontsize=9)
     if len(eig_product) > 0 and not np.isnan(eig_product[-1]):
-        eig_ax.text(0.98, 0.95, f"End: {eig_product[-1]:.4f}",
-                    transform=eig_ax.transAxes, ha='right', va='top',
-                    color='tab:purple', fontsize=9)
-    # Mark steps_to_ts if available
+        ax.text(0.98, 0.95, f"End: {eig_product[-1]:.4f}",
+                transform=ax.transAxes, ha='right', va='top', color='tab:purple', fontsize=9)
     if steps_to_ts is not None:
-        eig_ax.axvline(steps_to_ts, color='green', linestyle='--', linewidth=2, alpha=0.7, label=f'TS @ step {steps_to_ts}')
-    eig_ax.set_ylabel("Eigenvalue Product")
-    eig_ax.set_title("Product of Two Smallest Hessian Eigenvalues")
-    eig_ax.legend(loc='best')
+        ax.axvline(steps_to_ts, color='green', linestyle='--', linewidth=2, alpha=0.7, label=f'TS @ {steps_to_ts}')
+    ax.set_ylabel("Eigenvalue Product")
+    ax.set_title("Eigenvalue Product (λ₀ * λ₁)")
+    ax.set_xlabel("Step")
+    ax.legend(loc='best', fontsize=8)
 
-    # Panel 4: GAD Vector Magnitude
-    axes[3].plot(timesteps, _nanify(trajectory["gad_mean"]), marker=".", color="tab:green", lw=1.2)
-    axes[3].set_ylabel("Mean |GAD| (Å)")
-    axes[3].set_title("GAD Vector Magnitude")
+    # Panel 4 (1,1): GAD Vector Magnitude
+    ax = axes[1, 1]
+    ax.plot(timesteps, _nanify(trajectory["gad_mean"]), marker=".", color="tab:green", lw=1.2, markersize=3)
+    ax.set_ylabel("Mean |GAD| (Å)")
+    ax.set_title("GAD Vector Magnitude")
+    ax.set_xlabel("Step")
 
-    # Panel 5: Displacement from Last Step
+    # Panel 5 (2,0): Displacement from Last Step
+    ax = axes[2, 0]
     disp_last = _nanify(trajectory.get("disp_from_last", []))
-    axes[4].plot(timesteps, disp_last, marker=".", color="tab:red", lw=1.2)
-    axes[4].set_ylabel("Mean Disp (Å)")
-    axes[4].set_title("Displacement from Last Step")
-    if len(disp_last) > 0:
-        valid_disp = disp_last[~np.isnan(disp_last)]
+    ax.plot(timesteps, disp_last, marker=".", color="tab:red", lw=1.2, markersize=3)
+    ax.set_ylabel("Mean Disp (Å)")
+    ax.set_title("Displacement from Last Step")
+    ax.set_xlabel("Step")
+    if len(disp_last) > 1:
+        valid_disp = disp_last[1:]  # Skip step 0
+        valid_disp = valid_disp[~np.isnan(valid_disp)]
         if len(valid_disp) > 0:
-            axes[4].text(0.98, 0.95, f"Avg: {np.mean(valid_disp[1:]):.4f} Å" if len(valid_disp) > 1 else "",
-                        transform=axes[4].transAxes, ha='right', va='top', fontsize=9)
+            ax.text(0.98, 0.95, f"Avg: {np.mean(valid_disp):.4f} Å",
+                    transform=ax.transAxes, ha='right', va='top', fontsize=9)
 
-    # Panel 6: Displacement from Start
+    # Panel 6 (2,1): Displacement from Start
+    ax = axes[2, 1]
     disp_start = _nanify(trajectory.get("disp_from_start", []))
-    axes[5].plot(timesteps, disp_start, marker=".", color="tab:blue", lw=1.2)
-    axes[5].set_ylabel("Mean Disp (Å)")
-    axes[5].set_xlabel("Step")
-    axes[5].set_title("Displacement from Start")
+    ax.plot(timesteps, disp_start, marker=".", color="tab:blue", lw=1.2, markersize=3)
+    ax.set_ylabel("Mean Disp (Å)")
+    ax.set_title("Displacement from Start")
+    ax.set_xlabel("Step")
     if len(disp_start) > 0 and not np.isnan(disp_start[-1]):
-        axes[5].text(0.98, 0.95, f"Final: {disp_start[-1]:.4f} Å",
-                    transform=axes[5].transAxes, ha='right', va='top', fontsize=9)
-
-    # Add summary text on last panel
-    axes[5].text(
-        0.02, 0.05,
-        f"neg eig: {initial_neg_num} → {final_neg_num}" + (f"\nsteps_to_ts: {steps_to_ts}" if steps_to_ts is not None else ""),
-        transform=axes[5].transAxes,
-        ha="left",
-        va="bottom",
-        fontsize=8,
-        bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.7),
-    )
+        ax.text(0.98, 0.95, f"Final: {disp_start[-1]:.4f} Å",
+                transform=ax.transAxes, ha='right', va='top', fontsize=9)
+    # Add summary text
+    ax.text(0.02, 0.05,
+            f"neg eig: {initial_neg_num} → {final_neg_num}" + (f", steps_to_ts: {steps_to_ts}" if steps_to_ts is not None else ""),
+            transform=ax.transAxes, ha="left", va="bottom", fontsize=8,
+            bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.7))
 
     fig.tight_layout(rect=[0, 0, 1, 0.96])
-    filename = f"traj_{sample_index:03d}_{_sanitize_formula(formula)}_from_{start_from}_{initial_neg_num}to{final_neg_num}.png"
+    filename = f"traj_{sample_index:03d}_{_sanitize_formula(formula)}_{start_from}_{initial_neg_num}to{final_neg_num}.png"
     return fig, filename
 
 
@@ -351,6 +399,14 @@ if __name__ == "__main__":
     parser.add_argument("--kick-magnitude", type=float, default=0.1,
                         help="Magnitude of kick displacement in Å (default: 0.1).")
 
+    # Plateau detection arguments
+    parser.add_argument("--plateau-threshold", type=float, default=0.005,
+                        help="Displacement threshold (Å) below which plateau is detected (default: 0.005).")
+    parser.add_argument("--plateau-window", type=int, default=20,
+                        help="Consecutive steps below threshold to trigger descent mode (default: 20).")
+    parser.add_argument("--descent-steps", type=int, default=10,
+                        help="Number of steepest descent steps when plateau detected (default: 10).")
+
     # W&B arguments
     parser.add_argument("--wandb", action="store_true",
                         help="Enable Weights & Biases logging")
@@ -377,6 +433,9 @@ if __name__ == "__main__":
         "enable_kick": args.enable_kick,
         "kick_force_threshold": args.kick_force_threshold if args.enable_kick else None,
         "kick_magnitude": args.kick_magnitude if args.enable_kick else None,
+        "plateau_threshold": args.plateau_threshold,
+        "plateau_window": args.plateau_window,
+        "descent_steps": args.descent_steps,
         "max_samples": args.max_samples,
     }
 
@@ -397,6 +456,7 @@ if __name__ == "__main__":
     print(f"Output directory: {logger.run_dir}")
     print(f"Mode: {'Search until TS found (eig_prod < 0)' if args.stop_at_ts else f'Fixed trajectory ({args.n_steps} steps)'}")
     print(f"Processing up to {args.max_samples} samples (dt={args.dt})")
+    print(f"Plateau detection: threshold={args.plateau_threshold} Å, window={args.plateau_window} steps, descent={args.descent_steps} steps")
     print(f"Kick enabled: {args.enable_kick}")
     if args.enable_kick:
         print(f"  Force threshold: {args.kick_force_threshold} eV/Å, Kick magnitude: {args.kick_magnitude} Å")
@@ -406,7 +466,7 @@ if __name__ == "__main__":
         print(f"\n--- Processing Sample {i} (Formula: {batch.formula[0]}) ---")
         try:
             # Use parse_starting_geometry to handle both standard and noisy starting points
-            initial_coords = parse_starting_geometry(args.start_from, batch, noise_seed=42)
+            initial_coords = parse_starting_geometry(args.start_from, batch, noise_seed=42, sample_index=i)
             batch.pos = initial_coords
             batch.natoms = torch.tensor([batch.pos.shape[0]], dtype=torch.long)
             batch = batch.to(device)
@@ -419,7 +479,10 @@ if __name__ == "__main__":
                 stop_at_ts=args.stop_at_ts,
                 kick_enabled=args.enable_kick,
                 kick_force_threshold=args.kick_force_threshold,
-                kick_magnitude=args.kick_magnitude
+                kick_magnitude=args.kick_magnitude,
+                plateau_threshold=args.plateau_threshold,
+                plateau_window=args.plateau_window,
+                descent_steps=args.descent_steps
             )
 
             # Extract final results from trajectory
@@ -459,6 +522,7 @@ if __name__ == "__main__":
                     "rms_force_end": out['rms_force_end'],
                     "max_atom_force_end": out['max_atom_force_end'],
                     "num_kicks": out['num_kicks'],
+                    "num_descent_interventions": out['num_descent_interventions'],
                     "mean_displacement": out['mean_displacement'],
                     "max_displacement": out['max_displacement'],
                 }
@@ -493,7 +557,9 @@ if __name__ == "__main__":
             print(f"  Neg Eigs: {result.initial_neg_eigvals} -> {result.final_neg_eigvals}")
             print(f"  RMS Force: {out['rms_force_end']:.3e} eV/Å")
             print(f"  Final Disp from Start: {traj['disp_from_start'][-1]:.4f} Å")
-            if args.enable_kick:
+            if out['num_descent_interventions'] > 0:
+                print(f"  Descent interventions: {out['num_descent_interventions']}")
+            if args.enable_kick and out['num_kicks'] > 0:
                 print(f"  Kicks applied: {out['num_kicks']}")
 
         except Exception as e:

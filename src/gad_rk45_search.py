@@ -668,7 +668,7 @@ if __name__ == "__main__":
         print(f"\n--- Processing Sample {i} (Formula: {batch.formula[0]}) ---")
         try:
             # Use parse_starting_geometry to handle both standard and noisy starting points
-            initial_coords = parse_starting_geometry(args.start_from, batch, noise_seed=42)
+            initial_coords = parse_starting_geometry(args.start_from, batch, noise_seed=42, sample_index=i)
 
             dynamics_fn = GADDynamics(
                 calculator, batch.z.numpy(),
