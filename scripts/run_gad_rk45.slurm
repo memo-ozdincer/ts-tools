@@ -34,7 +34,7 @@ echo ">>> Running GAD-RK45 Search script..."
 # This version uses the standard GAD dynamics with the RK45 solver.
 # Now includes multi-stage early stopping for robust TS detection.
 python -m src.gad_rk45_search \
-    --max-samples 10 \
+    --max-samples 30 \
     --start-from midpoint_rt \
     --stop-at-ts \
     --t-end 2.0 \
