@@ -42,6 +42,7 @@ echo ">>> Running GAD-Euler Search with noisy starting geometries..."
 python -m src.gad_gad_euler_rmsd \
     --max-samples 30 \
     --start-from reactant_noise2A \
+    --enable-minimization-fallback \
     --stop-at-ts \
     --n-steps 500 \
     --dt 0.01 \
