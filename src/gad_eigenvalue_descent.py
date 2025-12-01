@@ -9,7 +9,8 @@ import torch
 import numpy as np
 from torch_geometric.data import Data as TGData, Batch as TGBatch
 
-from .common_utils import setup_experiment, add_common_args, parse_starting_geometry
+from .common_utils import setup_experiment, add_common_args, parse_starting_geometry, extract_vibrational_eigenvalues
+from .saddle_detection import classify_saddle_point, compute_adaptive_step_scale
 from hip.equiformer_torch_calculator import EquiformerTorchCalculator
 from hip.frequency_analysis import analyze_frequencies_torch
 from .differentiable_projection import differentiable_massweigh_and_eckartprojection_torch as massweigh_and_eckartprojection_torch
@@ -268,19 +269,9 @@ def evaluate_step(
             _, _, out = model.forward(batch, otf_graph=True)
             hess_raw = out["hessian"].reshape(coords.numel(), coords.numel())
             hess_proj = massweigh_and_eckartprojection_torch(hess_raw, coords, atomsymbols)
-            eigvals, _ = torch.linalg.eigh(hess_proj)
 
-            # Remove rigid-body modes
-            coords_cent = coords.detach().reshape(-1, 3).to(torch.float64)
-            coords_cent = coords_cent - coords_cent.mean(dim=0, keepdim=True)
-            geom_rank = torch.linalg.matrix_rank(coords_cent.cpu(), tol=1e-8).item()
-            expected_rigid = 5 if geom_rank <= 2 else 6
-            total_modes = eigvals.shape[0]
-            expected_rigid = min(expected_rigid, max(0, total_modes - 2))
-            abs_sorted_idx = torch.argsort(torch.abs(eigvals))
-            keep_idx = abs_sorted_idx[expected_rigid:]
-            keep_idx, _ = torch.sort(keep_idx)
-            vibrational_eigvals = eigvals[keep_idx]
+            # Extract vibrational eigenvalues (centralized function)
+            vibrational_eigvals = extract_vibrational_eigenvalues(hess_proj, coords)
 
             if vibrational_eigvals.numel() < 2:
                 return float('inf'), float('nan'), float('nan'), float('inf'), -1
@@ -394,6 +385,10 @@ def run_eigenvalue_descent(
     initial_target_eig1 = target_eig1
 
     for step in range(n_steps):
+        # Initialize default values for saddle detection and adaptive scaling
+        saddle_info = {'saddle_order': 0, 'classification': 'unconverged'}
+        step_scale = 1.0
+
         # Adaptive target relaxation: linearly interpolate targets over final steps
         if adaptive_targets and loss_type == "targeted_magnitude":
             relax_start_step = n_steps - adaptive_relax_steps
@@ -414,24 +409,12 @@ def run_eigenvalue_descent(
                 _, _, out = model.forward(batch, otf_graph=True)
                 hess_raw = out["hessian"].reshape(coords.numel(), coords.numel())
                 hess_proj = massweigh_and_eckartprojection_torch(hess_raw, coords, atomsymbols)
-                eigvals, _ = torch.linalg.eigh(hess_proj)
 
-                # Remove rigid-body modes (translations / rotations) before building losses.
-                with torch.no_grad():
-                    coords_cent = coords.detach().reshape(-1, 3).to(torch.float64)
-                    coords_cent = coords_cent - coords_cent.mean(dim=0, keepdim=True)
-                    # Linear molecules have 5 zero modes, non-linear have 6.
-                    geom_rank = torch.linalg.matrix_rank(coords_cent.cpu(), tol=1e-8).item()
-                    expected_rigid = 5 if geom_rank <= 2 else 6
-                total_modes = eigvals.shape[0]
-                expected_rigid = min(expected_rigid, max(0, total_modes - 2))
-                abs_sorted_idx = torch.argsort(torch.abs(eigvals))
-                keep_idx = abs_sorted_idx[expected_rigid:]
-                keep_idx, _ = torch.sort(keep_idx)
-                vibrational_eigvals = eigvals[keep_idx]
+                # Extract vibrational eigenvalues (centralized function)
+                vibrational_eigvals = extract_vibrational_eigenvalues(hess_proj, coords)
                 if vibrational_eigvals.numel() < 2:
                     raise RuntimeError(
-                        f"Insufficient vibrational eigenvalues after removing {expected_rigid} rigid modes."
+                        f"Insufficient vibrational eigenvalues after removing rigid modes."
                     )
 
                 eig0 = vibrational_eigvals[0]
@@ -499,6 +482,24 @@ def run_eigenvalue_descent(
 
                 grad = torch.autograd.grad(loss, coords)[0]
 
+                # Classify geometry and compute adaptive step scale
+                force_norm = grad.norm().item()
+                saddle_info = classify_saddle_point(vibrational_eigvals, force_norm)
+
+                if args.adaptive_step_sizing:
+                    step_scale = compute_adaptive_step_scale(
+                        saddle_info,
+                        base_scale=1.0,
+                        higher_order_mult=args.higher_order_multiplier,
+                        ts_mult=args.ts_multiplier
+                    )
+                    if step_scale != 1.0:
+                        print(f"  [ADAPTIVE] Order={saddle_info['saddle_order']}, "
+                              f"classification={saddle_info['classification']}, "
+                              f"scale={step_scale:.1f}×")
+                else:
+                    step_scale = 1.0
+
         except (AssertionError, RuntimeError) as e:
             # Handle case where atoms drift too far apart (empty edge graph)
             if "edge_distance_vec is empty" in str(e) or "edge_index" in str(e):
@@ -556,8 +557,9 @@ def run_eigenvalue_descent(
             # Line search: try multiple step sizes if enabled
             if use_line_search:
                 # Test multiple step sizes: [0.25×, 0.5×, 1×, 2×, 4×] of base update
-                # This allows both smaller steps (for fine-tuning) and larger steps (for noisy starts)
-                step_multipliers = [0.25, 0.5, 1.0, 2.0, 4.0]
+                # Apply adaptive scaling based on saddle order if enabled
+                base_multipliers = [0.25, 0.5, 1.0, 2.0, 4.0]
+                step_multipliers = [m * step_scale for m in base_multipliers]
                 best_loss = loss.item()
                 best_multiplier = 1.0
                 best_coords = coords.clone()
@@ -645,6 +647,9 @@ def run_eigenvalue_descent(
         history["max_atom_disp"].append(max_atom_disp_value)
         history["energy"].append(energy_value)
         history["force_mean"].append(force_mean_value)
+        history["saddle_order"].append(saddle_info['saddle_order'])
+        history["step_scale"].append(step_scale)
+        history["classification"].append(saddle_info['classification'])
         history["force_max"].append(force_max_value)
         history["step"].append(step)
 
@@ -743,6 +748,15 @@ if __name__ == "__main__":
                         help="Starting max displacement per atom in Å (default: 2.0)")
     parser.add_argument("--final-max-displacement", type=float, default=0.1,
                         help="Final max displacement per atom in Å (default: 0.1)")
+
+    # Adaptive step sizing based on saddle order
+    parser.add_argument("--adaptive-step-sizing", action="store_true",
+                        help="Enable adaptive step sizing based on saddle order (number of negative eigenvalues)")
+    parser.add_argument("--higher-order-multiplier", type=float, default=5.0,
+                        help="Step size multiplier for higher-order saddles (default: 5.0). "
+                             "Order-2 saddles use 5×, order-3 use 10×, etc.")
+    parser.add_argument("--ts-multiplier", type=float, default=0.5,
+                        help="Step size multiplier near TS (order-1) for refinement (default: 0.5)")
 
     # W&B arguments
     parser.add_argument("--wandb", action="store_true",

@@ -54,15 +54,15 @@ echo ">>> Running Eigenvalue Descent script..."
 #     --start-from reactant \
 #     --loss-type midpoint_squared
 #
-python -m src.gad_eigenvalue_descent \
-    --max-samples 30 \
-    --n-steps-opt 150 \
-    --lr 0.01 \
-    --start-from midpoint_rt \
-    --loss-type eig_product \
-    --early-stop-eig-product 5e-4 \
-    --wandb \
-    --wandb-project "gad-ts-search"
+# python -m src.gad_eigenvalue_descent \
+#     --max-samples 30 \
+#     --n-steps-opt 150 \
+#     --lr 0.01 \
+#     --start-from midpoint_rt \
+#     --loss-type eig_product \
+#     --early-stop-eig-product 5e-4 \
+#     --wandb \
+#     --wandb-project "gad-ts-search"
 #
 #
 # python -m src.gad_eigenvalue_descent \
@@ -89,23 +89,29 @@ python -m src.gad_eigenvalue_descent \
 # --- Adaptive Step Size for Noisy Starting Geometries ---
 # The following parameters help with noisy starting geometries (noise levels: 0.5, 1, 2 Å):
 #
+# --adaptive-step-sizing: Enable saddle-order-aware step sizing (RECOMMENDED for noisy starts)
+# --higher-order-multiplier: Scale factor for higher-order saddles (default: 5.0)
+# --ts-multiplier: Scale factor near TS for refinement (default: 0.5)
 # --use-line-search: Tests multiple step sizes [0.25×, 0.5×, 1×, 2×, 4×] and chooses the best
 # --adaptive-max-displacement: Gradually reduces max displacement from initial to final
 # --initial-max-displacement 2.0: Start with large steps (2.0 Å) for noisy geometries
 # --final-max-displacement 0.1: End with small steps (0.1 Å) for fine-tuning
 #
 # Example with different noise levels:
-# python -m src.gad_eigenvalue_descent \
-#     --max-samples 300 \
-#     --n-steps-opt 200 \
-#     --lr 0.01 \
-#     --start-from reactant_noise2A \
-#     --loss-type eig_product \
-#     --use-line-search \
-#     --adaptive-max-displacement \
-#     --initial-max-displacement 3.0 \
-#     --final-max-displacement 0.1 \
-#     --wandb \
-#     --wandb-project "gad-ts-search"
+python -m src.gad_eigenvalue_descent \
+    --max-samples 30 \
+    --n-steps-opt 150 \
+    --lr 0.01 \
+    --start-from reactant_noise2A \
+    --loss-type eig_product \
+    --adaptive-step-sizing \
+    --higher-order-multiplier 10.0 \
+    --ts-multiplier 0.5 \
+    --use-line-search \
+    --adaptive-max-displacement \
+    --initial-max-displacement 3.0 \
+    --final-max-displacement 0.1 \
+    --wandb \
+    --wandb-project "gad-ts-search"
 
 echo "✅ Job completed."
