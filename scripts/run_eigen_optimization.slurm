@@ -54,15 +54,15 @@ echo ">>> Running Eigenvalue Descent script..."
 #     --start-from reactant \
 #     --loss-type midpoint_squared
 #
-python -m src.gad_eigenvalue_descent \
-    --max-samples 30 \
-    --n-steps-opt 150 \
-    --lr 0.01 \
-    --start-from midpoint_rt \
-    --loss-type eig_product \
-    --early-stop-eig-product 5e-4 \
-    --wandb \
-    --wandb-project "gad-ts-search"
+# python -m src.gad_eigenvalue_descent \
+#     --max-samples 30 \
+#     --n-steps-opt 150 \
+#     --lr 0.01 \
+#     --start-from midpoint_rt \
+#     --loss-type eig_product \
+#     --early-stop-eig-product 5e-4 \
+#     --wandb \
+#     --wandb-project "gad-ts-search"
 #
 # python -m src.gad_eigenvalue_descent \
 #     --max-samples 1000 \
@@ -94,17 +94,17 @@ python -m src.gad_eigenvalue_descent \
 # --final-max-displacement 0.1: End with small steps (0.1 Å) for fine-tuning
 #
 # Example with different noise levels:
-# python -m src.gad_eigenvalue_descent \
-#     --max-samples 300 \
-#     --n-steps-opt 200 \
-#     --lr 0.01 \
-#     --start-from reactant_noise2A \
-#     --loss-type eig_product \
-#     --use-line-search \
-#     --adaptive-max-displacement \
-#     --initial-max-displacement 3.0 \
-#     --final-max-displacement 0.1 \
-#     --wandb \
-#     --wandb-project "gad-ts-search"
+python -m src.gad_eigenvalue_descent \
+    --max-samples 300 \
+    --n-steps-opt 200 \
+    --lr 0.01 \
+    --start-from reactant_noise2A \
+    --loss-type eig_product \
+    --use-line-search \
+    --adaptive-max-displacement \
+    --initial-max-displacement 3.0 \
+    --final-max-displacement 0.1 \
+    --wandb \
+    --wandb-project "gad-ts-search"
 
 echo "✅ Job completed."
