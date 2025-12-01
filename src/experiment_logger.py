@@ -27,6 +27,141 @@ except ImportError:
     WANDB_AVAILABLE = False
     wandb = None
 
+# ============================================================================
+# Simple W&B Helper Functions (use these instead of class-based logging)
+# ============================================================================
+
+_wandb_run = None  # Module-level reference to active W&B run
+
+
+def init_wandb_run(
+    project: str,
+    name: str,
+    config: Dict[str, Any],
+    entity: Optional[str] = None,
+    tags: Optional[List[str]] = None,
+    run_dir: Optional[str] = None,
+) -> bool:
+    """
+    Initialize a W&B run. Call once at the start of your experiment.
+    
+    Args:
+        project: W&B project name
+        name: Run name
+        config: Configuration dictionary
+        entity: W&B entity/username (optional)
+        tags: List of tags
+        run_dir: Directory for W&B files (optional)
+    
+    Returns:
+        True if W&B was successfully initialized, False otherwise
+    """
+    global _wandb_run
+    
+    if not WANDB_AVAILABLE:
+        print("[W&B] wandb not installed. Install with: pip install wandb")
+        return False
+    
+    try:
+        _wandb_run = wandb.init(
+            project=project,
+            entity=entity,
+            name=name,
+            tags=tags or [],
+            config=config,
+            dir=run_dir,
+        )
+        print(f"[W&B] Initialized run: {_wandb_run.name} ({_wandb_run.url})")
+        return True
+    except Exception as e:
+        print(f"[W&B] Failed to initialize: {e}")
+        _wandb_run = None
+        return False
+
+
+def log_sample(
+    sample_index: int,
+    metrics: Dict[str, Any],
+    fig=None,
+    plot_name: Optional[str] = None,
+) -> None:
+    """
+    Log metrics and optional plot for a single sample. Call once per sample.
+    
+    Args:
+        sample_index: Index of the sample (used as step)
+        metrics: Dictionary of metrics to log
+        fig: Optional matplotlib figure to log as image
+        plot_name: Name for the plot (default: "trajectory")
+    """
+    if _wandb_run is None:
+        return
+    
+    # Prepare log dict
+    log_dict = {"sample_index": sample_index}
+    
+    # Add all metrics
+    for key, value in metrics.items():
+        if value is not None and not isinstance(value, (dict, list)):
+            log_dict[key] = value
+    
+    # Add plot if provided
+    if fig is not None:
+        plot_key = f"plots/{plot_name or 'trajectory'}"
+        log_dict[plot_key] = wandb.Image(fig)
+    
+    # Log everything together for this sample
+    wandb.log(log_dict, step=sample_index)
+
+
+def log_summary(
+    total_samples: int,
+    avg_steps: float,
+    avg_wallclock_time: float,
+    ts_success_rate: float,
+    extra_summary: Optional[Dict[str, Any]] = None,
+) -> None:
+    """
+    Log summary statistics at the end of the experiment.
+    
+    Args:
+        total_samples: Total number of samples processed
+        avg_steps: Average number of steps to convergence
+        avg_wallclock_time: Average wallclock time per sample (seconds)
+        ts_success_rate: Fraction of samples that reached TS signature
+        extra_summary: Additional summary metrics to log
+    """
+    if _wandb_run is None:
+        return
+    
+    # Set summary metrics (these persist after run completion)
+    _wandb_run.summary["total_samples"] = total_samples
+    _wandb_run.summary["avg_steps_to_convergence"] = avg_steps
+    _wandb_run.summary["avg_wallclock_time_seconds"] = avg_wallclock_time
+    _wandb_run.summary["ts_success_rate"] = ts_success_rate
+    
+    if extra_summary:
+        for key, value in extra_summary.items():
+            if value is not None:
+                _wandb_run.summary[key] = value
+    
+    print(f"[W&B] Logged summary: {total_samples} samples, avg steps={avg_steps:.1f}, "
+          f"avg time={avg_wallclock_time:.2f}s, TS rate={ts_success_rate:.1%}")
+
+
+def finish_wandb() -> None:
+    """Finish the W&B run. Call at the end of your experiment."""
+    global _wandb_run
+    if _wandb_run is not None:
+        wandb.finish()
+        print("[W&B] Run finished")
+        _wandb_run = None
+
+
+def is_wandb_active() -> bool:
+    """Check if W&B is currently active."""
+    return _wandb_run is not None
+
 
 @dataclass
 class RunResult:
@@ -76,6 +211,9 @@ class RunResult:
 class ExperimentLogger:
     """
     Manages experiment logging with structured output directories and sampling.
+    
+    Note: For W&B logging, use the simple helper functions instead:
+        init_wandb_run(), log_sample(), log_summary(), finish_wandb()
 
     Directory structure:
         base_dir/
@@ -95,11 +233,6 @@ class ExperimentLogger:
         loss_type_flags: str,
         max_graphs_per_transition: int = 10,
         random_seed: Optional[int] = None,
-        use_wandb: bool = False,
-        wandb_project: Optional[str] = None,
-        wandb_entity: Optional[str] = None,
-        wandb_tags: Optional[List[str]] = None,
-        wandb_config: Optional[Dict[str, Any]] = None,
     ):
         """
         Args:
@@ -108,11 +241,6 @@ class ExperimentLogger:
             loss_type_flags: Loss type and flags (e.g., 'relu-loss', 'targeted-magnitude-stopts')
             max_graphs_per_transition: Maximum number of graphs to save per transition type
             random_seed: Random seed for sampling (for reproducibility)
-            use_wandb: Enable Weights & Biases logging
-            wandb_project: W&B project name (required if use_wandb=True)
-            wandb_entity: W&B entity/username (optional)
-            wandb_tags: List of tags for this run
-            wandb_config: Configuration dictionary to log to W&B
         """
         self.base_dir = Path(base_dir)
         self.script_name = self._sanitize_name(script_name)
@@ -131,33 +259,6 @@ class ExperimentLogger:
         if random_seed is not None:
             random.seed(random_seed)
 
-        # W&B setup
-        self.use_wandb = use_wandb and WANDB_AVAILABLE
-        self.wandb_run = None
-
-        if self.use_wandb:
-            if not WANDB_AVAILABLE:
-                print("[WARNING] W&B requested but not installed. Install with: pip install wandb")
-                self.use_wandb = False
-            elif wandb_project is None:
-                print("[WARNING] W&B requested but no project name provided. Disabling W&B.")
-                self.use_wandb = False
-            else:
-                # Initialize W&B run
-                run_name = f"{script_name}_{loss_type_flags}"
-                tags = wandb_tags or []
-                tags.extend([script_name, loss_type_flags])
-
-                self.wandb_run = wandb.init(
-                    project=wandb_project,
-                    entity=wandb_entity,
-                    name=run_name,
-                    tags=tags,
-                    config=wandb_config or {},
-                    dir=str(self.run_dir),
-                )
-                print(f"[W&B] Initialized run: {self.wandb_run.name} ({self.wandb_run.url})")
-
     @staticmethod
     def _sanitize_name(name: str) -> str:
         """Sanitize directory/file names."""
@@ -168,10 +269,6 @@ class ExperimentLogger:
         self.results.append(result)
         transition_key = result.transition_key
         self.transition_samples[transition_key].append(result.sample_index)
-
-        # Log to W&B
-        if self.use_wandb and self.wandb_run is not None:
-            self._log_result_to_wandb(result)
 
     def should_save_graph(self, result: RunResult) -> bool:
         """
@@ -224,55 +321,7 @@ class ExperimentLogger:
             return None
 
         fig.savefig(save_path, dpi=200)
-
-        # Upload to W&B if enabled
-        # Use commit=False to avoid incrementing the global step counter
-        # This prevents the step axis from resetting when logging plots
-        if self.use_wandb and self.wandb_run is not None:
-            wandb.log({
-                f"plots/{result.transition_key}/{filename}": wandb.Image(fig),
-            }, commit=False)
-
         return str(save_path)
-
-    def _log_result_to_wandb(self, result: RunResult) -> None:
-        """Log a single result to W&B."""
-        if not self.use_wandb or self.wandb_run is None:
-            return
-
-        # Prepare metrics
-        metrics = {
-            "sample_index": result.sample_index,
-            "transition_type": result.transition_key,
-            "initial_neg_eigvals": result.initial_neg_eigvals,
-            "final_neg_eigvals": result.final_neg_eigvals,
-            "steps_taken": result.steps_taken,
-            "reached_ts": int(result.reached_ts),
-        }
-
-        # Add optional metrics
-        if result.steps_to_ts is not None:
-            metrics["steps_to_ts"] = result.steps_to_ts
-        if result.final_eig0 is not None:
-            metrics["final_eig0"] = result.final_eig0
-        if result.final_eig1 is not None:
-            metrics["final_eig1"] = result.final_eig1
-        if result.final_eig_product is not None:
-            metrics["final_eig_product"] = result.final_eig_product
-        if result.final_loss is not None:
-            metrics["final_loss"] = result.final_loss
-        if result.rmsd_to_known_ts is not None:
-            metrics["rmsd_to_known_ts"] = result.rmsd_to_known_ts
-        if result.final_time is not None:
-            metrics["final_time"] = result.final_time
-
-        # Log extra data
-        if result.extra_data:
-            for key, value in result.extra_data.items():
-                if value is not None and not isinstance(value, (dict, list)):
-                    metrics[f"extra/{key}"] = value
-
-        wandb.log(metrics)
 
     def compute_aggregate_stats(self) -> Dict[str, Any]:
         """Compute aggregate statistics across all runs."""
@@ -366,57 +415,7 @@ class ExperimentLogger:
         with open(aggregate_stats_path, "w") as f:
             json.dump(stats, f, indent=2)
 
-        # Log aggregate stats to W&B
-        if self.use_wandb and self.wandb_run is not None:
-            self._log_aggregate_stats_to_wandb(stats)
-
-            # Upload JSON files as artifacts
-            artifact = wandb.Artifact(
-                name=f"{self.script_name}-{self.loss_type_flags}",
-                type="results",
-                description=f"Results for {self.script_name} with {self.loss_type_flags}"
-            )
-            artifact.add_file(str(all_runs_path), name="all_runs.json")
-            artifact.add_file(str(aggregate_stats_path), name="aggregate_stats.json")
-            self.wandb_run.log_artifact(artifact)
-
         return str(all_runs_path), str(aggregate_stats_path)
-
-    def _log_aggregate_stats_to_wandb(self, stats: Dict[str, Any]) -> None:
-        """Log aggregate statistics to W&B summary."""
-        if not self.use_wandb or self.wandb_run is None:
-            return
-
-        # Log overall summary statistics
-        summary_metrics = {
-            "summary/total_runs": stats["total_runs"],
-            "summary/ts_signature_count": stats["ts_signature_count"],
-            "summary/ts_signature_rate": stats["ts_signature_rate"],
-        }
-
-        # Add overall averages
-        for key in ["avg_final_eig0", "avg_final_eig1", "avg_final_eig_product",
-                    "avg_rmsd_to_ts", "avg_steps_taken", "avg_steps_to_ts", "avg_final_time"]:
-            if stats.get(key) is not None:
-                summary_metrics[f"summary/{key}"] = stats[key]
-
-        # Add per-transition stats
-        if "per_transition" in stats:
-            for transition_key, trans_stats in stats["per_transition"].items():
-                prefix = f"transition/{transition_key}"
-                for key, value in trans_stats.items():
-                    if value is not None:
-                        summary_metrics[f"{prefix}/{key}"] = value
-
-        # Log to W&B summary (these persist after run completion)
-        for key, value in summary_metrics.items():
-            self.wandb_run.summary[key] = value
-
-    def finish(self) -> None:
-        """Finish W&B run if active."""
-        if self.use_wandb and self.wandb_run is not None:
-            wandb.finish()
-            print("[W&B] Run finished")
 
     def print_summary(self) -> None:
         """Print a summary of the experiment results."""

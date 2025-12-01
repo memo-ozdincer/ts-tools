@@ -13,7 +13,11 @@ from torch_geometric.data import Batch
 from .common_utils import setup_experiment, add_common_args, parse_starting_geometry, extract_vibrational_eigenvalues
 from hip.frequency_analysis import analyze_frequencies_torch
 from hip.equiformer_torch_calculator import EquiformerTorchCalculator
-from .experiment_logger import ExperimentLogger, RunResult, build_loss_type_flags
+from .experiment_logger import (
+    ExperimentLogger, RunResult, build_loss_type_flags,
+    init_wandb_run, log_sample, log_summary, finish_wandb,
+)
+import time
 from .differentiable_projection import differentiable_massweigh_and_eckartprojection_torch as massweigh_and_eckartprojection_torch
 from torch_geometric.data import Data as TGData
 from nets.prediction_utils import Z_TO_ATOM_SYMBOL
@@ -727,37 +731,47 @@ if __name__ == "__main__":
     # Set up experiment logger
     loss_type_flags = build_loss_type_flags(args)
 
-    # Prepare W&B config
-    wandb_config = {
-        "script": "gad_gad_euler_rmsd",
-        "start_from": args.start_from,
-        "n_steps": args.n_steps,
-        "dt": args.dt,
-        "stop_at_ts": args.stop_at_ts,
-        "enable_kick": args.enable_kick,
-        "kick_force_threshold": args.kick_force_threshold if args.enable_kick else None,
-        "kick_magnitude": args.kick_magnitude if args.enable_kick else None,
-        "enable_minimization_fallback": args.enable_minimization_fallback,
-        "stall_window": args.stall_window if args.enable_minimization_fallback else None,
-        "stall_disp_threshold": args.stall_disp_threshold if args.enable_minimization_fallback else None,
-        "stall_eig_change_threshold": args.stall_eig_change_threshold if args.enable_minimization_fallback else None,
-        "eig_descent_lr": args.eig_descent_lr if args.enable_minimization_fallback else None,
-        "eig_descent_max_step": args.eig_descent_max_step if args.enable_minimization_fallback else None,
-        "max_samples": args.max_samples,
-    }
-
+    # Set up experiment logger (file management only)
     logger = ExperimentLogger(
         base_dir=out_dir,
         script_name="gad-euler",
         loss_type_flags=loss_type_flags,
         max_graphs_per_transition=10,
-        random_seed=42,  # For reproducible sampling
-        use_wandb=args.wandb,
-        wandb_project=args.wandb_project if args.wandb else None,
-        wandb_entity=args.wandb_entity,
-        wandb_tags=[args.start_from, "euler"],
-        wandb_config=wandb_config,
+        random_seed=42,
     )
+
+    # Initialize W&B if requested
+    if args.wandb:
+        wandb_config = {
+            "script": "gad_gad_euler_rmsd",
+            "start_from": args.start_from,
+            "n_steps": args.n_steps,
+            "dt": args.dt,
+            "stop_at_ts": args.stop_at_ts,
+            "enable_kick": args.enable_kick,
+            "kick_force_threshold": args.kick_force_threshold if args.enable_kick else None,
+            "kick_magnitude": args.kick_magnitude if args.enable_kick else None,
+            "enable_minimization_fallback": args.enable_minimization_fallback,
+            "stall_window": args.stall_window if args.enable_minimization_fallback else None,
+            "stall_disp_threshold": args.stall_disp_threshold if args.enable_minimization_fallback else None,
+            "stall_eig_change_threshold": args.stall_eig_change_threshold if args.enable_minimization_fallback else None,
+            "eig_descent_lr": args.eig_descent_lr if args.enable_minimization_fallback else None,
+            "eig_descent_max_step": args.eig_descent_max_step if args.enable_minimization_fallback else None,
+            "max_samples": args.max_samples,
+        }
+        init_wandb_run(
+            project=args.wandb_project,
+            name=f"gad-euler_{loss_type_flags}",
+            config=wandb_config,
+            entity=args.wandb_entity,
+            tags=[args.start_from, "euler"],
+            run_dir=str(logger.run_dir),
+        )
+
+    # Track wallclock times for summary
+    wallclock_times = []
+    steps_list = []
+    ts_found_count = 0
 
     print(f"Running GAD-Euler Search. Start: {args.start_from.upper()}, Stop at TS: {args.stop_at_ts}")
     print(f"Output directory: {logger.run_dir}")
@@ -777,6 +791,7 @@ if __name__ == "__main__":
     for i, batch in enumerate(dataloader):
         if i >= args.max_samples: break
         print(f"\n--- Processing Sample {i} (Formula: {batch.formula[0]}) ---")
+        sample_start_time = time.time()
         try:
             # Use parse_starting_geometry to handle both standard and noisy starting points
             initial_coords = parse_starting_geometry(args.start_from, batch, noise_seed=42, sample_index=i)
@@ -845,7 +860,14 @@ if __name__ == "__main__":
                 }
             )
 
-            # Add result to logger
+            # Track wallclock time
+            sample_wallclock = time.time() - sample_start_time
+            wallclock_times.append(sample_wallclock)
+            steps_list.append(result.steps_taken)
+            if steps_to_ts is not None:
+                ts_found_count += 1
+
+            # Add result to logger (file management)
             logger.add_result(result)
 
             # Create and save plot
@@ -860,18 +882,36 @@ if __name__ == "__main__":
                 mode_switch_step=out['mode_switch_step'],
             )
 
-            # Save plot using logger (handles sampling)
+            # Save plot to disk (handles sampling)
             plot_path = logger.save_graph(result, fig, filename)
             if plot_path:
                 result.plot_path = plot_path
                 print(f"  Saved plot to: {plot_path}")
             else:
                 print(f"  Skipped plot (max samples for {result.transition_key} reached)")
+
+            # Log metrics + plot together to W&B (once per sample)
+            metrics = {
+                "formula": batch.formula[0],
+                "transition_type": result.transition_key,
+                "initial_neg_eigvals": result.initial_neg_eigvals,
+                "final_neg_eigvals": result.final_neg_eigvals,
+                "steps_taken": result.steps_taken,
+                "steps_to_ts": result.steps_to_ts,
+                "final_eig_product": result.final_eig_product,
+                "rmsd_to_known_ts": result.rmsd_to_known_ts,
+                "rms_force_end": out['rms_force_end'],
+                "reached_ts": steps_to_ts is not None,
+                "wallclock_time": sample_wallclock,
+                "num_kicks": out['num_kicks'],
+            }
+            # Only log plot if it was saved (within sampling limit)
+            log_sample(i, metrics, fig=fig if plot_path else None, plot_name=f"trajectory_{result.transition_key}")
             plt.close(fig)
 
             print("Result:")
             print(f"  Transition: {result.transition_key}")
-            print(f"  Steps: {result.steps_taken}" + (f", Steps to TS: {steps_to_ts}" if steps_to_ts is not None else ""))
+            print(f"  Steps: {result.steps_taken}, Wallclock: {sample_wallclock:.2f}s" + (f", Steps to TS: {steps_to_ts}" if steps_to_ts is not None else ""))
             print(f"  Neg Eigs: {result.initial_neg_eigvals} -> {result.final_neg_eigvals}")
             print(f"  RMS Force: {out['rms_force_end']:.3e} eV/Å")
             print(f"  Final Disp from Start: {traj['disp_from_start'][-1]:.4f} Å")
@@ -894,5 +934,21 @@ if __name__ == "__main__":
     # Print summary
     logger.print_summary()
 
-    # Finish W&B run
-    logger.finish()
+    # Log summary to W&B and finish
+    if wallclock_times:
+        total_samples = len(wallclock_times)
+        avg_steps = np.mean(steps_list) if steps_list else 0
+        avg_wallclock = np.mean(wallclock_times)
+        ts_rate = ts_found_count / total_samples if total_samples > 0 else 0
+        log_summary(
+            total_samples=total_samples,
+            avg_steps=avg_steps,
+            avg_wallclock_time=avg_wallclock,
+            ts_success_rate=ts_rate,
+            extra_summary={
+                "std_steps": np.std(steps_list) if steps_list else 0,
+                "std_wallclock_time": np.std(wallclock_times),
+                "total_wallclock_time": sum(wallclock_times),
+            }
+        )
+    finish_wandb()

@@ -15,7 +15,11 @@ from hip.equiformer_torch_calculator import EquiformerTorchCalculator
 from hip.frequency_analysis import analyze_frequencies_torch
 from .differentiable_projection import differentiable_massweigh_and_eckartprojection_torch as massweigh_and_eckartprojection_torch
 from nets.prediction_utils import Z_TO_ATOM_SYMBOL
-from .experiment_logger import ExperimentLogger, RunResult, build_loss_type_flags
+from .experiment_logger import (
+    ExperimentLogger, RunResult, build_loss_type_flags,
+    init_wandb_run, log_sample, log_summary, finish_wandb,
+)
+import time
 
 import matplotlib
 matplotlib.use("Agg")
@@ -773,31 +777,41 @@ if __name__ == "__main__":
     # Set up experiment logger
     loss_type_flags = build_loss_type_flags(args)
 
-    # Prepare W&B config
-    wandb_config = {
-        "script": "gad_eigenvalue_descent",
-        "loss_type": args.loss_type,
-        "start_from": args.start_from,
-        "n_steps_opt": args.n_steps_opt,
-        "lr": args.lr,
-        "target_eig0": args.target_eig0,
-        "target_eig1": args.target_eig1,
-        "adaptive_targets": args.adaptive_targets,
-        "max_samples": args.max_samples,
-    }
-
+    # Set up experiment logger (file management only)
     logger = ExperimentLogger(
         base_dir=out_dir,
         script_name="gad-eigdescent",
         loss_type_flags=loss_type_flags,
         max_graphs_per_transition=10,
-        random_seed=42,  # For reproducible sampling
-        use_wandb=args.wandb,
-        wandb_project=args.wandb_project if args.wandb else None,
-        wandb_entity=args.wandb_entity,
-        wandb_tags=[args.loss_type, args.start_from],
-        wandb_config=wandb_config,
+        random_seed=42,
     )
+
+    # Initialize W&B if requested
+    if args.wandb:
+        wandb_config = {
+            "script": "gad_eigenvalue_descent",
+            "loss_type": args.loss_type,
+            "start_from": args.start_from,
+            "n_steps_opt": args.n_steps_opt,
+            "lr": args.lr,
+            "target_eig0": args.target_eig0,
+            "target_eig1": args.target_eig1,
+            "adaptive_targets": args.adaptive_targets,
+            "max_samples": args.max_samples,
+        }
+        init_wandb_run(
+            project=args.wandb_project,
+            name=f"gad-eigdescent_{loss_type_flags}",
+            config=wandb_config,
+            entity=args.wandb_entity,
+            tags=[args.loss_type, args.start_from],
+            run_dir=str(logger.run_dir),
+        )
+
+    # Track wallclock times for summary
+    wallclock_times = []
+    steps_list = []
+    ts_found_count = 0
 
     print(f"Running Eigenvalue Descent to Find Transition States")
     print(f"Output directory: {logger.run_dir}")
@@ -836,6 +850,7 @@ if __name__ == "__main__":
     for i, batch in enumerate(dataloader):
         if i >= args.max_samples: break
         print(f"\n--- Processing Sample {i} (Formula: {batch.formula[0]}) ---")
+        sample_start_time = time.time()
         try:
             # Use parse_starting_geometry to handle both standard and noisy starting points
             initial_coords = parse_starting_geometry(args.start_from, batch, noise_seed=42, sample_index=i)
@@ -922,7 +937,14 @@ if __name__ == "__main__":
                 extra_data=extra_data,
             )
 
-            # Add result to logger
+            # Track wallclock time
+            sample_wallclock = time.time() - sample_start_time
+            wallclock_times.append(sample_wallclock)
+            steps_list.append(result.steps_taken)
+            if result.final_neg_vibrational == 1:
+                ts_found_count += 1
+
+            # Add result to logger (file management)
             logger.add_result(result)
 
             # Create plot
@@ -937,7 +959,8 @@ if __name__ == "__main__":
                 final_neg_eigvals=result.final_neg_eigvals,
             )
 
-            # Save plot using logger (handles sampling)
+            # Save plot to disk (handles sampling)
+            fig = None
             if fig_and_filename[0] is not None:
                 fig, filename = fig_and_filename
                 plot_path = logger.save_graph(result, fig, filename)
@@ -946,11 +969,32 @@ if __name__ == "__main__":
                     print(f"  Saved plot to: {plot_path}")
                 else:
                     print(f"  Skipped plot (max samples for {result.transition_key} reached)")
+                    fig = None  # Don't log to W&B if not saved
+
+            # Log metrics + plot together to W&B (once per sample)
+            metrics = {
+                "formula": batch.formula[0],
+                "transition_type": result.transition_key,
+                "initial_neg_eigvals": result.initial_neg_eigvals,
+                "final_neg_eigvals": result.final_neg_eigvals,
+                "final_neg_vibrational": result.final_neg_vibrational,
+                "steps_taken": result.steps_taken,
+                "steps_to_ts": result.steps_to_ts,
+                "final_loss": result.final_loss,
+                "final_eig0": result.final_eig0,
+                "final_eig1": result.final_eig1,
+                "final_eig_product": result.final_eig_product,
+                "rmsd_to_known_ts": result.rmsd_to_known_ts,
+                "reached_ts": result.final_neg_vibrational == 1,
+                "wallclock_time": sample_wallclock,
+            }
+            log_sample(i, metrics, fig=fig, plot_name=f"eigdescent_{result.transition_key}")
+            if fig is not None:
                 plt.close(fig)
 
             print(f"Result for Sample {i}:")
             print(f"  Transition: {result.transition_key}")
-            print(f"  Steps taken: {result.steps_taken}")
+            print(f"  Steps taken: {result.steps_taken}, Wallclock: {sample_wallclock:.2f}s")
             print(f"  Final Loss: {result.final_loss:.6e}")
             print(f"  Final λ₀: {result.final_eig0:.6f} eV/Å², λ₁: {result.final_eig1:.6f} eV/Å²")
             print(f"  Final λ₀*λ₁: {result.final_eig_product:.6e}")
@@ -972,5 +1016,21 @@ if __name__ == "__main__":
     # Print summary
     logger.print_summary()
 
-    # Finish W&B run
-    logger.finish()
+    # Log summary to W&B and finish
+    if wallclock_times:
+        total_samples = len(wallclock_times)
+        avg_steps = np.mean(steps_list) if steps_list else 0
+        avg_wallclock = np.mean(wallclock_times)
+        ts_rate = ts_found_count / total_samples if total_samples > 0 else 0
+        log_summary(
+            total_samples=total_samples,
+            avg_steps=avg_steps,
+            avg_wallclock_time=avg_wallclock,
+            ts_success_rate=ts_rate,
+            extra_summary={
+                "std_steps": np.std(steps_list) if steps_list else 0,
+                "std_wallclock_time": np.std(wallclock_times),
+                "total_wallclock_time": sum(wallclock_times),
+            }
+        )
+    finish_wandb()
