@@ -30,26 +30,55 @@ export WANDB_API_KEY="ed8d3e45635321a86859f77337bdb4dfb5ceb113"
 
 echo ">>> Running GAD-Euler Search with noisy starting geometries..."
 
-# === STANDARD GAD-EULER WITH NOISY GEOMETRIES ===
-# This uses regular GAD dynamics.
-# The key change is starting from noisy geometries to test robustness.
-#
-# Features:
-#   - Displacement tracking (per-step and cumulative)
-#   - steps_to_ts logged to WandB
+# === EIGPRODUCT MINIMIZATION EXPERIMENTS ===
+# Testing two approaches to escape weird geometries when GAD stalls:
+#   1. Larger step sizes (gradient descent with bigger max_step)
+#   2. L-BFGS-B optimization (more robust, can take larger steps)
 
-# --- Noise Level: 2Å (most challenging) ---
+# --- EXPERIMENT 1: Larger step size (gradient descent) ---
+# Increases max_step from 0.1 to 0.5 Å to escape weird geometries
+echo ">>> Running Experiment 1: Larger step size (gradient descent)"
 python -m src.gad_gad_euler_rmsd \
     --max-samples 30 \
     --start-from reactant_noise2A \
     --enable-minimization-fallback \
     --eig-descent-lr 0.01 \
-    --eig-descent-max-step 0.1 \
+    --eig-descent-max-step 0.5 \
     --stop-at-ts \
     --n-steps 500 \
     --dt 0.005 \
     --wandb \
     --wandb-project "gad-noise-experiments"
+
+# --- EXPERIMENT 2: L-BFGS-B optimization ---
+# Uses scipy L-BFGS-B for more robust eigproduct minimization
+echo ">>> Running Experiment 2: L-BFGS-B optimization"
+python -m src.gad_gad_euler_rmsd \
+    --max-samples 30 \
+    --start-from reactant_noise2A \
+    --enable-minimization-fallback \
+    --use-bfgs \
+    --bfgs-maxiter 50 \
+    --bfgs-gtol 1e-5 \
+    --bfgs-max-step 0.5 \
+    --stop-at-ts \
+    --n-steps 500 \
+    --dt 0.005 \
+    --wandb \
+    --wandb-project "gad-noise-experiments"
+
+# --- BASELINE: Original settings (for comparison) ---
+# python -m src.gad_gad_euler_rmsd \
+#     --max-samples 30 \
+#     --start-from reactant_noise2A \
+#     --enable-minimization-fallback \
+#     --eig-descent-lr 0.01 \
+#     --eig-descent-max-step 0.1 \
+#     --stop-at-ts \
+#     --n-steps 500 \
+#     --dt 0.005 \
+#     --wandb \
+#     --wandb-project "gad-noise-experiments"
     
 
 # --- Noise Level: 1Å ---

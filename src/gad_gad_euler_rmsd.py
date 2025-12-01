@@ -8,6 +8,7 @@ from collections import defaultdict
 
 import torch
 import numpy as np
+from scipy.optimize import minimize as scipy_minimize
 from torch_geometric.data import Batch
 
 from .common_utils import setup_experiment, add_common_args, parse_starting_geometry, extract_vibrational_eigenvalues
@@ -281,6 +282,159 @@ def eig_product_descent_step(
         }
 
 
+def eig_product_bfgs_minimize(
+    coords: torch.Tensor,
+    atomic_nums: torch.Tensor,
+    model,
+    device: str,
+    maxiter: int = 50,
+    gtol: float = 1e-5,
+    max_step: float = 0.5,
+) -> Dict[str, Any]:
+    """
+    Perform L-BFGS-B optimization to minimize eigenvalue product λ₀ * λ₁.
+    
+    Uses scipy's L-BFGS-B optimizer for robust minimization. This is called
+    when GAD stalls to escape weird geometries by finding regions where
+    the eigenvalue product is negative (TS condition).
+    
+    Args:
+        coords: Current coordinates (will be cloned, original not modified)
+        atomic_nums: Atomic numbers
+        model: The Equiformer model (calculator.potential)
+        device: Device string
+        maxiter: Maximum number of BFGS iterations
+        gtol: Gradient tolerance for convergence
+        max_step: Maximum displacement per atom from starting position (Å)
+        
+    Returns:
+        Dictionary with:
+            - new_coords: Updated coordinates (torch.Tensor)
+            - eig0, eig1: Final eigenvalues
+            - eig_product: Final λ₀ * λ₁
+            - loss: Same as eig_product
+            - nit: Number of iterations taken
+            - success: Whether optimization succeeded
+            - message: Optimization status message
+            - max_atom_disp: Maximum displacement from start
+    """
+    atomsymbols = [Z_TO_ATOM_SYMBOL[z.item()] for z in atomic_nums]
+    start_coords = coords.clone().detach().cpu().numpy().flatten()
+    
+    # Track the best result found during optimization
+    best_result = {
+        "eig0": float('nan'),
+        "eig1": float('nan'),
+        "eig_product": float('inf'),
+    }
+    
+    def objective_and_grad(x_flat):
+        """Compute eigenvalue product and its gradient."""
+        nonlocal best_result
+        
+        coords_opt = torch.tensor(
+            x_flat.reshape(-1, 3), 
+            dtype=torch.float32, 
+            device=device, 
+            requires_grad=True
+        )
+        
+        try:
+            with torch.enable_grad():
+                # Forward pass
+                batch = coord_atoms_to_torch_geometric(coords_opt, atomic_nums, device)
+                _, _, out = model.forward(batch, otf_graph=True)
+                
+                # Get projected Hessian
+                hess_raw = out["hessian"].reshape(coords_opt.numel(), coords_opt.numel())
+                hess_proj = massweigh_and_eckartprojection_torch(hess_raw, coords_opt, atomsymbols)
+                
+                # Extract vibrational eigenvalues
+                vibrational_eigvals = extract_vibrational_eigenvalues(hess_proj, coords_opt)
+                
+                if vibrational_eigvals.numel() < 2:
+                    # Return large loss if eigenvalues unavailable
+                    return 1e10, np.zeros_like(x_flat)
+                
+                eig0 = vibrational_eigvals[0]
+                eig1 = vibrational_eigvals[1]
+                loss = eig0 * eig1
+                
+                # Update best result
+                if loss.item() < best_result["eig_product"]:
+                    best_result["eig0"] = eig0.item()
+                    best_result["eig1"] = eig1.item()
+                    best_result["eig_product"] = loss.item()
+                
+                # Compute gradient
+                grad = torch.autograd.grad(loss, coords_opt)[0]
+                
+            return loss.item(), grad.detach().cpu().numpy().flatten().astype(np.float64)
+            
+        except Exception as e:
+            print(f"    [BFGS] Objective evaluation failed: {e}")
+            return 1e10, np.zeros_like(x_flat)
+    
+    # Set up bounds to limit maximum displacement
+    if max_step is not None and max_step > 0:
+        lower_bounds = start_coords - max_step
+        upper_bounds = start_coords + max_step
+        bounds = list(zip(lower_bounds, upper_bounds))
+    else:
+        bounds = None
+    
+    try:
+        result = scipy_minimize(
+            objective_and_grad,
+            x0=start_coords.astype(np.float64),
+            method='L-BFGS-B',
+            jac=True,  # objective_and_grad returns (f, grad)
+            bounds=bounds,
+            options={
+                'maxiter': maxiter,
+                'gtol': gtol,
+                'disp': False,
+            }
+        )
+        
+        # Convert result back to torch
+        new_coords = torch.tensor(
+            result.x.reshape(-1, 3),
+            dtype=torch.float32,
+            device=device
+        )
+        
+        # Compute actual displacement
+        displacement = (new_coords - coords.to(device)).norm(dim=1)
+        max_atom_disp = displacement.max().item()
+        
+        return {
+            "new_coords": new_coords,
+            "eig0": best_result["eig0"],
+            "eig1": best_result["eig1"],
+            "eig_product": best_result["eig_product"],
+            "loss": best_result["eig_product"],
+            "nit": result.nit,
+            "success": result.success,
+            "message": result.message,
+            "max_atom_disp": max_atom_disp,
+        }
+        
+    except Exception as e:
+        print(f"    [BFGS] Optimization failed: {e}")
+        return {
+            "new_coords": coords,
+            "eig0": float('nan'),
+            "eig1": float('nan'),
+            "eig_product": float('inf'),
+            "loss": float('inf'),
+            "nit": 0,
+            "success": False,
+            "message": str(e),
+            "max_atom_disp": 0.0,
+        }
+
+
 # --- MODIFIED FUNCTION IMPLEMENTING EARLY STOPPING, KICK, AND EIGENVALUE PRODUCT DESCENT FALLBACK ---
 def run_gad_euler_on_batch(
     calculator: EquiformerTorchCalculator, batch: Batch, n_steps: int, dt: float, stop_at_ts: bool = False,
@@ -288,6 +442,7 @@ def run_gad_euler_on_batch(
     minimization_fallback: bool = False, stall_window: int = 100, 
     stall_disp_threshold: float = 0.005, stall_eig_change_threshold: float = 2.0,
     eig_descent_lr: float = 0.01, eig_descent_max_step: float = 0.1,
+    use_bfgs: bool = False, bfgs_maxiter: int = 50, bfgs_gtol: float = 1e-5, bfgs_max_step: float = 0.5,
 ) -> Dict[str, Any]:
     """
     Runs GAD Euler updates, optionally stopping when a TS signature is found.
@@ -305,6 +460,10 @@ def run_gad_euler_on_batch(
         stall_eig_change_threshold: Minimum eigenvalue product change to not be stalled
         eig_descent_lr: Learning rate for eigenvalue product descent (default: 0.01)
         eig_descent_max_step: Maximum displacement per atom in eigenvalue descent (default: 0.1 Å)
+        use_bfgs: Use L-BFGS-B optimizer instead of simple gradient descent for eigproduct minimization
+        bfgs_maxiter: Maximum iterations for BFGS optimization (default: 50)
+        bfgs_gtol: Gradient tolerance for BFGS convergence (default: 1e-5)
+        bfgs_max_step: Maximum displacement per atom during BFGS (default: 0.5 Å, larger to escape weird geometries)
     """
     assert int(batch.batch.max().item()) + 1 == 1, "Use batch_size=1."
     start_pos = batch.pos.detach().clone()
@@ -410,30 +569,63 @@ def run_gad_euler_on_batch(
             elif current_mode == 1:
                 # EIGENVALUE PRODUCT DESCENT MODE: Minimize λ₀*λ₁ directly
                 # This targets the TS condition (product < 0) instead of energy minimization
-                descent_result = eig_product_descent_step(
-                    coords=batch.pos,
-                    atomic_nums=batch.z,
-                    model=calculator.potential,
-                    device=str(batch.pos.device),
-                    lr=eig_descent_lr,
-                    max_step=eig_descent_max_step,
-                )
                 
-                if descent_result["success"]:
-                    # Update position
-                    batch.pos = descent_result["new_coords"]
-                    # Create a pseudo-gad for tracking (the actual displacement)
-                    gad = descent_result["new_coords"] - prev_pos
+                if use_bfgs:
+                    # Use L-BFGS-B optimizer for more robust minimization
+                    descent_result = eig_product_bfgs_minimize(
+                        coords=batch.pos,
+                        atomic_nums=batch.z,
+                        model=calculator.potential,
+                        device=str(batch.pos.device),
+                        maxiter=bfgs_maxiter,
+                        gtol=bfgs_gtol,
+                        max_step=bfgs_max_step,
+                    )
                     
-                    # Log progress every 10 steps
-                    if step_i % 10 == 0:
-                        print(f"    [EIG DESCENT] step {step_i}: λ₀*λ₁={descent_result['eig_product']:.4f}, "
+                    if descent_result["success"] or descent_result["nit"] > 0:
+                        # Update position
+                        batch.pos = descent_result["new_coords"]
+                        gad = descent_result["new_coords"] - prev_pos
+                        
+                        print(f"    [BFGS] step {step_i}: λ₀*λ₁={descent_result['eig_product']:.4f}, "
                               f"λ₀={descent_result['eig0']:.4f}, λ₁={descent_result['eig1']:.4f}, "
-                              f"‖∇‖={descent_result['grad_norm']:.4f}")
+                              f"nit={descent_result['nit']}, max_disp={descent_result['max_atom_disp']:.4f}Å")
+                        
+                        # After BFGS, switch back to GAD mode to continue exploration
+                        # (BFGS is a "burst" optimization, then we return to normal)
+                        current_mode = 0
+                        print(f"    [MODE SWITCH] BFGS complete, switching back to GAD mode")
+                    else:
+                        # BFGS failed completely, use small random perturbation
+                        gad = torch.randn_like(batch.pos) * 0.01
+                        batch.pos = batch.pos + gad
+                        current_mode = 0  # Switch back to GAD
                 else:
-                    # Step failed, use small random perturbation
-                    gad = torch.randn_like(batch.pos) * 0.01
-                    batch.pos = batch.pos + gad
+                    # Use simple gradient descent (one step at a time)
+                    descent_result = eig_product_descent_step(
+                        coords=batch.pos,
+                        atomic_nums=batch.z,
+                        model=calculator.potential,
+                        device=str(batch.pos.device),
+                        lr=eig_descent_lr,
+                        max_step=eig_descent_max_step,
+                    )
+                    
+                    if descent_result["success"]:
+                        # Update position
+                        batch.pos = descent_result["new_coords"]
+                        # Create a pseudo-gad for tracking (the actual displacement)
+                        gad = descent_result["new_coords"] - prev_pos
+                        
+                        # Log progress every 10 steps
+                        if step_i % 10 == 0:
+                            print(f"    [EIG DESCENT] step {step_i}: λ₀*λ₁={descent_result['eig_product']:.4f}, "
+                                  f"λ₀={descent_result['eig0']:.4f}, λ₁={descent_result['eig1']:.4f}, "
+                                  f"‖∇‖={descent_result['grad_norm']:.4f}")
+                    else:
+                        # Step failed, use small random perturbation
+                        gad = torch.randn_like(batch.pos) * 0.01
+                        batch.pos = batch.pos + gad
             else:
                 # GAD MODE: Use GAD direction
                 # 1. Get GAD direction from Hessian
@@ -715,6 +907,16 @@ if __name__ == "__main__":
     parser.add_argument("--eig-descent-max-step", type=float, default=0.1,
                         help="Maximum displacement per atom in eigenvalue descent (default: 0.1 Å).")
 
+    # BFGS optimization arguments
+    parser.add_argument("--use-bfgs", action="store_true",
+                        help="Use L-BFGS-B optimizer instead of simple gradient descent for eigproduct minimization.")
+    parser.add_argument("--bfgs-maxiter", type=int, default=50,
+                        help="Maximum iterations for BFGS optimization (default: 50).")
+    parser.add_argument("--bfgs-gtol", type=float, default=1e-5,
+                        help="Gradient tolerance for BFGS convergence (default: 1e-5).")
+    parser.add_argument("--bfgs-max-step", type=float, default=0.5,
+                        help="Maximum displacement per atom during BFGS (default: 0.5 Å, larger to escape weird geometries).")
+
     # W&B arguments
     parser.add_argument("--wandb", action="store_true",
                         help="Enable Weights & Biases logging")
@@ -757,6 +959,10 @@ if __name__ == "__main__":
             "stall_eig_change_threshold": args.stall_eig_change_threshold if args.enable_minimization_fallback else None,
             "eig_descent_lr": args.eig_descent_lr if args.enable_minimization_fallback else None,
             "eig_descent_max_step": args.eig_descent_max_step if args.enable_minimization_fallback else None,
+            "use_bfgs": args.use_bfgs,
+            "bfgs_maxiter": args.bfgs_maxiter if args.use_bfgs else None,
+            "bfgs_gtol": args.bfgs_gtol if args.use_bfgs else None,
+            "bfgs_max_step": args.bfgs_max_step if args.use_bfgs else None,
             "max_samples": args.max_samples,
         }
         init_wandb_run(
@@ -785,8 +991,15 @@ if __name__ == "__main__":
         print(f"  Stall window: {args.stall_window} steps")
         print(f"  Stall displacement threshold: {args.stall_disp_threshold} Å")
         print(f"  Stall eig product change threshold: {args.stall_eig_change_threshold}")
-        print(f"  Eig descent learning rate: {args.eig_descent_lr}")
-        print(f"  Eig descent max step: {args.eig_descent_max_step} Å")
+        if args.use_bfgs:
+            print(f"  Using L-BFGS-B optimizer for eigproduct minimization")
+            print(f"    BFGS max iterations: {args.bfgs_maxiter}")
+            print(f"    BFGS gradient tolerance: {args.bfgs_gtol}")
+            print(f"    BFGS max step: {args.bfgs_max_step} Å")
+        else:
+            print(f"  Using gradient descent for eigproduct minimization")
+            print(f"    Learning rate: {args.eig_descent_lr}")
+            print(f"    Max step: {args.eig_descent_max_step} Å")
 
     for i, batch in enumerate(dataloader):
         if i >= args.max_samples: break
@@ -814,6 +1027,10 @@ if __name__ == "__main__":
                 stall_eig_change_threshold=args.stall_eig_change_threshold,
                 eig_descent_lr=args.eig_descent_lr,
                 eig_descent_max_step=args.eig_descent_max_step,
+                use_bfgs=args.use_bfgs,
+                bfgs_maxiter=args.bfgs_maxiter,
+                bfgs_gtol=args.bfgs_gtol,
+                bfgs_max_step=args.bfgs_max_step,
             )
 
             # Extract final results from trajectory
