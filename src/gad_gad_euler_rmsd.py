@@ -91,16 +91,21 @@ def run_gad_euler_on_batch(
     """
     assert int(batch.batch.max().item()) + 1 == 1, "Use batch_size=1."
     start_pos = batch.pos.detach().clone()
+    prev_pos = start_pos.clone()  # Track previous position for step-wise displacement
     num_kicks = 0
 
-    trajectory = {k: [] for k in ["energy", "force_mean", "gad_mean", "eig_product", "kick_applied"]}
+    trajectory = {k: [] for k in ["energy", "force_mean", "gad_mean", "eig_product", "kick_applied",
+                                   "disp_from_last", "disp_from_start"]}
 
     # Modified to return the product and freq_info for checking
-    def _record_step(predictions: Dict[str, Any], gad_vec: Optional[torch.Tensor], kick_applied: bool = False) -> tuple:
+    def _record_step(predictions: Dict[str, Any], gad_vec: Optional[torch.Tensor], 
+                     disp_from_last: float, disp_from_start: float, kick_applied: bool = False) -> tuple:
         trajectory["energy"].append(_scalar_from(predictions, "energy"))
         trajectory["force_mean"].append(_mean_vector_magnitude(predictions["forces"]))
         trajectory["gad_mean"].append(_mean_vector_magnitude(gad_vec) if gad_vec is not None else None)
         trajectory["kick_applied"].append(1 if kick_applied else 0)
+        trajectory["disp_from_last"].append(disp_from_last)
+        trajectory["disp_from_start"].append(disp_from_start)
         try:
             # Use projected analysis for the product check
             freq_info = analyze_frequencies_torch(predictions["hessian"], batch.pos, batch.z)
@@ -111,9 +116,9 @@ def run_gad_euler_on_batch(
         trajectory["eig_product"].append(eig_prod)
         return eig_prod, freq_info
 
-    # Initial state
+    # Initial state (no displacement at step 0)
     results = calculator.predict(batch, do_hessian=True)
-    current_eig_prod, freq_info = _record_step(results, gad_vec=None)
+    current_eig_prod, freq_info = _record_step(results, gad_vec=None, disp_from_last=0.0, disp_from_start=0.0)
 
     steps_taken = 0
     # Check if we start at a TS and early stopping is enabled
@@ -161,7 +166,13 @@ def run_gad_euler_on_batch(
 
             # 4. Calculate new state
             results = calculator.predict(batch, do_hessian=True)
-            current_eig_prod, freq_info = _record_step(results, gad, kick_applied=apply_kick)
+            
+            # Compute displacements
+            disp_from_last = (batch.pos - prev_pos).norm(dim=1).mean().item()
+            disp_from_start = (batch.pos - start_pos).norm(dim=1).mean().item()
+            prev_pos = batch.pos.detach().clone()  # Update for next iteration
+            
+            current_eig_prod, freq_info = _record_step(results, gad, disp_from_last, disp_from_start, kick_applied=apply_kick)
 
             # --- EARLY STOPPING CHECK ---
             # If product is negative, we have exactly one negative eigenvalue (assuming ordered e0 < e1)
@@ -227,9 +238,10 @@ def plot_trajectory_new(
     start_from: str,
     initial_neg_num: int,
     final_neg_num: int,
+    steps_to_ts: Optional[int] = None,
 ) -> tuple:
     """
-    Plot GAD trajectory.
+    Plot GAD trajectory with 6 panels.
 
     Returns:
         Tuple of (matplotlib Figure, suggested filename)
@@ -240,21 +252,24 @@ def plot_trajectory_new(
     def _nanify(values: List[Optional[float]]) -> np.ndarray:
         return np.array([v if v is not None else np.nan for v in values], dtype=float)
 
-    fig, axes = plt.subplots(4, 1, figsize=(8, 12), sharex=True)
+    fig, axes = plt.subplots(6, 1, figsize=(8, 18), sharex=True)
     fig.suptitle(f"GAD Euler Trajectory for Sample {sample_index}: {formula}", fontsize=14)
 
+    # Panel 1: Energy
     axes[0].plot(timesteps, _nanify(trajectory["energy"]), marker=".", lw=1.2)
-    axes[0].set_ylabel("Energy (eV)"); axes[0].set_title("Energy")
+    axes[0].set_ylabel("Energy (eV)")
+    axes[0].set_title("Energy")
 
+    # Panel 2: Force Magnitude
     axes[1].plot(timesteps, _nanify(trajectory["force_mean"]), marker=".", color="tab:orange", lw=1.2)
-    axes[1].set_ylabel("Mean |F| (eV/Å)"); axes[1].set_title("Force Magnitude")
+    axes[1].set_ylabel("Mean |F| (eV/Å)")
+    axes[1].set_title("Force Magnitude")
 
+    # Panel 3: Eigenvalue Product
     eig_ax = axes[2]
     eig_product = _nanify(trajectory["eig_product"])
-
     eig_ax.plot(timesteps, eig_product, marker=".", color="tab:purple", lw=1.2, label="λ₀ * λ₁")
     eig_ax.axhline(0, color='grey', linestyle='--', linewidth=1, zorder=1)
-
     if len(eig_product) > 0 and not np.isnan(eig_product[0]):
         eig_ax.text(0.02, 0.95, f"Start: {eig_product[0]:.4f}",
                     transform=eig_ax.transAxes, ha='left', va='top',
@@ -263,21 +278,45 @@ def plot_trajectory_new(
         eig_ax.text(0.98, 0.95, f"End: {eig_product[-1]:.4f}",
                     transform=eig_ax.transAxes, ha='right', va='top',
                     color='tab:purple', fontsize=9)
-
+    # Mark steps_to_ts if available
+    if steps_to_ts is not None:
+        eig_ax.axvline(steps_to_ts, color='green', linestyle='--', linewidth=2, alpha=0.7, label=f'TS @ step {steps_to_ts}')
     eig_ax.set_ylabel("Eigenvalue Product")
     eig_ax.set_title("Product of Two Smallest Hessian Eigenvalues")
     eig_ax.legend(loc='best')
 
+    # Panel 4: GAD Vector Magnitude
     axes[3].plot(timesteps, _nanify(trajectory["gad_mean"]), marker=".", color="tab:green", lw=1.2)
     axes[3].set_ylabel("Mean |GAD| (Å)")
-    axes[3].set_xlabel("Step")
     axes[3].set_title("GAD Vector Magnitude")
 
-    axes[3].text(
-        0.98, 0.05,
-        f"neg eig: {initial_neg_num} → {final_neg_num}",
-        transform=axes[3].transAxes,
-        ha="right",
+    # Panel 5: Displacement from Last Step
+    disp_last = _nanify(trajectory.get("disp_from_last", []))
+    axes[4].plot(timesteps, disp_last, marker=".", color="tab:red", lw=1.2)
+    axes[4].set_ylabel("Mean Disp (Å)")
+    axes[4].set_title("Displacement from Last Step")
+    if len(disp_last) > 0:
+        valid_disp = disp_last[~np.isnan(disp_last)]
+        if len(valid_disp) > 0:
+            axes[4].text(0.98, 0.95, f"Avg: {np.mean(valid_disp[1:]):.4f} Å" if len(valid_disp) > 1 else "",
+                        transform=axes[4].transAxes, ha='right', va='top', fontsize=9)
+
+    # Panel 6: Displacement from Start
+    disp_start = _nanify(trajectory.get("disp_from_start", []))
+    axes[5].plot(timesteps, disp_start, marker=".", color="tab:blue", lw=1.2)
+    axes[5].set_ylabel("Mean Disp (Å)")
+    axes[5].set_xlabel("Step")
+    axes[5].set_title("Displacement from Start")
+    if len(disp_start) > 0 and not np.isnan(disp_start[-1]):
+        axes[5].text(0.98, 0.95, f"Final: {disp_start[-1]:.4f} Å",
+                    transform=axes[5].transAxes, ha='right', va='top', fontsize=9)
+
+    # Add summary text on last panel
+    axes[5].text(
+        0.02, 0.05,
+        f"neg eig: {initial_neg_num} → {final_neg_num}" + (f"\nsteps_to_ts: {steps_to_ts}" if steps_to_ts is not None else ""),
+        transform=axes[5].transAxes,
+        ha="left",
         va="bottom",
         fontsize=8,
         bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.7),
@@ -298,8 +337,8 @@ if __name__ == "__main__":
     parser.add_argument("--convergence-rms-force", type=float, default=0.01, help="Convergence threshold for RMS force (eV/Å) (used for stats, not stopping).")
     parser.add_argument("--convergence-max-force", type=float, default=0.03, help="Convergence threshold for max atomic force (eV/Å).")
     parser.add_argument("--start-from", type=str, default="ts", 
-                        choices=["ts", "reactant", "midpoint_rt", "three_quarter_rt"],
-                        help="Which geometry to start from.")
+                        help="Starting geometry: 'reactant', 'ts', 'midpoint_rt', 'three_quarter_rt', "
+                             "or add noise: 'reactant_noise0.5A', 'reactant_noise1A', 'reactant_noise2A', etc.")
     
     # --- NEW ARGUMENT ---
     parser.add_argument("--stop-at-ts", action="store_true",
@@ -436,6 +475,7 @@ if __name__ == "__main__":
                 start_from=args.start_from,
                 initial_neg_num=initial_neg_num,
                 final_neg_num=final_neg_num,
+                steps_to_ts=steps_to_ts,
             )
 
             # Save plot using logger (handles sampling)
@@ -449,9 +489,10 @@ if __name__ == "__main__":
 
             print("Result:")
             print(f"  Transition: {result.transition_key}")
-            print(f"  Steps: {result.steps_taken}")
+            print(f"  Steps: {result.steps_taken}" + (f", Steps to TS: {steps_to_ts}" if steps_to_ts is not None else ""))
             print(f"  Neg Eigs: {result.initial_neg_eigvals} -> {result.final_neg_eigvals}")
             print(f"  RMS Force: {out['rms_force_end']:.3e} eV/Å")
+            print(f"  Final Disp from Start: {traj['disp_from_start'][-1]:.4f} Å")
             if args.enable_kick:
                 print(f"  Kicks applied: {out['num_kicks']}")
 

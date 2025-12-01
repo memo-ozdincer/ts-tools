@@ -226,11 +226,12 @@ class ExperimentLogger:
         fig.savefig(save_path, dpi=200)
 
         # Upload to W&B if enabled
+        # Use commit=False to avoid incrementing the global step counter
+        # This prevents the step axis from resetting when logging plots
         if self.use_wandb and self.wandb_run is not None:
             wandb.log({
                 f"plots/{result.transition_key}/{filename}": wandb.Image(fig),
-                "sample_index": result.sample_index,
-            })
+            }, commit=False)
 
         return str(save_path)
 
