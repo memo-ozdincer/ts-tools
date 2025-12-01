@@ -95,8 +95,8 @@ echo ">>> Running Eigenvalue Descent script..."
 #
 # Example with different noise levels:
 python -m src.gad_eigenvalue_descent \
-    --max-samples 300 \
-    --n-steps-opt 200 \
+    --max-samples 30 \
+    --n-steps-opt 50 \
     --lr 0.01 \
     --start-from reactant_noise2A \
     --loss-type eig_product \
