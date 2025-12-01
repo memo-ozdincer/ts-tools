@@ -499,6 +499,9 @@ def build_loss_type_flags(args) -> str:
     if hasattr(args, 'adaptive_targets') and args.adaptive_targets:
         components.append('adaptive')
 
+    if hasattr(args, 'adaptive_step_sizing') and args.adaptive_step_sizing:
+        components.append('adaptive-steps')
+
     # Add start position
     if hasattr(args, 'start_from'):
         components.append(f"from-{args.start_from}")

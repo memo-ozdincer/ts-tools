@@ -882,6 +882,26 @@ if __name__ == "__main__":
                         break
 
             # Create RunResult
+            # Extract adaptive step sizing metrics from history
+            extra_data = {}
+            if "saddle_order" in opt_results["history"] and opt_results["history"]["saddle_order"]:
+                # Average saddle order across trajectory
+                saddle_orders = opt_results["history"]["saddle_order"]
+                extra_data["avg_saddle_order"] = float(np.mean(saddle_orders))
+                extra_data["final_saddle_order"] = int(saddle_orders[-1]) if saddle_orders else None
+
+                # Count how many steps were at each saddle order
+                unique_orders, counts = np.unique(saddle_orders, return_counts=True)
+                for order, count in zip(unique_orders, counts):
+                    extra_data[f"steps_at_order_{int(order)}"] = int(count)
+
+                # Step scale statistics
+                if "step_scale" in opt_results["history"] and opt_results["history"]["step_scale"]:
+                    step_scales = opt_results["history"]["step_scale"]
+                    extra_data["avg_step_scale"] = float(np.mean(step_scales))
+                    extra_data["max_step_scale"] = float(np.max(step_scales))
+                    extra_data["min_step_scale"] = float(np.min(step_scales))
+
             result = RunResult(
                 sample_index=i,
                 formula=batch.formula[0],
@@ -899,6 +919,7 @@ if __name__ == "__main__":
                 rmsd_to_known_ts=align_ordered_and_get_rmsd(opt_results["final_coords"], batch.pos_transition),
                 stop_reason=opt_results.get("stop_reason"),
                 plot_path=None,  # Will be set below
+                extra_data=extra_data,
             )
 
             # Add result to logger
