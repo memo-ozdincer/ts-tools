@@ -98,20 +98,29 @@ echo ">>> Running Eigenvalue Descent script..."
 # --final-max-displacement 0.1: End with small steps (0.1 Å) for fine-tuning
 #
 # Example with different noise levels:
-python -m src.gad_eigenvalue_descent \
-    --max-samples 30 \
-    --n-steps-opt 150 \
-    --lr 0.01 \
-    --start-from reactant_noise2A \
-    --loss-type eig_product \
-    --adaptive-step-sizing \
-    --higher-order-multiplier 10.0 \
-    --ts-multiplier 0.5 \
-    --use-line-search \
-    --adaptive-max-displacement \
-    --initial-max-displacement 3.0 \
-    --final-max-displacement 0.1 \
-    --wandb \
-    --wandb-project "gad-ts-search"
+# python -m src.gad_eigenvalue_descent \
+#     --max-samples 30 \
+#     --n-steps-opt 150 \
+#     --lr 0.01 \
+#     --start-from reactant_noise2A \
+#     --loss-type eig_product \
+#     --adaptive-step-sizing \
+#     --higher-order-multiplier 10.0 \
+#     --ts-multiplier 0.5 \
+#     --use-line-search \
+#     --adaptive-max-displacement \
+#     --initial-max-displacement 3.0 \
+#     --final-max-displacement 0.1 \
+#     --wandb \
+#     --wandb-project "gad-ts-search"
+  python -m src.gad_eigenvalue_descent \
+      --adaptive-step-sizing \
+      --higher-order-multiplier 10.0 \
+      --ts-multiplier 0.5 \
+      --max-samples 30 \
+      --n-steps-opt 150 \
+      --start-from reactant_noise2A \
+      --loss-type eig_product \
+      --use-line-search
 
 echo "✅ Job completed."
