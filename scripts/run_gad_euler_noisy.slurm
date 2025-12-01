@@ -31,29 +31,20 @@ export WANDB_API_KEY="ed8d3e45635321a86859f77337bdb4dfb5ceb113"
 echo ">>> Running GAD-Euler Search with noisy starting geometries..."
 
 # === STANDARD GAD-EULER WITH NOISY GEOMETRIES ===
-# This uses regular GAD dynamics with plateau detection.
+# This uses regular GAD dynamics.
 # The key change is starting from noisy geometries to test robustness.
 #
 # Features:
 #   - Displacement tracking (per-step and cumulative)
-#   - Plateau detection: when displacement < threshold for N steps, switch to steepest descent
 #   - steps_to_ts logged to WandB
-#
-# Plateau detection parameters:
-#   --plateau-threshold: Displacement threshold in Å (default: 0.005)
-#   --plateau-window: Consecutive steps below threshold to trigger descent (default: 20)
-#   --descent-steps: Number of steepest descent steps when plateau detected (default: 10)
 
-# --- Noise Level: 2Å (most challenging) with plateau detection ---
+# --- Noise Level: 2Å (most challenging) ---
 python -m src.gad_gad_euler_rmsd \
     --max-samples 30 \
     --start-from reactant_noise2A \
     --stop-at-ts \
     --n-steps 500 \
     --dt 0.01 \
-    --plateau-threshold 0.005 \
-    --plateau-window 20 \
-    --descent-steps 10 \
     --wandb \
     --wandb-project "gad-noise-experiments"
 
@@ -64,9 +55,6 @@ python -m src.gad_gad_euler_rmsd \
 #     --stop-at-ts \
 #     --n-steps 300 \
 #     --dt 0.01 \
-#     --plateau-threshold 0.005 \
-#     --plateau-window 20 \
-#     --descent-steps 10 \
 #     --wandb \
 #     --wandb-project "gad-noise-experiments"
 

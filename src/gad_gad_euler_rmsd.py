@@ -76,30 +76,88 @@ def _mean_vector_magnitude(vec: torch.Tensor) -> float:
     return float(vec.detach().cpu().norm(dim=1).mean().item())
 
 
-# --- MODIFIED FUNCTION IMPLEMENTING EARLY STOPPING, KICK, AND PLATEAU DETECTION ---
+def detect_stall(
+    eig_product_history: List[Optional[float]],
+    disp_history: List[float],
+    window: int = 50,
+    disp_threshold: float = 0.001,
+    eig_change_threshold: float = 1.0,
+) -> bool:
+    """
+    Detect if GAD optimization has stalled.
+    
+    Stall is detected when:
+    1. Eigenvalue product remains positive (not at TS) for the window
+    2. Average displacement is below threshold (not making progress)
+    3. Eigenvalue product change is below threshold (not improving)
+    
+    Args:
+        eig_product_history: History of eigenvalue products
+        disp_history: History of per-step displacements
+        window: Number of steps to check
+        disp_threshold: Minimum average displacement to not be stalled (Å)
+        eig_change_threshold: Minimum change in eigenvalue product
+        
+    Returns:
+        True if stalled, False otherwise
+    """
+    if len(eig_product_history) < window or len(disp_history) < window:
+        return False
+    
+    # Get the last 'window' steps
+    recent_eig_prods = [e for e in eig_product_history[-window:] if e is not None]
+    recent_disps = disp_history[-window:]
+    
+    if len(recent_eig_prods) < window // 2:
+        return False  # Not enough valid data
+    
+    # Check 1: All eigenvalue products are positive (not at TS)
+    all_positive = all(e > 0 for e in recent_eig_prods)
+    if not all_positive:
+        return False  # Already found TS region
+    
+    # Check 2: Average displacement is very small
+    avg_disp = np.mean(recent_disps)
+    small_displacement = avg_disp < disp_threshold
+    
+    # Check 3: Eigenvalue product hasn't changed much
+    eig_change = abs(recent_eig_prods[-1] - recent_eig_prods[0])
+    small_eig_change = eig_change < eig_change_threshold
+    
+    # Stalled if both displacement and eigenvalue change are small
+    return small_displacement and small_eig_change
+
+
+# --- MODIFIED FUNCTION IMPLEMENTING EARLY STOPPING, KICK, AND MINIMIZATION FALLBACK ---
 def run_gad_euler_on_batch(
     calculator: EquiformerTorchCalculator, batch: Batch, n_steps: int, dt: float, stop_at_ts: bool = False,
     kick_enabled: bool = False, kick_force_threshold: float = 0.015, kick_magnitude: float = 0.1,
-    plateau_threshold: float = 0.005, plateau_window: int = 20, descent_steps: int = 10
+    minimization_fallback: bool = False, stall_window: int = 50, 
+    stall_disp_threshold: float = 0.001, stall_eig_change_threshold: float = 1.0,
 ) -> Dict[str, Any]:
     """
     Runs GAD Euler updates, optionally stopping when a TS signature is found.
+    
+    Can fallback to minimization mode when GAD stalls, which follows forces
+    directly to find a local minimum (all eigenvalues positive).
 
     Args:
         kick_enabled: Enable kick mechanism to escape local minima
         kick_force_threshold: Force threshold in eV/Å below which kick is considered
         kick_magnitude: Magnitude of kick displacement in Å
-        plateau_threshold: Displacement threshold (Å) below which plateau is detected
-        plateau_window: Consecutive steps below threshold to trigger descent mode
-        descent_steps: Number of steepest descent steps when plateau detected
+        minimization_fallback: Enable fallback to minimization when GAD stalls
+        stall_window: Number of steps to check for stall detection
+        stall_disp_threshold: Minimum displacement to not be considered stalled (Å)
+        stall_eig_change_threshold: Minimum eigenvalue product change to not be stalled
     """
     assert int(batch.batch.max().item()) + 1 == 1, "Use batch_size=1."
     start_pos = batch.pos.detach().clone()
     prev_pos = start_pos.clone()  # Track previous position for step-wise displacement
     num_kicks = 0
-    num_descent_interventions = 0
-    plateau_count = 0
-    descent_steps_remaining = 0
+    
+    # Track mode: 0 = GAD, 1 = minimization
+    current_mode = 0  # Start in GAD mode
+    mode_switch_step = None  # Step at which we switched to minimization
 
     trajectory = {k: [] for k in ["energy", "force_mean", "gad_mean", "eig_product", "kick_applied",
                                    "disp_from_last", "disp_from_start", "mode"]}
@@ -107,14 +165,14 @@ def run_gad_euler_on_batch(
     # Modified to return the product and freq_info for checking
     def _record_step(predictions: Dict[str, Any], gad_vec: Optional[torch.Tensor], 
                      disp_from_last: float, disp_from_start: float, kick_applied: bool = False,
-                     mode: str = "gad") -> tuple:
+                     mode: int = 0) -> tuple:
         trajectory["energy"].append(_scalar_from(predictions, "energy"))
         trajectory["force_mean"].append(_mean_vector_magnitude(predictions["forces"]))
         trajectory["gad_mean"].append(_mean_vector_magnitude(gad_vec) if gad_vec is not None else None)
         trajectory["kick_applied"].append(1 if kick_applied else 0)
         trajectory["disp_from_last"].append(disp_from_last)
         trajectory["disp_from_start"].append(disp_from_start)
-        trajectory["mode"].append(mode)
+        trajectory["mode"].append(mode)  # 0 = GAD, 1 = minimization
         try:
             # Use projected analysis for the product check
             freq_info = analyze_frequencies_torch(predictions["hessian"], batch.pos, batch.z)
@@ -127,7 +185,7 @@ def run_gad_euler_on_batch(
 
     # Initial state (no displacement at step 0)
     results = calculator.predict(batch, do_hessian=True)
-    current_eig_prod, freq_info = _record_step(results, gad_vec=None, disp_from_last=0.0, disp_from_start=0.0, mode="init")
+    current_eig_prod, freq_info = _record_step(results, gad_vec=None, disp_from_last=0.0, disp_from_start=0.0, mode=current_mode)
 
     steps_taken = 0
     # Check if we start at a TS and early stopping is enabled
@@ -135,14 +193,29 @@ def run_gad_euler_on_batch(
         # Already in TS region, don't take steps
         pass
     else:
-        # GAD loop
+        # GAD loop (with optional minimization fallback)
         for step_i in range(1, n_steps + 1):
             steps_taken = step_i
-            current_mode = "gad"  # Default mode
+
+            # --- STALL DETECTION AND MODE SWITCH ---
+            if minimization_fallback and current_mode == 0:  # Only check if still in GAD mode
+                is_stalled = detect_stall(
+                    trajectory["eig_product"],
+                    trajectory["disp_from_last"],
+                    window=stall_window,
+                    disp_threshold=stall_disp_threshold,
+                    eig_change_threshold=stall_eig_change_threshold,
+                )
+                if is_stalled:
+                    current_mode = 1  # Switch to minimization mode
+                    mode_switch_step = step_i
+                    eig_prod_at_switch = trajectory["eig_product"][-1] if trajectory["eig_product"] else None
+                    print(f"  [MODE SWITCH] GAD stalled at step {step_i}, switching to MINIMIZATION mode")
+                    print(f"    Eigenvalue product at switch: {eig_prod_at_switch:.4f}" if eig_prod_at_switch else "    Eigenvalue product: N/A")
 
             # Check if we should apply a kick (escape local minimum)
             apply_kick = False
-            if kick_enabled:
+            if kick_enabled and current_mode == 0:  # Only kick in GAD mode
                 force_magnitude = results["forces"].norm(dim=1).mean().item()
                 # Check if force is below threshold AND both smallest projected eigenvalues are positive (local min)
                 eigvals = freq_info.get("eigvals")
@@ -159,19 +232,16 @@ def run_gad_euler_on_batch(
                 kick_direction = kick_direction / (kick_direction.norm() + 1e-12)
                 batch.pos = batch.pos + kick_direction * kick_magnitude
                 gad = kick_direction * kick_magnitude
-                current_mode = "kick"
-                # Reset plateau counter after kick
-                plateau_count = 0
-            elif descent_steps_remaining > 0:
-                # In steepest descent mode - follow forces to minimize energy
+            elif current_mode == 1:
+                # MINIMIZATION MODE: Follow forces directly (gradient descent on energy)
+                # Forces = -gradient of energy, so following forces decreases energy
                 forces = results["forces"]
-                batch.pos = batch.pos + dt * forces
-                gad = dt * forces
-                descent_steps_remaining -= 1
-                current_mode = "descent"
-                if descent_steps_remaining == 0:
-                    print(f"  [DESCENT END] at step {step_i}: Resuming GAD")
+                gad = forces  # Use forces directly as the update direction
+                
+                # Euler step with forces
+                batch.pos = batch.pos + dt * gad
             else:
+                # GAD MODE: Use GAD direction
                 # 1. Get GAD direction from Hessian
                 hess_full = _prepare_hessian(results["hessian"], batch.pos.shape[0])
                 evals, evecs = torch.linalg.eigh(hess_full)
@@ -185,7 +255,6 @@ def run_gad_euler_on_batch(
 
                 # 3. Euler step
                 batch.pos = batch.pos + dt * gad
-                current_mode = "gad"
 
             # 4. Calculate new state
             results = calculator.predict(batch, do_hessian=True)
@@ -198,26 +267,19 @@ def run_gad_euler_on_batch(
             current_eig_prod, freq_info = _record_step(results, gad, disp_from_last, disp_from_start, 
                                                         kick_applied=apply_kick, mode=current_mode)
 
-            # --- PLATEAU DETECTION ---
-            # Only check for plateau when in GAD mode (not during descent or kick)
-            if current_mode == "gad" and descent_steps_remaining == 0:
-                if disp_from_last < plateau_threshold:
-                    plateau_count += 1
-                else:
-                    plateau_count = 0
-                
-                # If plateau detected, switch to steepest descent
-                if plateau_count >= plateau_window:
-                    num_descent_interventions += 1
-                    descent_steps_remaining = descent_steps
-                    plateau_count = 0
-                    print(f"  [PLATEAU {num_descent_interventions}] at step {step_i}: disp={disp_from_last:.6f} Å < {plateau_threshold} Å for {plateau_window} steps. Starting {descent_steps} descent steps.")
-
             # --- EARLY STOPPING CHECK ---
             # If product is negative, we have exactly one negative eigenvalue (assuming ordered e0 < e1)
             # Use a small epsilon to avoid stopping on numerical noise around 0
             if stop_at_ts and current_eig_prod is not None and current_eig_prod < -1e-5:
                 break
+            
+            # --- MINIMIZATION CONVERGENCE CHECK ---
+            # In minimization mode, stop if forces become very small (found a minimum)
+            if current_mode == 1:
+                force_magnitude = results["forces"].norm(dim=1).mean().item()
+                if force_magnitude < 0.01:  # Converged to minimum
+                    print(f"  [MINIMIZATION] Converged to minimum at step {step_i}: |F|={force_magnitude:.6f} eV/Å")
+                    break
 
     # Final analysis of the point where we stopped
     end_pos = batch.pos.detach().clone()
@@ -246,6 +308,9 @@ def run_gad_euler_on_batch(
         neg_eigvals_start = -1
 
     displacement = (end_pos - start_pos).norm(dim=1)
+    
+    # Determine final mode
+    final_mode = "minimization" if current_mode == 1 else "gad"
 
     return {
         "steps_taken": steps_taken,
@@ -263,7 +328,8 @@ def run_gad_euler_on_batch(
         "neg_eigvals_start": neg_eigvals_start,
         "neg_eigvals_end": neg_eigvals_end,
         "num_kicks": num_kicks,
-        "num_descent_interventions": num_descent_interventions,
+        "mode_switch_step": mode_switch_step,
+        "final_mode": final_mode,
     }
 
 # --- (Plotting and helper functions remain unchanged) ---
@@ -279,9 +345,20 @@ def plot_trajectory_new(
     initial_neg_num: int,
     final_neg_num: int,
     steps_to_ts: Optional[int] = None,
+    mode_switch_step: Optional[int] = None,
 ) -> tuple:
     """
     Plot GAD trajectory with 6 panels in a 3x2 grid.
+
+    Args:
+        trajectory: Dictionary containing trajectory data
+        sample_index: Index of the sample
+        formula: Chemical formula
+        start_from: Starting geometry type
+        initial_neg_num: Initial number of negative eigenvalues
+        final_neg_num: Final number of negative eigenvalues
+        steps_to_ts: Step at which TS was found (optional)
+        mode_switch_step: Step at which mode switched to minimization (optional)
 
     Returns:
         Tuple of (matplotlib Figure, suggested filename)
@@ -307,6 +384,8 @@ def plot_trajectory_new(
     ax.set_ylabel("Energy (eV)")
     ax.set_title("Energy")
     ax.set_xlabel("Step")
+    if mode_switch_step is not None:
+        ax.axvline(mode_switch_step, color='red', linestyle=':', linewidth=2, alpha=0.7, label=f'→MIN @ {mode_switch_step}')
 
     # Panel 2 (0,1): Force Magnitude
     ax = axes[0, 1]
@@ -328,6 +407,8 @@ def plot_trajectory_new(
                 transform=ax.transAxes, ha='right', va='top', color='tab:purple', fontsize=9)
     if steps_to_ts is not None:
         ax.axvline(steps_to_ts, color='green', linestyle='--', linewidth=2, alpha=0.7, label=f'TS @ {steps_to_ts}')
+    if mode_switch_step is not None:
+        ax.axvline(mode_switch_step, color='red', linestyle=':', linewidth=2, alpha=0.7, label=f'→MIN @ {mode_switch_step}')
     ax.set_ylabel("Eigenvalue Product")
     ax.set_title("Eigenvalue Product (λ₀ * λ₁)")
     ax.set_xlabel("Step")
@@ -365,8 +446,13 @@ def plot_trajectory_new(
         ax.text(0.98, 0.95, f"Final: {disp_start[-1]:.4f} Å",
                 transform=ax.transAxes, ha='right', va='top', fontsize=9)
     # Add summary text
+    summary_parts = [f"neg eig: {initial_neg_num} → {final_neg_num}"]
+    if steps_to_ts is not None:
+        summary_parts.append(f"TS @ {steps_to_ts}")
+    if mode_switch_step is not None:
+        summary_parts.append(f"→MIN @ {mode_switch_step}")
     ax.text(0.02, 0.05,
-            f"neg eig: {initial_neg_num} → {final_neg_num}" + (f", steps_to_ts: {steps_to_ts}" if steps_to_ts is not None else ""),
+            ", ".join(summary_parts),
             transform=ax.transAxes, ha="left", va="bottom", fontsize=8,
             bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.7))
 
@@ -399,13 +485,16 @@ if __name__ == "__main__":
     parser.add_argument("--kick-magnitude", type=float, default=0.1,
                         help="Magnitude of kick displacement in Å (default: 0.1).")
 
-    # Plateau detection arguments
-    parser.add_argument("--plateau-threshold", type=float, default=0.005,
-                        help="Displacement threshold (Å) below which plateau is detected (default: 0.005).")
-    parser.add_argument("--plateau-window", type=int, default=20,
-                        help="Consecutive steps below threshold to trigger descent mode (default: 20).")
-    parser.add_argument("--descent-steps", type=int, default=10,
-                        help="Number of steepest descent steps when plateau detected (default: 10).")
+    # Minimization fallback arguments
+    parser.add_argument("--enable-minimization-fallback", action="store_true",
+                        help="Enable fallback to minimization mode when GAD stalls. "
+                             "Minimization follows forces to find a local minimum.")
+    parser.add_argument("--stall-window", type=int, default=50,
+                        help="Number of steps to check for stall detection (default: 50).")
+    parser.add_argument("--stall-disp-threshold", type=float, default=0.001,
+                        help="Minimum average displacement (Å) to not be considered stalled (default: 0.001).")
+    parser.add_argument("--stall-eig-change-threshold", type=float, default=1.0,
+                        help="Minimum eigenvalue product change to not be stalled (default: 1.0).")
 
     # W&B arguments
     parser.add_argument("--wandb", action="store_true",
@@ -433,9 +522,10 @@ if __name__ == "__main__":
         "enable_kick": args.enable_kick,
         "kick_force_threshold": args.kick_force_threshold if args.enable_kick else None,
         "kick_magnitude": args.kick_magnitude if args.enable_kick else None,
-        "plateau_threshold": args.plateau_threshold,
-        "plateau_window": args.plateau_window,
-        "descent_steps": args.descent_steps,
+        "enable_minimization_fallback": args.enable_minimization_fallback,
+        "stall_window": args.stall_window if args.enable_minimization_fallback else None,
+        "stall_disp_threshold": args.stall_disp_threshold if args.enable_minimization_fallback else None,
+        "stall_eig_change_threshold": args.stall_eig_change_threshold if args.enable_minimization_fallback else None,
         "max_samples": args.max_samples,
     }
 
@@ -456,10 +546,14 @@ if __name__ == "__main__":
     print(f"Output directory: {logger.run_dir}")
     print(f"Mode: {'Search until TS found (eig_prod < 0)' if args.stop_at_ts else f'Fixed trajectory ({args.n_steps} steps)'}")
     print(f"Processing up to {args.max_samples} samples (dt={args.dt})")
-    print(f"Plateau detection: threshold={args.plateau_threshold} Å, window={args.plateau_window} steps, descent={args.descent_steps} steps")
     print(f"Kick enabled: {args.enable_kick}")
     if args.enable_kick:
         print(f"  Force threshold: {args.kick_force_threshold} eV/Å, Kick magnitude: {args.kick_magnitude} Å")
+    print(f"Minimization fallback enabled: {args.enable_minimization_fallback}")
+    if args.enable_minimization_fallback:
+        print(f"  Stall window: {args.stall_window} steps")
+        print(f"  Stall displacement threshold: {args.stall_disp_threshold} Å")
+        print(f"  Stall eig product change threshold: {args.stall_eig_change_threshold}")
 
     for i, batch in enumerate(dataloader):
         if i >= args.max_samples: break
@@ -480,9 +574,10 @@ if __name__ == "__main__":
                 kick_enabled=args.enable_kick,
                 kick_force_threshold=args.kick_force_threshold,
                 kick_magnitude=args.kick_magnitude,
-                plateau_threshold=args.plateau_threshold,
-                plateau_window=args.plateau_window,
-                descent_steps=args.descent_steps
+                minimization_fallback=args.enable_minimization_fallback,
+                stall_window=args.stall_window,
+                stall_disp_threshold=args.stall_disp_threshold,
+                stall_eig_change_threshold=args.stall_eig_change_threshold,
             )
 
             # Extract final results from trajectory
@@ -522,9 +617,10 @@ if __name__ == "__main__":
                     "rms_force_end": out['rms_force_end'],
                     "max_atom_force_end": out['max_atom_force_end'],
                     "num_kicks": out['num_kicks'],
-                    "num_descent_interventions": out['num_descent_interventions'],
                     "mean_displacement": out['mean_displacement'],
                     "max_displacement": out['max_displacement'],
+                    "mode_switch_step": out['mode_switch_step'],
+                    "final_mode": out['final_mode'],
                 }
             )
 
@@ -540,6 +636,7 @@ if __name__ == "__main__":
                 initial_neg_num=initial_neg_num,
                 final_neg_num=final_neg_num,
                 steps_to_ts=steps_to_ts,
+                mode_switch_step=out['mode_switch_step'],
             )
 
             # Save plot using logger (handles sampling)
@@ -557,10 +654,11 @@ if __name__ == "__main__":
             print(f"  Neg Eigs: {result.initial_neg_eigvals} -> {result.final_neg_eigvals}")
             print(f"  RMS Force: {out['rms_force_end']:.3e} eV/Å")
             print(f"  Final Disp from Start: {traj['disp_from_start'][-1]:.4f} Å")
-            if out['num_descent_interventions'] > 0:
-                print(f"  Descent interventions: {out['num_descent_interventions']}")
             if args.enable_kick and out['num_kicks'] > 0:
                 print(f"  Kicks applied: {out['num_kicks']}")
+            if out['mode_switch_step'] is not None:
+                print(f"  Mode switched to minimization at step: {out['mode_switch_step']}")
+                print(f"  Final mode: {out['final_mode']}")
 
         except Exception as e:
             print(f"[ERROR] Sample {i} failed: {e}")
