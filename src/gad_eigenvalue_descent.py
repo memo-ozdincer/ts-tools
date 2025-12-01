@@ -295,7 +295,6 @@ def evaluate_step(
                 neg_target = eig0.new_tensor(sign_neg_target)
                 pos_floor = eig0.new_tensor(sign_pos_floor)
                 if neg_vibrational == 0:
-                    # loss = torch.relu(eig0 - neg_target)**2
                     loss = (eig0 - neg_target).pow(2)
                 elif neg_vibrational == 1:
                     loss = eig0.new_tensor(0.0)
@@ -304,7 +303,6 @@ def evaluate_step(
                     if trailing_eigs.numel() == 0:
                         loss = eig0.new_tensor(0.0)
                     else:
-                        # penalties = torch.relu(pos_floor - trailing_eigs)**2
                         penalties = (pos_floor - trailing_eigs).pow(2)
                         loss = penalties.sum()
             else:
@@ -451,7 +449,7 @@ def run_eigenvalue_descent(
 
                     if neg_vibrational == 0:
                         # No negative eigenvalues: push λ₀ below a small negative target.
-                        loss = torch.relu(eig0 - neg_target)**2
+                        loss = (eig0 - neg_target).pow(2)
                     elif neg_vibrational == 1:
                         # Desired configuration: nothing to optimize.
                         loss = eig0.new_tensor(0.0)
@@ -461,7 +459,7 @@ def run_eigenvalue_descent(
                         if trailing_eigs.numel() == 0:
                             loss = eig0.new_tensor(0.0)
                         else:
-                            penalties = torch.relu(pos_floor - trailing_eigs)**2
+                            penalties = (pos_floor - trailing_eigs).pow(2)
                             loss = penalties.sum()
 
                 else:
