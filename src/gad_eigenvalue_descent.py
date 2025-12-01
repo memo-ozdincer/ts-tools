@@ -295,24 +295,18 @@ def evaluate_step(
                 neg_target = eig0.new_tensor(sign_neg_target)
                 pos_floor = eig0.new_tensor(sign_pos_floor)
                 if neg_vibrational == 0:
-                    # Push λ₀ below neg_target (only penalize if eig0 > neg_target)
-                    loss = torch.relu(eig0 - neg_target).pow(2)
+                    # loss = torch.relu(eig0 - neg_target)**2
+                    loss = (eig0 - neg_target).pow(2)
                 elif neg_vibrational == 1:
                     loss = eig0.new_tensor(0.0)
                 else:
-                    # More than one negative: push trailing eigenvalues above pos_floor
                     trailing_eigs = vibrational_eigvals[1:]
                     if trailing_eigs.numel() == 0:
                         loss = eig0.new_tensor(0.0)
                     else:
-                        # Only penalize eigenvalues below pos_floor (negative ones)
-                        penalties = torch.relu(pos_floor - trailing_eigs).pow(2)
-                        # Average the penalties to match main loop
-                        num_below_floor = (trailing_eigs < pos_floor).sum().float()
-                        if num_below_floor > 0:
-                            loss = penalties.sum() / num_below_floor
-                        else:
-                            loss = eig0.new_tensor(0.0)
+                        # penalties = torch.relu(pos_floor - trailing_eigs)**2
+                        penalties = (pos_floor - trailing_eigs).pow(2)
+                        loss = penalties.sum()
             else:
                 raise ValueError(f"Unknown loss_type: {loss_type}")
 
@@ -463,19 +457,12 @@ def run_eigenvalue_descent(
                         loss = eig0.new_tensor(0.0)
                     else:
                         # More than one negative: leave λ₀ alone and push the rest positive.
-                        # Focus only on negative eigenvalues to avoid wasting gradient on positive ones
                         trailing_eigs = vibrational_eigvals[1:]
                         if trailing_eigs.numel() == 0:
                             loss = eig0.new_tensor(0.0)
                         else:
-                            # Only penalize eigenvalues below pos_floor (the negative ones)
                             penalties = torch.relu(pos_floor - trailing_eigs)**2
-                            # Average the penalties to avoid loss exploding with many negative eigs
-                            num_below_floor = (trailing_eigs < pos_floor).sum().float()
-                            if num_below_floor > 0:
-                                loss = penalties.sum() / num_below_floor
-                            else:
-                                loss = eig0.new_tensor(0.0)
+                            loss = penalties.sum()
 
                 else:
                     raise ValueError(f"Unknown loss_type: {loss_type}")

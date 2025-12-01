@@ -79,9 +79,9 @@ def _mean_vector_magnitude(vec: torch.Tensor) -> float:
 def detect_stall(
     eig_product_history: List[Optional[float]],
     disp_history: List[float],
-    window: int = 50,
-    disp_threshold: float = 0.02,
-    eig_change_threshold: float = 5.0,
+    window: int = 100,
+    disp_threshold: float = 0.005,
+    eig_change_threshold: float = 2.0,
 ) -> bool:
     """
     Detect if GAD optimization has stalled.
@@ -132,8 +132,8 @@ def detect_stall(
 def run_gad_euler_on_batch(
     calculator: EquiformerTorchCalculator, batch: Batch, n_steps: int, dt: float, stop_at_ts: bool = False,
     kick_enabled: bool = False, kick_force_threshold: float = 0.015, kick_magnitude: float = 0.1,
-    minimization_fallback: bool = False, stall_window: int = 50, 
-    stall_disp_threshold: float = 0.02, stall_eig_change_threshold: float = 5.0,
+    minimization_fallback: bool = False, stall_window: int = 100, 
+    stall_disp_threshold: float = 0.005, stall_eig_change_threshold: float = 2.0,
 ) -> Dict[str, Any]:
     """
     Runs GAD Euler updates, optionally stopping when a TS signature is found.
@@ -242,13 +242,25 @@ def run_gad_euler_on_batch(
                 batch.pos = batch.pos + kick_direction * kick_magnitude
                 gad = kick_direction * kick_magnitude
             elif current_mode == 1:
-                # MINIMIZATION MODE: Follow forces directly (gradient descent on energy)
+                # MINIMIZATION MODE: Follow forces with controlled step size
                 # Forces = -gradient of energy, so following forces decreases energy
                 forces = results["forces"]
-                gad = forces  # Use forces directly as the update direction
                 
-                # Euler step with forces
-                batch.pos = batch.pos + dt * gad
+                # Normalize forces and apply fixed step size for stable minimization
+                force_norms = forces.norm(dim=1, keepdim=True)
+                max_force = force_norms.max()
+                
+                # Use a fixed max step of 0.05 Å per atom, scaled by relative force magnitude
+                max_step_per_atom = 0.05  # Å
+                if max_force > 1e-6:
+                    # Scale step so max displacement is max_step_per_atom
+                    step_scale = max_step_per_atom / max_force
+                    gad = forces * step_scale
+                else:
+                    gad = forces * 0.01  # Very small forces, use small step
+                
+                # Apply step
+                batch.pos = batch.pos + gad
             else:
                 # GAD MODE: Use GAD direction
                 # 1. Get GAD direction from Hessian
@@ -498,12 +510,14 @@ if __name__ == "__main__":
     parser.add_argument("--enable-minimization-fallback", action="store_true",
                         help="Enable fallback to minimization mode when GAD stalls. "
                              "Minimization follows forces to find a local minimum.")
-    parser.add_argument("--stall-window", type=int, default=50,
-                        help="Number of steps to check for stall detection (default: 50).")
-    parser.add_argument("--stall-disp-threshold", type=float, default=0.02,
-                        help="Minimum average displacement (Å) to not be considered stalled (default: 0.02).")
-    parser.add_argument("--stall-eig-change-threshold", type=float, default=5.0,
-                        help="Minimum eigenvalue product change to not be stalled (default: 5.0).")
+    parser.add_argument("--stall-window", type=int, default=100,
+                        help="Number of steps to check for stall detection (default: 100).")
+    parser.add_argument("--stall-disp-threshold", type=float, default=0.005,
+                        help="Minimum average displacement (Å) to not be considered stalled (default: 0.005).")
+    parser.add_argument("--stall-eig-change-threshold", type=float, default=2.0,
+                        help="Minimum eigenvalue product change to not be stalled (default: 2.0).")
+    parser.add_argument("--minimization-dt-scale", type=float, default=0.1,
+                        help="Scale factor for dt in minimization mode (default: 0.1, i.e., 10x smaller steps).")
 
     # W&B arguments
     parser.add_argument("--wandb", action="store_true",
