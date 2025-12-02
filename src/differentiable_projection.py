@@ -1,7 +1,6 @@
 import torch
 
 from hip.masses import MASS_DICT
-from nets.prediction_utils import Z_TO_ATOM_SYMBOL
 
 # ---- helpers --------------------------------------------------------------
 
@@ -229,12 +228,13 @@ def compare_truncated_vs_projected(
     return result
 
 if __name__ == "__main__":
-    
+
     from torch_geometric.data import Batch as TGBatch
     from torch_geometric.data import Data as TGData
     from hip.inference_utils import get_model_from_checkpoint
     import os
     from hip.frequency_analysis import eckart_projection_notmw_torch as projection_not_differentiable
+    from nets.prediction_utils import Z_TO_ATOM_SYMBOL
     
     # Load model with the specified checkpoint
     project_root = os.path.dirname(os.path.dirname(__file__))
