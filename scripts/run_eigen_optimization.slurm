@@ -21,6 +21,7 @@ echo ">>> Running Eigenvalue Descent script..."
 # Standalone eigenvalue product minimization using L-BFGS-B.
 # Directly minimizes λ₀*λ₁ to find transition states (where product < 0).
 
+
 echo ">>> Running Eigprod BFGS (minimize λ₀*λ₁)"
 python -m src.gad_eigenvalue_descent \
     --max-samples 30 \

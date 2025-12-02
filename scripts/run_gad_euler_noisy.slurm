@@ -34,6 +34,17 @@ echo ">>> Running GAD-Euler Search with noisy starting geometries..."
 # Standalone saddle point optimization using L-BFGS-B with GAD vector as gradient.
 # Finds points where GAD vector = 0 (saddle points).
 
+# echo ">>> Running GAD BFGS (standalone saddle point optimization)"
+# python -m src.gad_gad_euler_rmsd \
+#     --max-samples 30 \
+#     --start-from reactant_noise2A \
+#     --use-gad-bfgs \
+#     --gad-bfgs-maxiter 100 \
+#     --gad-bfgs-gtol 1e-5 \
+#     --gad-bfgs-max-step 1.0 \
+#     --wandb \
+#     --wandb-project "gad-noise-experiments"
+
 echo ">>> Running GAD BFGS (standalone saddle point optimization)"
 python -m src.gad_gad_euler_rmsd \
     --max-samples 30 \
@@ -44,6 +55,7 @@ python -m src.gad_gad_euler_rmsd \
     --gad-bfgs-max-step 1.0 \
     --wandb \
     --wandb-project "gad-noise-experiments"
+
 
 # === GAD + EIGPROD MINIMIZATION (1000 steps) ===
 # GAD dynamics with eigproduct minimization fallback when stalled.
