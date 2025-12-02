@@ -114,39 +114,37 @@ def log_sample(
     wandb.log(log_dict, step=sample_index)
 
 
-def log_summary(
-    total_samples: int,
-    avg_steps: float,
-    avg_wallclock_time: float,
-    ts_success_rate: float,
-    extra_summary: Optional[Dict[str, Any]] = None,
-) -> None:
+def log_summary(summary_dict: Dict[str, Any]) -> None:
     """
     Log summary statistics at the end of the experiment.
     
     Args:
-        total_samples: Total number of samples processed
-        avg_steps: Average number of steps to convergence
-        avg_wallclock_time: Average wallclock time per sample (seconds)
-        ts_success_rate: Fraction of samples that reached TS signature
-        extra_summary: Additional summary metrics to log
+        summary_dict: Dictionary of summary metrics to log. All values are logged
+                      directly to W&B summary (which persists after run completion).
+                      
+    Expected keys (all optional):
+        - total_samples: Total number of samples processed
+        - avg_steps: Average number of steps to convergence
+        - avg_wallclock_time: Average wallclock time per sample (seconds)
+        - ts_success_rate: Fraction that reached TS (order-1)
+        - count_order_0, count_order_1, count_order_2, ...: Counts per final saddle order
+        - avg_final_eig_product, avg_final_eig0, avg_final_eig1, etc.: Averages of metrics
     """
     if _wandb_run is None:
         return
     
-    # Set summary metrics (these persist after run completion)
-    _wandb_run.summary["total_samples"] = total_samples
-    _wandb_run.summary["avg_steps_to_convergence"] = avg_steps
-    _wandb_run.summary["avg_wallclock_time_seconds"] = avg_wallclock_time
-    _wandb_run.summary["ts_success_rate"] = ts_success_rate
+    # Set all summary metrics
+    for key, value in summary_dict.items():
+        if value is not None:
+            _wandb_run.summary[key] = value
     
-    if extra_summary:
-        for key, value in extra_summary.items():
-            if value is not None:
-                _wandb_run.summary[key] = value
-    
-    print(f"[W&B] Logged summary: {total_samples} samples, avg steps={avg_steps:.1f}, "
-          f"avg time={avg_wallclock_time:.2f}s, TS rate={ts_success_rate:.1%}")
+    # Print summary
+    total = summary_dict.get("total_samples", 0)
+    avg_steps = summary_dict.get("avg_steps", 0)
+    avg_time = summary_dict.get("avg_wallclock_time", 0)
+    ts_rate = summary_dict.get("ts_success_rate", 0)
+    print(f"[W&B] Logged summary: {total} samples, avg steps={avg_steps:.1f}, "
+          f"avg time={avg_time:.2f}s, TS rate={ts_rate:.1%}")
 
 
 def finish_wandb() -> None:

@@ -808,10 +808,17 @@ if __name__ == "__main__":
             run_dir=str(logger.run_dir),
         )
 
-    # Track wallclock times for summary
-    wallclock_times = []
-    steps_list = []
-    ts_found_count = 0
+    # Track metrics for summary statistics
+    all_metrics = {
+        "wallclock_time": [],
+        "steps_taken": [],
+        "final_neg_vibrational": [],  # For saddle order distribution
+        "final_eig_product": [],
+        "final_eig0": [],
+        "final_eig1": [],
+        "final_loss": [],
+        "rmsd_to_known_ts": [],
+    }
 
     print(f"Running Eigenvalue Descent to Find Transition States")
     print(f"Output directory: {logger.run_dir}")
@@ -937,12 +944,21 @@ if __name__ == "__main__":
                 extra_data=extra_data,
             )
 
-            # Track wallclock time
+            # Track wallclock time and metrics for summary
             sample_wallclock = time.time() - sample_start_time
-            wallclock_times.append(sample_wallclock)
-            steps_list.append(result.steps_taken)
-            if result.final_neg_vibrational == 1:
-                ts_found_count += 1
+            all_metrics["wallclock_time"].append(sample_wallclock)
+            all_metrics["steps_taken"].append(result.steps_taken)
+            all_metrics["final_neg_vibrational"].append(result.final_neg_vibrational)
+            if result.final_eig_product is not None:
+                all_metrics["final_eig_product"].append(result.final_eig_product)
+            if result.final_eig0 is not None:
+                all_metrics["final_eig0"].append(result.final_eig0)
+            if result.final_eig1 is not None:
+                all_metrics["final_eig1"].append(result.final_eig1)
+            if result.final_loss is not None:
+                all_metrics["final_loss"].append(result.final_loss)
+            if result.rmsd_to_known_ts is not None:
+                all_metrics["rmsd_to_known_ts"].append(result.rmsd_to_known_ts)
 
             # Add result to logger (file management)
             logger.add_result(result)
@@ -1016,21 +1032,46 @@ if __name__ == "__main__":
     # Print summary
     logger.print_summary()
 
-    # Log summary to W&B and finish
-    if wallclock_times:
-        total_samples = len(wallclock_times)
-        avg_steps = np.mean(steps_list) if steps_list else 0
-        avg_wallclock = np.mean(wallclock_times)
-        ts_rate = ts_found_count / total_samples if total_samples > 0 else 0
-        log_summary(
-            total_samples=total_samples,
-            avg_steps=avg_steps,
-            avg_wallclock_time=avg_wallclock,
-            ts_success_rate=ts_rate,
-            extra_summary={
-                "std_steps": np.std(steps_list) if steps_list else 0,
-                "std_wallclock_time": np.std(wallclock_times),
-                "total_wallclock_time": sum(wallclock_times),
-            }
-        )
+    # Compute and log summary statistics to W&B
+    if all_metrics["wallclock_time"]:
+        total_samples = len(all_metrics["wallclock_time"])
+        
+        # Count final saddle orders (how many converged to order 0, 1, 2, 3, etc.)
+        from collections import Counter
+        # Filter out None values for counting
+        valid_orders = [x for x in all_metrics["final_neg_vibrational"] if x is not None]
+        order_counts = Counter(valid_orders)
+        
+        # Build summary dict
+        summary = {
+            "total_samples": total_samples,
+            "avg_steps": np.mean(all_metrics["steps_taken"]),
+            "std_steps": np.std(all_metrics["steps_taken"]),
+            "avg_wallclock_time": np.mean(all_metrics["wallclock_time"]),
+            "std_wallclock_time": np.std(all_metrics["wallclock_time"]),
+            "total_wallclock_time": sum(all_metrics["wallclock_time"]),
+            # Saddle order distribution
+            "ts_success_rate": order_counts.get(1, 0) / total_samples if total_samples > 0 else 0,
+            "count_order_0": order_counts.get(0, 0),
+            "count_order_1_ts": order_counts.get(1, 0),
+            "count_order_2": order_counts.get(2, 0),
+            "count_order_3": order_counts.get(3, 0),
+            "count_order_4_plus": sum(v for k, v in order_counts.items() if k is not None and k >= 4),
+        }
+        
+        # Add averages for other metrics
+        if all_metrics["final_eig_product"]:
+            summary["avg_final_eig_product"] = np.mean(all_metrics["final_eig_product"])
+            summary["std_final_eig_product"] = np.std(all_metrics["final_eig_product"])
+        if all_metrics["final_eig0"]:
+            summary["avg_final_eig0"] = np.mean(all_metrics["final_eig0"])
+        if all_metrics["final_eig1"]:
+            summary["avg_final_eig1"] = np.mean(all_metrics["final_eig1"])
+        if all_metrics["final_loss"]:
+            summary["avg_final_loss"] = np.mean(all_metrics["final_loss"])
+        if all_metrics["rmsd_to_known_ts"]:
+            summary["avg_rmsd_to_known_ts"] = np.mean(all_metrics["rmsd_to_known_ts"])
+            summary["std_rmsd_to_known_ts"] = np.std(all_metrics["rmsd_to_known_ts"])
+        
+        log_summary(summary)
     finish_wandb()
