@@ -985,7 +985,7 @@ if __name__ == "__main__":
                 "final_eig1": result.final_eig1,
                 "final_eig_product": result.final_eig_product,
                 "rmsd_to_known_ts": result.rmsd_to_known_ts,
-                "reached_ts": result.final_neg_vibrational == 1,
+                "reached_ts": int(result.final_neg_vibrational == 1) if result.final_neg_vibrational is not None else 0,
                 "wallclock_time": sample_wallclock,
             }
             log_sample(i, metrics, fig=fig, plot_name=f"eigdescent_{result.transition_key}")

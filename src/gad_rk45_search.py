@@ -831,7 +831,7 @@ if __name__ == "__main__":
                 "final_eig0": result.final_eig0,
                 "final_eig1": result.final_eig1,
                 "final_eig_product": result.final_eig_product,
-                "reached_ts": dynamics_fn.ts_found,
+                "reached_ts": int(dynamics_fn.ts_found),  # Convert bool to int for W&B
                 "wallclock_time": sample_wallclock,
                 "num_kicks": dynamics_fn.num_kicks,
             }

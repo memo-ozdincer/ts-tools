@@ -1118,7 +1118,7 @@ if __name__ == "__main__":
                 "final_eig_product": result.final_eig_product,
                 "rmsd_to_known_ts": result.rmsd_to_known_ts,
                 "rms_force_end": out['rms_force_end'],
-                "reached_ts": steps_to_ts is not None,
+                "reached_ts": int(steps_to_ts is not None),  # Convert bool to int for W&B
                 "wallclock_time": sample_wallclock,
                 "num_kicks": out['num_kicks'],
             }
