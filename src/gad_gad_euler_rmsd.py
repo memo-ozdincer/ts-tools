@@ -435,6 +435,152 @@ def eig_product_bfgs_minimize(
         }
 
 
+def gad_bfgs_optimize(
+    coords: torch.Tensor,
+    atomic_nums: torch.Tensor,
+    model,
+    device: str,
+    maxiter: int = 50,
+    gtol: float = 1e-5,
+    max_step: float = 0.5,
+) -> Dict[str, Any]:
+    """
+    Perform L-BFGS-B optimization using the GAD vector as the gradient.
+    
+    This finds saddle points by treating the GAD vector (modified force) as
+    the gradient of an implicit objective. BFGS will find where GAD ≈ 0,
+    which corresponds to a first-order saddle point.
+    
+    The GAD vector is: gad = F + 2*(F·v)*v
+    where F is the force and v is the lowest eigenvector of the Hessian.
+    
+    Args:
+        coords: Current coordinates (will be cloned, original not modified)
+        atomic_nums: Atomic numbers
+        model: The Equiformer model (calculator.potential)
+        device: Device string
+        maxiter: Maximum number of BFGS iterations
+        gtol: Gradient (GAD vector) tolerance for convergence
+        max_step: Maximum displacement per atom from starting position (Å)
+        
+    Returns:
+        Dictionary with:
+            - new_coords: Updated coordinates (torch.Tensor)
+            - energy: Final energy
+            - gad_norm: Final GAD vector norm
+            - nit: Number of iterations taken
+            - success: Whether optimization succeeded
+            - message: Optimization status message
+            - max_atom_disp: Maximum displacement from start
+    """
+    start_coords = coords.clone().detach().cpu().numpy().flatten()
+    
+    # Track the best result found during optimization
+    best_result = {
+        "energy": float('inf'),
+        "gad_norm": float('inf'),
+    }
+    
+    def compute_energy_and_gad(x_flat):
+        """Compute energy and GAD vector for given coordinates."""
+        nonlocal best_result
+        
+        coords_np = x_flat.reshape(-1, 3)
+        coords_t = torch.tensor(coords_np, dtype=torch.float32, device=device)
+        
+        try:
+            with torch.no_grad():
+                # Forward pass to get energy, forces, and hessian
+                batch = coord_atoms_to_torch_geometric(coords_t, atomic_nums, device)
+                _, _, out = model.forward(batch, otf_graph=True)
+                
+                energy = out["energy"].item()
+                forces = out["forces"].reshape(-1)  # Flatten to (3*N,)
+                
+                # Get Hessian and compute lowest eigenvector
+                hess_full = out["hessian"].reshape(coords_t.numel(), coords_t.numel())
+                evals, evecs = torch.linalg.eigh(hess_full)
+                v = evecs[:, 0].to(forces.dtype)  # Lowest eigenvector
+                v = v / (v.norm() + 1e-12)
+                
+                # Compute GAD vector: gad = F + 2*(F·v)*v
+                # Note: We negate because BFGS minimizes, and we want to follow GAD direction
+                f_dot_v = torch.dot(-forces, v)  # Using -F because forces = -gradient(E)
+                gad_flat = -forces + 2.0 * f_dot_v * v
+                
+                # GAD vector serves as the "gradient" for BFGS
+                # We negate it because BFGS expects gradient of objective to minimize
+                gad_for_bfgs = -gad_flat
+                
+                gad_norm = gad_flat.norm().item()
+                
+                # Update best result
+                if gad_norm < best_result["gad_norm"]:
+                    best_result["energy"] = energy
+                    best_result["gad_norm"] = gad_norm
+                
+            return energy, gad_for_bfgs.cpu().numpy().astype(np.float64)
+            
+        except Exception as e:
+            print(f"    [GAD-BFGS] Evaluation failed: {e}")
+            return 1e10, np.zeros_like(x_flat)
+    
+    # Set up bounds to limit maximum displacement
+    if max_step is not None and max_step > 0:
+        lower_bounds = start_coords - max_step
+        upper_bounds = start_coords + max_step
+        bounds = list(zip(lower_bounds, upper_bounds))
+    else:
+        bounds = None
+    
+    try:
+        result = scipy_minimize(
+            compute_energy_and_gad,
+            x0=start_coords.astype(np.float64),
+            method='L-BFGS-B',
+            jac=True,  # compute_energy_and_gad returns (f, grad)
+            bounds=bounds,
+            options={
+                'maxiter': maxiter,
+                'gtol': gtol,
+                'disp': False,
+            }
+        )
+        
+        # Convert result back to torch
+        new_coords = torch.tensor(
+            result.x.reshape(-1, 3),
+            dtype=torch.float32,
+            device=device
+        )
+        
+        # Compute actual displacement
+        displacement = (new_coords - coords.to(device)).norm(dim=1)
+        max_atom_disp = displacement.max().item()
+        
+        return {
+            "new_coords": new_coords,
+            "energy": best_result["energy"],
+            "gad_norm": best_result["gad_norm"],
+            "nit": result.nit,
+            "success": result.success,
+            "message": result.message,
+            "max_atom_disp": max_atom_disp,
+        }
+        
+    except Exception as e:
+        print(f"    [GAD-BFGS] Optimization failed: {e}")
+        return {
+            "new_coords": coords,
+            "energy": float('inf'),
+            "gad_norm": float('inf'),
+            "nit": 0,
+            "success": False,
+            "message": str(e),
+            "max_atom_disp": 0.0,
+        }
+
+
 # --- MODIFIED FUNCTION IMPLEMENTING EARLY STOPPING, KICK, AND EIGENVALUE PRODUCT DESCENT FALLBACK ---
 def run_gad_euler_on_batch(
     calculator: EquiformerTorchCalculator, batch: Batch, n_steps: int, dt: float, stop_at_ts: bool = False,
@@ -917,6 +1063,16 @@ if __name__ == "__main__":
     parser.add_argument("--bfgs-max-step", type=float, default=0.5,
                         help="Maximum displacement per atom during BFGS (default: 0.5 Å, larger to escape weird geometries).")
 
+    # GAD BFGS arguments (standalone GAD optimization using BFGS)
+    parser.add_argument("--use-gad-bfgs", action="store_true",
+                        help="Use L-BFGS-B with GAD vector as gradient (standalone saddle point optimization).")
+    parser.add_argument("--gad-bfgs-maxiter", type=int, default=100,
+                        help="Maximum iterations for GAD BFGS optimization (default: 100).")
+    parser.add_argument("--gad-bfgs-gtol", type=float, default=1e-5,
+                        help="GAD vector norm tolerance for convergence (default: 1e-5).")
+    parser.add_argument("--gad-bfgs-max-step", type=float, default=1.0,
+                        help="Maximum displacement per atom during GAD BFGS (default: 1.0 Å).")
+
     # W&B arguments
     parser.add_argument("--wandb", action="store_true",
                         help="Enable Weights & Biases logging")
@@ -963,6 +1119,10 @@ if __name__ == "__main__":
             "bfgs_maxiter": args.bfgs_maxiter if args.use_bfgs else None,
             "bfgs_gtol": args.bfgs_gtol if args.use_bfgs else None,
             "bfgs_max_step": args.bfgs_max_step if args.use_bfgs else None,
+            "use_gad_bfgs": args.use_gad_bfgs,
+            "gad_bfgs_maxiter": args.gad_bfgs_maxiter if args.use_gad_bfgs else None,
+            "gad_bfgs_gtol": args.gad_bfgs_gtol if args.use_gad_bfgs else None,
+            "gad_bfgs_max_step": args.gad_bfgs_max_step if args.use_gad_bfgs else None,
             "max_samples": args.max_samples,
         }
         init_wandb_run(
@@ -985,10 +1145,19 @@ if __name__ == "__main__":
         "num_kicks": [],
     }
 
-    print(f"Running GAD-Euler Search. Start: {args.start_from.upper()}, Stop at TS: {args.stop_at_ts}")
-    print(f"Output directory: {logger.run_dir}")
-    print(f"Mode: {'Search until TS found (eig_prod < 0)' if args.stop_at_ts else f'Fixed trajectory ({args.n_steps} steps)'}")
-    print(f"Processing up to {args.max_samples} samples (dt={args.dt})")
+    if args.use_gad_bfgs:
+        print(f"Running GAD-BFGS Optimization. Start: {args.start_from.upper()}")
+        print(f"Output directory: {logger.run_dir}")
+        print(f"Mode: Standalone GAD BFGS saddle point optimization")
+        print(f"Processing up to {args.max_samples} samples")
+        print(f"  GAD BFGS max iterations: {args.gad_bfgs_maxiter}")
+        print(f"  GAD BFGS gradient tolerance: {args.gad_bfgs_gtol}")
+        print(f"  GAD BFGS max step: {args.gad_bfgs_max_step} Å")
+    else:
+        print(f"Running GAD-Euler Search. Start: {args.start_from.upper()}, Stop at TS: {args.stop_at_ts}")
+        print(f"Output directory: {logger.run_dir}")
+        print(f"Mode: {'Search until TS found (eig_prod < 0)' if args.stop_at_ts else f'Fixed trajectory ({args.n_steps} steps)'}")
+        print(f"Processing up to {args.max_samples} samples (dt={args.dt})")
     print(f"Kick enabled: {args.enable_kick}")
     if args.enable_kick:
         print(f"  Force threshold: {args.kick_force_threshold} eV/Å, Kick magnitude: {args.kick_magnitude} Å")
@@ -1018,26 +1187,83 @@ if __name__ == "__main__":
             batch.natoms = torch.tensor([batch.pos.shape[0]], dtype=torch.long)
             batch = batch.to(device)
 
-            # Run GAD Euler
-            out = run_gad_euler_on_batch(
-                calculator, batch,
-                n_steps=args.n_steps,
-                dt=args.dt,
-                stop_at_ts=args.stop_at_ts,
-                kick_enabled=args.enable_kick,
-                kick_force_threshold=args.kick_force_threshold,
-                kick_magnitude=args.kick_magnitude,
-                minimization_fallback=args.enable_minimization_fallback,
-                stall_window=args.stall_window,
-                stall_disp_threshold=args.stall_disp_threshold,
-                stall_eig_change_threshold=args.stall_eig_change_threshold,
-                eig_descent_lr=args.eig_descent_lr,
-                eig_descent_max_step=args.eig_descent_max_step,
-                use_bfgs=args.use_bfgs,
-                bfgs_maxiter=args.bfgs_maxiter,
-                bfgs_gtol=args.bfgs_gtol,
-                bfgs_max_step=args.bfgs_max_step,
-            )
+            if args.use_gad_bfgs:
+                # --- GAD BFGS MODE: Standalone saddle point optimization ---
+                print(f"  Running GAD BFGS optimization...")
+                gad_result = gad_bfgs_optimize(
+                    coords=batch.pos,
+                    atomic_nums=batch.z,
+                    model=calculator.potential,
+                    device=str(batch.pos.device),
+                    maxiter=args.gad_bfgs_maxiter,
+                    gtol=args.gad_bfgs_gtol,
+                    max_step=args.gad_bfgs_max_step,
+                )
+                
+                # Update batch position with optimized coordinates
+                batch.pos = gad_result["new_coords"]
+                
+                # Get final state analysis
+                results = calculator.predict(batch, do_hessian=True)
+                final_freq_info = analyze_frequencies_torch(results["hessian"], batch.pos, batch.z)
+                neg_eigvals_end = int(final_freq_info.get("neg_num", -1))
+                
+                # Get initial state analysis
+                batch_start = batch.clone()
+                batch_start.pos = initial_coords
+                res_start = calculator.predict(batch_start, do_hessian=True)
+                fi_start = analyze_frequencies_torch(res_start["hessian"], initial_coords, batch.z)
+                neg_eigvals_start = int(fi_start.get("neg_num", -1))
+                
+                # Create compatible output dict
+                out = {
+                    "steps_taken": gad_result["nit"],
+                    "rmsd": align_ordered_and_get_rmsd(initial_coords, batch.pos),
+                    "rms_force_end": results["forces"].pow(2).mean().sqrt().item(),
+                    "max_atom_force_end": results["forces"].norm(dim=1).max().item(),
+                    "natoms": int(initial_coords.shape[0]),
+                    "energy_start": res_start["energy"].item() if hasattr(res_start["energy"], 'item') else res_start["energy"],
+                    "energy_end": gad_result["energy"],
+                    "eig_product_start": None,  # Not tracked in GAD BFGS mode
+                    "eig_product_end": _extract_eig_product(final_freq_info),
+                    "mean_displacement": (batch.pos - initial_coords.to(batch.pos.device)).norm(dim=1).mean().item(),
+                    "max_displacement": (batch.pos - initial_coords.to(batch.pos.device)).norm(dim=1).max().item(),
+                    "trajectory": {"energy": [], "force_mean": [], "eig0": [], "eig1": [], 
+                                   "eig_product": [], "kick_applied": [], "disp_from_last": [], 
+                                   "disp_from_start": [], "mode": []},  # Empty trajectory for GAD BFGS
+                    "neg_eigvals_start": neg_eigvals_start,
+                    "neg_eigvals_end": neg_eigvals_end,
+                    "num_kicks": 0,
+                    "mode_switch_step": None,
+                    "final_mode": "gad_bfgs",
+                    "gad_norm": gad_result["gad_norm"],
+                    "bfgs_success": gad_result["success"],
+                    "bfgs_message": gad_result["message"],
+                }
+                
+                print(f"  [GAD-BFGS] Done: nit={gad_result['nit']}, gad_norm={gad_result['gad_norm']:.6f}, "
+                      f"success={gad_result['success']}, max_disp={gad_result['max_atom_disp']:.4f}Å")
+            else:
+                # --- STANDARD GAD EULER MODE ---
+                out = run_gad_euler_on_batch(
+                    calculator, batch,
+                    n_steps=args.n_steps,
+                    dt=args.dt,
+                    stop_at_ts=args.stop_at_ts,
+                    kick_enabled=args.enable_kick,
+                    kick_force_threshold=args.kick_force_threshold,
+                    kick_magnitude=args.kick_magnitude,
+                    minimization_fallback=args.enable_minimization_fallback,
+                    stall_window=args.stall_window,
+                    stall_disp_threshold=args.stall_disp_threshold,
+                    stall_eig_change_threshold=args.stall_eig_change_threshold,
+                    eig_descent_lr=args.eig_descent_lr,
+                    eig_descent_max_step=args.eig_descent_max_step,
+                    use_bfgs=args.use_bfgs,
+                    bfgs_maxiter=args.bfgs_maxiter,
+                    bfgs_gtol=args.bfgs_gtol,
+                    bfgs_max_step=args.bfgs_max_step,
+                )
 
             # Extract final results from trajectory
             traj = out["trajectory"]

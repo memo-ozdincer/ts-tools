@@ -22,13 +22,11 @@ H5_PATH="$HOME/projects/aip-aspuru/memoozd/data/transition1x.h5"
 CKPT_PATH="$HOME/projects/aip-aspuru/memoozd/models/hip_v2.ckpt"
 OUT_DIR="$HOME/scratch/ts-tools-output"
 
-# === EIGPRODUCT MINIMIZATION EXPERIMENTS ===
-# Testing two approaches to escape weird geometries when GAD stalls:
-#   1. Larger step sizes (gradient descent with bigger max_step)
-#   2. L-BFGS-B optimization (more robust, can take larger steps)
+# === GAD + EIGPROD MINIMIZATION (1000 steps) ===
+# GAD dynamics with eigproduct minimization fallback when stalled.
+# Gradient descent with larger step size (0.5 Å) to escape weird geometries.
 
-# --- EXPERIMENT 1: Larger step size (gradient descent) ---
-echo ">>> Running Experiment 1: Larger step size (gradient descent)"
+echo ">>> Running GAD + Eigprod (gradient descent, 1000 steps)"
 python -m src.gad_gad_euler_rmsd \
     --h5-path "$H5_PATH" \
     --checkpoint-path "$CKPT_PATH" \
@@ -39,26 +37,7 @@ python -m src.gad_gad_euler_rmsd \
     --eig-descent-lr 0.01 \
     --eig-descent-max-step 0.5 \
     --stop-at-ts \
-    --n-steps 500 \
-    --dt 0.005 \
-    --wandb \
-    --wandb-project "gad-noise-experiments"
-
-# --- EXPERIMENT 2: L-BFGS-B optimization ---
-echo ">>> Running Experiment 2: L-BFGS-B optimization"
-python -m src.gad_gad_euler_rmsd \
-    --h5-path "$H5_PATH" \
-    --checkpoint-path "$CKPT_PATH" \
-    --out-dir "$OUT_DIR" \
-    --max-samples 30 \
-    --start-from reactant_noise2A \
-    --enable-minimization-fallback \
-    --use-bfgs \
-    --bfgs-maxiter 50 \
-    --bfgs-gtol 1e-5 \
-    --bfgs-max-step 0.5 \
-    --stop-at-ts \
-    --n-steps 500 \
+    --n-steps 1000 \
     --dt 0.005 \
     --wandb \
     --wandb-project "gad-noise-experiments"
