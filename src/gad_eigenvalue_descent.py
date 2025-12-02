@@ -1002,6 +1002,10 @@ if __name__ == "__main__":
             "target_eig0": args.target_eig0,
             "target_eig1": args.target_eig1,
             "adaptive_targets": args.adaptive_targets,
+            "use_bfgs": args.use_bfgs,
+            "bfgs_maxiter": args.bfgs_maxiter if args.use_bfgs else None,
+            "bfgs_gtol": args.bfgs_gtol if args.use_bfgs else None,
+            "bfgs_max_step": args.bfgs_max_step if args.use_bfgs else None,
             "max_samples": args.max_samples,
         }
         init_wandb_run(
@@ -1025,9 +1029,15 @@ if __name__ == "__main__":
         "rmsd_to_known_ts": [],
     }
 
-    print(f"Running Eigenvalue Descent to Find Transition States")
-    print(f"Output directory: {logger.run_dir}")
-    print(f"Starting From: {args.start_from.upper()}, Steps: {args.n_steps_opt}, LR: {args.lr}")
+    if args.use_bfgs:
+        print(f"Running Eigenvalue BFGS Optimization to Find Transition States")
+        print(f"Output directory: {logger.run_dir}")
+        print(f"Starting From: {args.start_from.upper()}")
+        print(f"BFGS Settings: maxiter={args.bfgs_maxiter}, gtol={args.bfgs_gtol}, max_step={args.bfgs_max_step}Å")
+    else:
+        print(f"Running Eigenvalue Descent to Find Transition States")
+        print(f"Output directory: {logger.run_dir}")
+        print(f"Starting From: {args.start_from.upper()}, Steps: {args.n_steps_opt}, LR: {args.lr}")
     print(f"Loss Type: {args.loss_type}")
     if args.early_stop_eig_product and args.early_stop_eig_product > 0:
         print(f"  Early stop when λ₀·λ₁ ≤ -{args.early_stop_eig_product:.1e}")

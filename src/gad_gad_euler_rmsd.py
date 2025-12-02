@@ -925,7 +925,7 @@ def plot_trajectory_new(
     ax.set_title("Force Magnitude")
     ax.set_xlabel("Step")
 
-    # Panel 3 (1,0): Eigenvalue Product
+    # Panel 3 (1,0): Eigenvalue Product with dual-scale inset
     ax = axes[1, 0]
     eig_product = _nanify(trajectory["eig_product"])
     ax.plot(timesteps, eig_product, marker=".", color="tab:purple", lw=1.2, markersize=3, label="λ₀ * λ₁")
@@ -944,6 +944,37 @@ def plot_trajectory_new(
     ax.set_title("Eigenvalue Product (λ₀ * λ₁)")
     ax.set_xlabel("Step")
     ax.legend(loc='best', fontsize=8)
+    
+    # Add inset for zoomed view of late steps (200+) with different scale
+    late_start = 200
+    if len(eig_product) > late_start + 50:  # Only add inset if we have enough late data
+        late_eig = eig_product[late_start:]
+        late_steps = timesteps[late_start:]
+        late_valid = late_eig[~np.isnan(late_eig)]
+        
+        if len(late_valid) > 0:
+            # Create inset axes in bottom-right corner
+            ax_inset = ax.inset_axes([0.55, 0.1, 0.4, 0.35])  # [x, y, width, height] in axes coords
+            ax_inset.plot(late_steps, late_eig, marker=".", color="tab:purple", lw=1.0, markersize=2)
+            ax_inset.axhline(0, color='grey', linestyle='--', linewidth=0.5, zorder=1)
+            
+            # Set y-limits based on late data range (with padding)
+            y_min, y_max = np.nanmin(late_eig), np.nanmax(late_eig)
+            y_range = y_max - y_min
+            if y_range > 0:
+                ax_inset.set_ylim(y_min - 0.1 * y_range, y_max + 0.1 * y_range)
+            
+            ax_inset.set_xlabel("Step", fontsize=7)
+            ax_inset.set_ylabel("λ₀·λ₁", fontsize=7)
+            ax_inset.tick_params(labelsize=6)
+            ax_inset.set_title(f"Steps {late_start}+", fontsize=7, pad=2)
+            ax_inset.patch.set_alpha(0.9)
+            
+            # Add marker lines in inset too
+            if steps_to_ts is not None and steps_to_ts >= late_start:
+                ax_inset.axvline(steps_to_ts, color='green', linestyle='--', linewidth=1, alpha=0.7)
+            if mode_switch_step is not None and mode_switch_step >= late_start:
+                ax_inset.axvline(mode_switch_step, color='red', linestyle=':', linewidth=1, alpha=0.7)
 
     # Panel 4 (1,1): Two Smallest Eigenvalues (λ₀, λ₁)
     ax = axes[1, 1]
