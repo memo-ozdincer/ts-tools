@@ -22,11 +22,33 @@ H5_PATH="$HOME/projects/aip-aspuru/memoozd/data/transition1x.h5"
 CKPT_PATH="$HOME/projects/aip-aspuru/memoozd/models/hip_v2.ckpt"
 OUT_DIR="$HOME/scratch/ts-tools-output"
 
-# === GAD + EIGPROD MINIMIZATION (1000 steps) ===
-# GAD dynamics with eigproduct minimization fallback when stalled.
-# Gradient descent with larger step size (0.5 Å) to escape weird geometries.
+# === GAD + EIGPROD MINIMIZATION EXPERIMENTS ===
+# Testing three approaches:
+#   1. GAD with gradient-based eigproduct fallback (larger step sizes)
+#   2. GAD with BFGS-based eigproduct fallback
+#   3. Standalone GAD BFGS (saddle point optimization)
 
-echo ">>> Running GAD + Eigprod (gradient descent, 1000 steps)"
+# --- EXPERIMENT 1: GAD + Eigprod (gradient descent) ---
+# Increases max_step from 0.1 to 0.5 Å to escape weird geometries
+# echo ">>> Running Experiment 1: Larger step size (gradient descent)"
+# python -m src.gad_gad_euler_rmsd \
+#     --h5-path "$H5_PATH" \
+#     --checkpoint-path "$CKPT_PATH" \
+#     --out-dir "$OUT_DIR" \
+#     --max-samples 30 \
+#     --start-from reactant_noise2A \
+#     --enable-minimization-fallback \
+#     --eig-descent-lr 0.01 \
+#     --eig-descent-max-step 0.5 \
+#     --stop-at-ts \
+#     --n-steps 1000 \
+#     --dt 0.005 \
+#     --wandb \
+#     --wandb-project "gad-noise-experiments"
+
+# --- EXPERIMENT 2: GAD + Eigprod (L-BFGS-B fallback) ---
+# Uses scipy L-BFGS-B for more robust eigproduct minimization when GAD stalls
+echo ">>> Running Experiment 2: Eigprod BFGS (fallback mode)"
 python -m src.gad_gad_euler_rmsd \
     --h5-path "$H5_PATH" \
     --checkpoint-path "$CKPT_PATH" \
@@ -34,11 +56,29 @@ python -m src.gad_gad_euler_rmsd \
     --max-samples 30 \
     --start-from reactant_noise2A \
     --enable-minimization-fallback \
-    --eig-descent-lr 0.01 \
-    --eig-descent-max-step 0.5 \
+    --use-bfgs \
+    --bfgs-maxiter 50 \
+    --bfgs-gtol 1e-5 \
+    --bfgs-max-step 0.5 \
     --stop-at-ts \
     --n-steps 1000 \
     --dt 0.005 \
+    --wandb \
+    --wandb-project "gad-noise-experiments"
+
+# --- EXPERIMENT 3: GAD BFGS (standalone saddle point optimization) ---
+# Uses L-BFGS-B with GAD vector as gradient to directly find saddle points
+echo ">>> Running Experiment 3: GAD BFGS (standalone)"
+python -m src.gad_gad_euler_rmsd \
+    --h5-path "$H5_PATH" \
+    --checkpoint-path "$CKPT_PATH" \
+    --out-dir "$OUT_DIR" \
+    --max-samples 30 \
+    --start-from reactant_noise2A \
+    --use-gad-bfgs \
+    --gad-bfgs-maxiter 100 \
+    --gad-bfgs-gtol 1e-5 \
+    --gad-bfgs-max-step 1.0 \
     --wandb \
     --wandb-project "gad-noise-experiments"
 

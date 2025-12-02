@@ -113,15 +113,30 @@ echo ">>> Running Eigenvalue Descent script..."
 #     --final-max-displacement 0.1 \
 #     --wandb \
 #     --wandb-project "gad-ts-search"
+# --- Gradient Descent with adaptive step sizing ---
+# python -m src.gad_eigenvalue_descent \
+#     --adaptive-step-sizing \
+#     --higher-order-multiplier 10.0 \
+#     --ts-multiplier 0.5 \
+#     --max-samples 30 \
+#     --n-steps-opt 150 \
+#     --start-from reactant_noise2A \
+#     --loss-type eig_product \
+#     --use-line-search \
+#     --wandb \
+#     --wandb-project "gad-ts-search"
+
+# --- BFGS Optimization for Eigprod ---
+# Uses L-BFGS-B optimizer instead of gradient descent
+echo ">>> Running Eigprod BFGS optimization..."
 python -m src.gad_eigenvalue_descent \
-    --adaptive-step-sizing \
-    --higher-order-multiplier 10.0 \
-    --ts-multiplier 0.5 \
     --max-samples 30 \
-    --n-steps-opt 150 \
     --start-from reactant_noise2A \
     --loss-type eig_product \
-    --use-line-search \
+    --use-bfgs \
+    --bfgs-maxiter 100 \
+    --bfgs-gtol 1e-5 \
+    --bfgs-max-step 1.0 \
     --wandb \
     --wandb-project "gad-ts-search"
 
