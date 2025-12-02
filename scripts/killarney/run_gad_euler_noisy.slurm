@@ -48,23 +48,23 @@ OUT_DIR="$HOME/scratch/ts-tools-output"
 
 # --- EXPERIMENT 2: GAD + Eigprod (L-BFGS-B fallback) ---
 # Uses scipy L-BFGS-B for more robust eigproduct minimization when GAD stalls
-echo ">>> Running Experiment 2: Eigprod BFGS (fallback mode)"
-python -m src.gad_gad_euler_rmsd \
-    --h5-path "$H5_PATH" \
-    --checkpoint-path "$CKPT_PATH" \
-    --out-dir "$OUT_DIR" \
-    --max-samples 30 \
-    --start-from reactant_noise2A \
-    --enable-minimization-fallback \
-    --use-bfgs \
-    --bfgs-maxiter 50 \
-    --bfgs-gtol 1e-5 \
-    --bfgs-max-step 0.5 \
-    --stop-at-ts \
-    --n-steps 1000 \
-    --dt 0.005 \
-    --wandb \
-    --wandb-project "gad-noise-experiments"
+# echo ">>> Running Experiment 2: Eigprod BFGS (fallback mode)"
+# python -m src.gad_gad_euler_rmsd \
+#     --h5-path "$H5_PATH" \
+#     --checkpoint-path "$CKPT_PATH" \
+#     --out-dir "$OUT_DIR" \
+#     --max-samples 30 \
+#     --start-from reactant_noise2A \
+#     --enable-minimization-fallback \
+#     --use-bfgs \
+#     --bfgs-maxiter 50 \
+#     --bfgs-gtol 1e-5 \
+#     --bfgs-max-step 0.5 \
+#     --stop-at-ts \
+#     --n-steps 1000 \
+#     --dt 0.005 \
+#     --wandb \
+#     --wandb-project "gad-noise-experiments"
 
 # --- EXPERIMENT 3: GAD BFGS (standalone saddle point optimization) ---
 # Uses L-BFGS-B with GAD vector as gradient to directly find saddle points
