@@ -1,38 +1,26 @@
 #!/bin/bash
-#SBATCH -A aip-aspuru
-#SBATCH -D /project/aip-aspuru/memooz/ts-tools
 #SBATCH --time=10:00:00
-#SBATCH --gres=gpu:l40s:1
-#SBATCH --mem=32GB
-#SBATCH --job-name=eig_desc
-#SBATCH --output=/scratch/memoozd/ts-tools-output/slurm-%j.txt
-#SBATCH --error=/scratch/memoozd/ts-tools-output/slurm-%j.txt
+#SBATCH --gres=gpu:1
+#SBATCH --mem=32G
+#SBATCH --cpus-per-task=4
+#SBATCH --job-name=proj_eig_desc
+#SBATCH --output=logs/proj_eig_desc_%j.out
 
-# Activate virtual environment
-source .venv/bin/activate
+set -e
+PROJECT_DIR="/project/memo/code/ts-tools" # Adjust if needed
+VENV_DIR="${PROJECT_DIR}/.venv"
+PYTHON_VERSION="3.11" 
+
+cd ${PROJECT_DIR}
+source /cvmfs/soft.computecanada.ca/config/profile/bash.sh
+module purge
+module load python/${PYTHON_VERSION}
+source ${VENV_DIR}/bin/activate
 
 # Set up W&B API key for logging
 export WANDB_API_KEY="ed8d3e45635321a86859f77337bdb4dfb5ceb113"
 
-echo `date`: Job $SLURM_JOB_ID is allocated resources.
 echo ">>> Running Eigenvalue Descent script..."
-
-# === EIGPROD BFGS OPTIMIZATION ===
-# Standalone eigenvalue product minimization using L-BFGS-B.
-# Directly minimizes λ₀*λ₁ to find transition states (where product < 0).
-
-
-echo ">>> Running Eigprod BFGS (minimize λ₀*λ₁)"
-python -m src.gad_eigenvalue_descent \
-    --max-samples 30 \
-    --start-from reactant_noise2A \
-    --use-bfgs \
-    --bfgs-maxiter 100 \
-    --bfgs-gtol 1e-5 \
-    --bfgs-max-step 1.0 \
-    --loss-type eig_product \
-    --wandb \
-    --wandb-project "gad-noise-experiments"
 
 # Each type of loss f'n. Uncomment exactly one command below.
 # python -m src.gad_eigenvalue_descent \
@@ -125,16 +113,16 @@ python -m src.gad_eigenvalue_descent \
 #     --final-max-displacement 0.1 \
 #     --wandb \
 #     --wandb-project "gad-ts-search"
-# python -m src.gad_eigenvalue_descent \
-#     --adaptive-step-sizing \
-#     --higher-order-multiplier 10.0 \
-#     --ts-multiplier 0.5 \
-#     --max-samples 30 \
-#     --n-steps-opt 150 \
-#     --start-from reactant_noise2A \
-#     --loss-type eig_product \
-#     --use-line-search \
-#     --wandb \
-#     --wandb-project "gad-ts-search"
+python -m src.gad_eigenvalue_descent \
+    --adaptive-step-sizing \
+    --higher-order-multiplier 10.0 \
+    --ts-multiplier 0.5 \
+    --max-samples 30 \
+    --n-steps-opt 150 \
+    --start-from reactant_noise2A \
+    --loss-type eig_product \
+    --use-line-search \
+    --wandb \
+    --wandb-project "gad-ts-search"
 
 echo "✅ Job completed."
