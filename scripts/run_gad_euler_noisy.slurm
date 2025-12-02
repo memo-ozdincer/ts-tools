@@ -30,22 +30,37 @@ export WANDB_API_KEY="ed8d3e45635321a86859f77337bdb4dfb5ceb113"
 
 echo ">>> Running GAD-Euler Search with noisy starting geometries..."
 
+# === GAD BFGS OPTIMIZATION ===
+# Standalone saddle point optimization using L-BFGS-B with GAD vector as gradient.
+# Finds points where GAD vector = 0 (saddle points).
+
+echo ">>> Running GAD BFGS (standalone saddle point optimization)"
+python -m src.gad_gad_euler_rmsd \
+    --max-samples 30 \
+    --start-from reactant_noise2A \
+    --use-gad-bfgs \
+    --gad-bfgs-maxiter 100 \
+    --gad-bfgs-gtol 1e-5 \
+    --gad-bfgs-max-step 1.0 \
+    --wandb \
+    --wandb-project "gad-noise-experiments"
+
 # === GAD + EIGPROD MINIMIZATION (1000 steps) ===
 # GAD dynamics with eigproduct minimization fallback when stalled.
 # Gradient descent with larger step size (0.5 Å) to escape weird geometries.
 
-echo ">>> Running GAD + Eigprod (gradient descent, 1000 steps)"
-python -m src.gad_gad_euler_rmsd \
-    --max-samples 30 \
-    --start-from reactant_noise2A \
-    --enable-minimization-fallback \
-    --eig-descent-lr 0.01 \
-    --eig-descent-max-step 0.5 \
-    --stop-at-ts \
-    --n-steps 1000 \
-    --dt 0.005 \
-    --wandb \
-    --wandb-project "gad-noise-experiments"
+# echo ">>> Running GAD + Eigprod (gradient descent, 1000 steps)"
+# python -m src.gad_gad_euler_rmsd \
+#     --max-samples 30 \
+#     --start-from reactant_noise2A \
+#     --enable-minimization-fallback \
+#     --eig-descent-lr 0.01 \
+#     --eig-descent-max-step 0.5 \
+#     --stop-at-ts \
+#     --n-steps 1000 \
+#     --dt 0.005 \
+#     --wandb \
+#     --wandb-project "gad-noise-experiments"
     
 
 # --- Noise Level: 1Å ---

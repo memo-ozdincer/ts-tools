@@ -17,6 +17,22 @@ export WANDB_API_KEY="ed8d3e45635321a86859f77337bdb4dfb5ceb113"
 echo `date`: Job $SLURM_JOB_ID is allocated resources.
 echo ">>> Running Eigenvalue Descent script..."
 
+# === EIGPROD BFGS OPTIMIZATION ===
+# Standalone eigenvalue product minimization using L-BFGS-B.
+# Directly minimizes λ₀*λ₁ to find transition states (where product < 0).
+
+echo ">>> Running Eigprod BFGS (minimize λ₀*λ₁)"
+python -m src.gad_eigenvalue_descent \
+    --max-samples 30 \
+    --start-from reactant_noise2A \
+    --use-bfgs \
+    --bfgs-maxiter 100 \
+    --bfgs-gtol 1e-5 \
+    --bfgs-max-step 1.0 \
+    --loss-type eig_product \
+    --wandb \
+    --wandb-project "gad-noise-experiments"
+
 # Each type of loss f'n. Uncomment exactly one command below.
 # python -m src.gad_eigenvalue_descent \
 #     --max-samples 500 \
