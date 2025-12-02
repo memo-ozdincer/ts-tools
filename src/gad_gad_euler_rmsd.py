@@ -1355,25 +1355,30 @@ if __name__ == "__main__":
             # Add result to logger (file management)
             logger.add_result(result)
 
-            # Create and save plot
-            fig, filename = plot_trajectory_new(
-                trajectory=traj,
-                sample_index=i,
-                formula=batch.formula[0],
-                start_from=args.start_from,
-                initial_neg_num=initial_neg_num,
-                final_neg_num=final_neg_num,
-                steps_to_ts=steps_to_ts,
-                mode_switch_step=out['mode_switch_step'],
-            )
+            # Create and save plot (skip for GAD BFGS mode which has no trajectory)
+            fig = None
+            plot_path = None
+            if traj.get("energy") and len(traj["energy"]) > 0:
+                fig, filename = plot_trajectory_new(
+                    trajectory=traj,
+                    sample_index=i,
+                    formula=batch.formula[0],
+                    start_from=args.start_from,
+                    initial_neg_num=initial_neg_num,
+                    final_neg_num=final_neg_num,
+                    steps_to_ts=steps_to_ts,
+                    mode_switch_step=out['mode_switch_step'],
+                )
 
-            # Save plot to disk (handles sampling)
-            plot_path = logger.save_graph(result, fig, filename)
-            if plot_path:
-                result.plot_path = plot_path
-                print(f"  Saved plot to: {plot_path}")
+                # Save plot to disk (handles sampling)
+                plot_path = logger.save_graph(result, fig, filename)
+                if plot_path:
+                    result.plot_path = plot_path
+                    print(f"  Saved plot to: {plot_path}")
+                else:
+                    print(f"  Skipped plot (max samples for {result.transition_key} reached)")
             else:
-                print(f"  Skipped plot (max samples for {result.transition_key} reached)")
+                print(f"  Skipped plot (no trajectory data in GAD BFGS mode)")
 
             # Log metrics + plot together to W&B (once per sample)
             metrics = {
@@ -1392,14 +1397,16 @@ if __name__ == "__main__":
             }
             # Only log plot if it was saved (within sampling limit)
             log_sample(i, metrics, fig=fig if plot_path else None, plot_name=f"trajectory_{result.transition_key}")
-            plt.close(fig)
+            if fig is not None:
+                plt.close(fig)
 
             print("Result:")
             print(f"  Transition: {result.transition_key}")
             print(f"  Steps: {result.steps_taken}, Wallclock: {sample_wallclock:.2f}s" + (f", Steps to TS: {steps_to_ts}" if steps_to_ts is not None else ""))
             print(f"  Neg Eigs: {result.initial_neg_eigvals} -> {result.final_neg_eigvals}")
             print(f"  RMS Force: {out['rms_force_end']:.3e} eV/Å")
-            print(f"  Final Disp from Start: {traj['disp_from_start'][-1]:.4f} Å")
+            # Use mean_displacement from out dict (works for both GAD Euler and GAD BFGS modes)
+            print(f"  Final Disp from Start: {out['mean_displacement']:.4f} Å")
             if args.enable_kick and out['num_kicks'] > 0:
                 print(f"  Kicks applied: {out['num_kicks']}")
             if out['mode_switch_step'] is not None:
