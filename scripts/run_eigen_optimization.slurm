@@ -113,16 +113,16 @@ echo ">>> Running Eigenvalue Descent script..."
 #     --final-max-displacement 0.1 \
 #     --wandb \
 #     --wandb-project "gad-ts-search"
-python -m src.gad_eigenvalue_descent \
-    --adaptive-step-sizing \
-    --higher-order-multiplier 10.0 \
-    --ts-multiplier 0.5 \
-    --max-samples 30 \
-    --n-steps-opt 150 \
-    --start-from reactant_noise2A \
-    --loss-type eig_product \
-    --use-line-search \
-    --wandb \
-    --wandb-project "gad-ts-search"
+# python -m src.gad_eigenvalue_descent \
+#     --adaptive-step-sizing \
+#     --higher-order-multiplier 10.0 \
+#     --ts-multiplier 0.5 \
+#     --max-samples 30 \
+#     --n-steps-opt 150 \
+#     --start-from reactant_noise2A \
+#     --loss-type eig_product \
+#     --use-line-search \
+#     --wandb \
+#     --wandb-project "gad-ts-search"
 
 echo "✅ Job completed."
