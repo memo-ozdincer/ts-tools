@@ -164,7 +164,7 @@ def plot_eig_descent_history(
         axes[0].set_title("Optimization Loss (log scale)")
 
     def _plot_log_series(ax, series: np.ndarray, color: str, label: str) -> bool:
-        if series.size == 0:
+        if series.size == 0 or series.size != steps.size:
             return False
         finite = np.isfinite(series)
         if not finite.any():
@@ -187,42 +187,59 @@ def plot_eig_descent_history(
         axes[1].text(0.5, 0.5, "No force/grad data", transform=axes[1].transAxes,
                      ha="center", va="center", fontsize=9, color="grey")
 
-    axes[2].plot(steps, eig0, marker=".", lw=1.2, color="tab:red", label="λ₀")
-    axes[2].plot(steps, eig1, marker=".", lw=1.2, color="tab:green", label="λ₁")
-    if _isfinite_scalar(target_eig0):
-        axes[2].axhline(target_eig0, color="tab:red", ls="--", lw=1, alpha=0.6, label="Target λ₀")
-    if _isfinite_scalar(target_eig1):
-        axes[2].axhline(target_eig1, color="tab:green", ls="--", lw=1, alpha=0.6, label="Target λ₁")
-    axes[2].axhline(0.0, color="grey", ls=":", lw=1)
+    # Panel 3: Eigenvalues
     axes[2].set_ylabel("Eigenvalue (eV/Å²)")
     axes[2].set_title("Tracked Vibrational Eigenvalues")
-    axes[2].legend(loc="best", fontsize=9)
-    if eig0.size and np.isfinite(eig0[-1]):
-        axes[2].text(0.98, 0.05, f"Final λ₀={eig0[-1]:.6f}", transform=axes[2].transAxes,
-                     ha="right", va="bottom", fontsize=9, color="tab:red")
+    if eig0.size == steps.size and eig1.size == steps.size:
+        axes[2].plot(steps, eig0, marker=".", lw=1.2, color="tab:red", label="λ₀")
+        axes[2].plot(steps, eig1, marker=".", lw=1.2, color="tab:green", label="λ₁")
+        if _isfinite_scalar(target_eig0):
+            axes[2].axhline(target_eig0, color="tab:red", ls="--", lw=1, alpha=0.6, label="Target λ₀")
+        if _isfinite_scalar(target_eig1):
+            axes[2].axhline(target_eig1, color="tab:green", ls="--", lw=1, alpha=0.6, label="Target λ₁")
+        axes[2].axhline(0.0, color="grey", ls=":", lw=1)
+        axes[2].legend(loc="best", fontsize=9)
+        if eig0.size and np.isfinite(eig0[-1]):
+            axes[2].text(0.98, 0.05, f"Final λ₀={eig0[-1]:.6f}", transform=axes[2].transAxes,
+                         ha="right", va="bottom", fontsize=9, color="tab:red")
+    else:
+        axes[2].text(0.5, 0.5, "No eigenvalue data", transform=axes[2].transAxes,
+                     ha="center", va="center", fontsize=10, color="grey")
 
-    axes[3].plot(steps, eig_prod, marker=".", lw=1.2, color="tab:purple")
-    axes[3].axhline(0.0, color="grey", ls=":", lw=1)
+    # Panel 4: Eigenvalue product
     axes[3].set_ylabel("λ₀ · λ₁")
     axes[3].set_title("Eigenvalue Product")
-    if eig_prod.size:
-        if np.isfinite(eig_prod[0]):
-            axes[3].text(0.02, 0.9, f"Start {eig_prod[0]:.3e}", transform=axes[3].transAxes,
-                         ha="left", va="top", fontsize=9, color="tab:purple")
-        if np.isfinite(eig_prod[-1]):
-            axes[3].text(0.98, 0.9, f"End {eig_prod[-1]:.3e}", transform=axes[3].transAxes,
-                         ha="right", va="top", fontsize=9, color="tab:purple")
+    if eig_prod.size == steps.size:
+        axes[3].plot(steps, eig_prod, marker=".", lw=1.2, color="tab:purple")
+        axes[3].axhline(0.0, color="grey", ls=":", lw=1)
+        if eig_prod.size:
+            if np.isfinite(eig_prod[0]):
+                axes[3].text(0.02, 0.9, f"Start {eig_prod[0]:.3e}", transform=axes[3].transAxes,
+                             ha="left", va="top", fontsize=9, color="tab:purple")
+            if np.isfinite(eig_prod[-1]):
+                axes[3].text(0.98, 0.9, f"End {eig_prod[-1]:.3e}", transform=axes[3].transAxes,
+                             ha="right", va="top", fontsize=9, color="tab:purple")
+    else:
+        axes[3].text(0.5, 0.5, "No eigenvalue product data", transform=axes[3].transAxes,
+                     ha="center", va="center", fontsize=10, color="grey")
 
-    max_disp_plot = max_disp.copy()
-    finite_disp = np.isfinite(max_disp_plot)
-    max_disp_plot[finite_disp] = np.maximum(max_disp_plot[finite_disp], 0.0)
-    axes[4].plot(steps, max_disp_plot, marker=".", lw=1.2, color="tab:cyan", label="Max atom Δ (Å)")
-    axes[4].axhline(0.2, color="tab:cyan", ls="--", lw=1, alpha=0.6, label="Clamp limit")
+    # Panel 5: Displacement and neg eigenvalue count
     axes[4].set_ylabel("Displacement (Å)")
     axes[4].set_xlabel("Optimization Step")
     axes[4].set_title("Per-step Displacement & Neg Eigenvalue Count")
+    
+    # Only plot max_disp if we have data (not available in BFGS mode)
+    if max_disp.size > 0 and max_disp.size == steps.size:
+        max_disp_plot = max_disp.copy()
+        finite_disp = np.isfinite(max_disp_plot)
+        max_disp_plot[finite_disp] = np.maximum(max_disp_plot[finite_disp], 0.0)
+        axes[4].plot(steps, max_disp_plot, marker=".", lw=1.2, color="tab:cyan", label="Max atom Δ (Å)")
+        axes[4].axhline(0.2, color="tab:cyan", ls="--", lw=1, alpha=0.6, label="Clamp limit")
+    else:
+        axes[4].text(0.5, 0.5, "No displacement data\n(BFGS mode)", transform=axes[4].transAxes,
+                     ha="center", va="center", fontsize=10, color="grey")
 
-    if neg_vib.size:
+    if neg_vib.size > 0 and neg_vib.size == steps.size:
         ax4b = axes[4].twinx()
         ax4b.step(steps, neg_vib, where="post", color="tab:red", lw=1.2, label="# neg vib eig")
         ax4b.set_ylabel("# Neg Vibrational")
