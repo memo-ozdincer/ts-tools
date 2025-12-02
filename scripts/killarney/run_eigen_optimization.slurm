@@ -5,8 +5,8 @@
 #SBATCH --gres=gpu:l40s:1
 #SBATCH --mem=32GB
 #SBATCH --job-name=eigen_opt
-#SBATCH --output=/scratch/memoozd/ts-tools-output/slurm-%j.txt
-#SBATCH --error=/scratch/memoozd/ts-tools-output/slurm-%j.txt
+#SBATCH --output=logs/eig_desc_%j.out
+#SBATCH --error=logs/eig_desc_%j.err
 
 # Activate virtual environment
 source .venv/bin/activate
