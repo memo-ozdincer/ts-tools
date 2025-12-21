@@ -183,11 +183,12 @@ tinycss2==1.4.0
 toml==0.10.2
 tomli==2.2.1
 tomli_w==1.2.0
-# Note: Torch 2.7.0 is a nightly/preview version.
-torch==2.7.0+cu126
-torch-geometric==2.6.1
-torch_cluster==1.6.3+pt27cu126
-torch_scatter==2.1.2+pt27cu126
+# torch==2.7.0 --index-url https://download.pytorch.org/whl/cu126
+
+# # Install PyTorch Geometric packages with CUDA support
+# torch-scatter -f https://data.pyg.org/whl/torch-2.7.0+cu126.html
+# torch-cluster -f https://data.pyg.org/whl/torch-2.7.0+cu126.html
+# torch-geometric
 torchmetrics==1.8.2
 tornado==6.5.2
 tqdm==4.67.1
