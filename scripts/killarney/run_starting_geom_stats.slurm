@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH -A 6101772
+#SBATCH -A aip-aspuru
 #SBATCH -D /project/6101772/memoozd/ts-tools
 #SBATCH --time=6:00:00
 #SBATCH --gres=gpu:l40s:1
