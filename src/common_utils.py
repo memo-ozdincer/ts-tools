@@ -14,7 +14,7 @@ from hip.equiformer_torch_calculator import EquiformerTorchCalculator
 
 # Monkey-patch hip's fix_dataset_path to be lenient when loading checkpoints for inference
 # This allows loading pre-trained models without requiring the original training datasets
-from hip import path_config
+from hip import path_config, training_module, inference_utils
 _original_fix_dataset_path = path_config.fix_dataset_path
 
 def _lenient_fix_dataset_path(path):
@@ -25,7 +25,10 @@ def _lenient_fix_dataset_path(path):
         # For inference, we don't need the training datasets, so just return the original path
         return path
 
+# Patch all modules that may have imported it directly
 path_config.fix_dataset_path = _lenient_fix_dataset_path
+training_module.fix_dataset_path = _lenient_fix_dataset_path
+inference_utils.fix_dataset_path = _lenient_fix_dataset_path
 
 # --- Shared Dataset Class ---
 # src/common_utils.py
