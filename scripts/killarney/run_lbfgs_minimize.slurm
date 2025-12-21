@@ -44,10 +44,9 @@ python -m src.lbfgs_energy_minimizer \
     --max-samples 30 \
     --start-from reactant_noise2A \
     --max-iterations 200 \
-    --force-tol 0.01 \
     --max-step 0.5 \
     --target-neg-eig 1 \
-    --eigenvalue-check-freq 5 \
+    --eigenvalue-check-freq 1 \
     --noise-seed 42 \
     --wandb \
     --wandb-project "lbfgs-precondition"
@@ -62,10 +61,9 @@ python -m src.lbfgs_energy_minimizer \
     --max-samples 30 \
     --start-from reactant_noise5A \
     --max-iterations 300 \
-    --force-tol 0.01 \
     --max-step 1.0 \
     --target-neg-eig 1 \
-    --eigenvalue-check-freq 5 \
+    --eigenvalue-check-freq 1 \
     --noise-seed 42 \
     --wandb \
     --wandb-project "lbfgs-precondition"
@@ -80,10 +78,9 @@ python -m src.lbfgs_energy_minimizer \
     --max-samples 30 \
     --start-from reactant_noise10A \
     --max-iterations 500 \
-    --force-tol 0.01 \
     --max-step 2.0 \
     --target-neg-eig 1 \
-    --eigenvalue-check-freq 5 \
+    --eigenvalue-check-freq 1 \
     --noise-seed 42 \
     --wandb \
     --wandb-project "lbfgs-precondition"

@@ -208,10 +208,9 @@ class LBFGSEnergyMinimizer:
         atomic_nums: torch.Tensor,
         device: str,
         max_iterations: int = 200,
-        force_tol: float = 0.01,  # eV/Å - convergence criterion
         max_step: float = 0.5,     # Å - maximum displacement per atom from start
         target_neg_eig_count: int = 1,  # Stop when neg_eig_count <= this
-        eigenvalue_check_freq: int = 5,  # Check eigenvalues every N iterations
+        eigenvalue_check_freq: int = 1,  # Check eigenvalues every N iterations
         verbose: bool = True,
     ):
         """
@@ -222,11 +221,14 @@ class LBFGSEnergyMinimizer:
             atomic_nums: Atomic numbers as torch tensor
             device: Device string ('cuda' or 'cpu')
             max_iterations: Maximum L-BFGS iterations
-            force_tol: Force convergence tolerance (eV/Å)
             max_step: Maximum displacement per atom from starting position (Å)
             target_neg_eig_count: Stop when negative eigenvalue count <= this
-            eigenvalue_check_freq: Check eigenvalues every N iterations
+            eigenvalue_check_freq: Check eigenvalues every N iterations (default: 1 = every iteration)
             verbose: Print progress information
+            
+        Note:
+            The ONLY convergence criterion is negative eigenvalue count reaching the target.
+            Force convergence is NOT used as a stopping criterion.
         """
         self.calculator = calculator
         self.atomic_nums = torch.as_tensor(atomic_nums, dtype=torch.int64)
@@ -234,7 +236,6 @@ class LBFGSEnergyMinimizer:
         self.num_atoms = len(atomic_nums)
         self.device = device
         self.max_iterations = max_iterations
-        self.force_tol = force_tol
         self.max_step = max_step
         self.target_neg_eig_count = target_neg_eig_count
         self.eigenvalue_check_freq = eigenvalue_check_freq
@@ -388,6 +389,8 @@ class LBFGSEnergyMinimizer:
             bounds = None
         
         # Run L-BFGS-B
+        # Note: gtol is set to effectively zero so scipy never stops due to gradient convergence.
+        # The ONLY convergence criterion is negative eigenvalue count via our callback.
         try:
             result = scipy_minimize(
                 self._objective_and_grad,
@@ -398,7 +401,7 @@ class LBFGSEnergyMinimizer:
                 callback=self._callback,
                 options={
                     'maxiter': self.max_iterations,
-                    'gtol': self.force_tol,
+                    'gtol': 1e-30,  # Effectively disabled - we stop via eigenvalue count only
                     'disp': False,
                 }
             )
@@ -409,15 +412,14 @@ class LBFGSEnergyMinimizer:
                 device=self.device,
             )
             
-            # Determine stop reason
+            # Determine stop reason - ONLY eigenvalue count is considered "converged"
             if self._should_stop:
                 stop_reason = "target_neg_eig_reached"
                 converged = True
-            elif result.success:
-                stop_reason = "force_converged"
-                converged = True
             else:
-                stop_reason = result.message
+                # Either max iterations reached or scipy stopped for other reasons
+                # This is NOT convergence - we didn't reach target eigenvalue count
+                stop_reason = f"max_iterations_reached ({result.message})"
                 converged = False
             
         except Exception as e:
@@ -468,9 +470,9 @@ def lbfgs_energy_minimize(
     atomic_nums: torch.Tensor,
     device: str,
     max_iterations: int = 200,
-    force_tol: float = 0.01,
     max_step: float = 0.5,
     target_neg_eig_count: int = 1,
+    eigenvalue_check_freq: int = 1,
     verbose: bool = True,
 ) -> Dict[str, Any]:
     """
@@ -484,22 +486,25 @@ def lbfgs_energy_minimize(
         atomic_nums: Atomic numbers
         device: Device string
         max_iterations: Maximum L-BFGS iterations
-        force_tol: Force convergence tolerance (eV/Å)
         max_step: Maximum displacement per atom (Å)
         target_neg_eig_count: Stop when neg_eig_count <= this (default: 1)
+        eigenvalue_check_freq: Check eigenvalues every N iterations
         verbose: Print progress
     
     Returns:
         Result dictionary (see LBFGSEnergyMinimizer.minimize)
+        
+    Note:
+        The ONLY convergence criterion is negative eigenvalue count.
     """
     minimizer = LBFGSEnergyMinimizer(
         calculator=calculator,
         atomic_nums=atomic_nums,
         device=device,
         max_iterations=max_iterations,
-        force_tol=force_tol,
         max_step=max_step,
         target_neg_eig_count=target_neg_eig_count,
+        eigenvalue_check_freq=eigenvalue_check_freq,
         verbose=verbose,
     )
     return minimizer.minimize(coords)
@@ -558,9 +563,7 @@ def plot_minimization_trajectory(
     # Panel 2: Force RMS (log scale)
     axes[1].semilogy(iterations, force_rms, marker='.', lw=1.2, color='tab:orange')
     axes[1].set_ylabel("Force RMS (eV/Å)")
-    axes[1].set_title("Force Magnitude (log scale)")
-    axes[1].axhline(0.01, color='green', ls='--', lw=1, alpha=0.7, label='Convergence threshold')
-    axes[1].legend(loc='best', fontsize=8)
+    axes[1].set_title("Force Magnitude (log scale) - for reference only")
     
     # Panel 3: Eigenvalues
     valid_eig0 = ~np.isnan(eig0)
@@ -627,14 +630,13 @@ if __name__ == "__main__":
                              "or with noise: 'reactant_noise0.5A', 'reactant_noise2A', etc.")
     parser.add_argument("--max-iterations", type=int, default=200,
                         help="Maximum L-BFGS iterations (default: 200)")
-    parser.add_argument("--force-tol", type=float, default=0.01,
-                        help="Force convergence tolerance in eV/Å (default: 0.01)")
     parser.add_argument("--max-step", type=float, default=0.5,
                         help="Maximum displacement per atom in Å (default: 0.5)")
     parser.add_argument("--target-neg-eig", type=int, default=1,
-                        help="Target negative eigenvalue count to stop (default: 1, i.e., stop at TS or minimum)")
-    parser.add_argument("--eigenvalue-check-freq", type=int, default=5,
-                        help="Check eigenvalues every N iterations (default: 5)")
+                        help="Target negative eigenvalue count to stop (default: 1, i.e., stop at TS or minimum). "
+                             "This is the ONLY convergence criterion.")
+    parser.add_argument("--eigenvalue-check-freq", type=int, default=1,
+                        help="Check eigenvalues every N iterations (default: 1 = every iteration)")
     parser.add_argument("--noise-seed", type=int, default=42,
                         help="Random seed for noise generation (default: 42)")
     
@@ -653,7 +655,7 @@ if __name__ == "__main__":
     calculator, dataloader, device, out_dir = setup_experiment(args, shuffle=False)
     
     # Build loss type flags for directory naming
-    loss_type_flags = f"lbfgs-maxiter{args.max_iterations}-tol{args.force_tol}-from-{args.start_from}"
+    loss_type_flags = f"lbfgs-maxiter{args.max_iterations}-target{args.target_neg_eig}neg-from-{args.start_from}"
     
     # Set up experiment logger
     logger = ExperimentLogger(
@@ -670,7 +672,6 @@ if __name__ == "__main__":
             "script": "lbfgs_energy_minimizer",
             "start_from": args.start_from,
             "max_iterations": args.max_iterations,
-            "force_tol": args.force_tol,
             "max_step": args.max_step,
             "target_neg_eig": args.target_neg_eig,
             "eigenvalue_check_freq": args.eigenvalue_check_freq,
@@ -726,7 +727,6 @@ if __name__ == "__main__":
                 atomic_nums=batch.z,
                 device=device,
                 max_iterations=args.max_iterations,
-                force_tol=args.force_tol,
                 max_step=args.max_step,
                 target_neg_eig_count=args.target_neg_eig,
                 eigenvalue_check_freq=args.eigenvalue_check_freq,
