@@ -13,7 +13,7 @@ from torch_geometric.data import Data as TGData, Batch as TGBatch
 from .common_utils import setup_experiment, add_common_args, parse_starting_geometry, extract_vibrational_eigenvalues
 from .saddle_detection import classify_saddle_point, compute_adaptive_step_scale
 from .differentiable_projection import differentiable_massweigh_and_eckartprojection_torch as massweigh_and_eckartprojection_torch
-from nets.prediction_utils import Z_TO_ATOM_SYMBOL
+from hip.ff_lmdb import Z_TO_ATOM_SYMBOL
 from hip.frequency_analysis import analyze_frequencies_torch
 from hip.equiformer_torch_calculator import EquiformerTorchCalculator
 from .experiment_logger import (

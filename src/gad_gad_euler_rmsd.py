@@ -21,7 +21,7 @@ from .experiment_logger import (
 import time
 from .differentiable_projection import differentiable_massweigh_and_eckartprojection_torch as massweigh_and_eckartprojection_torch
 from torch_geometric.data import Data as TGData
-from nets.prediction_utils import Z_TO_ATOM_SYMBOL
+from hip.ff_lmdb import Z_TO_ATOM_SYMBOL
 
 import matplotlib
 matplotlib.use("Agg")

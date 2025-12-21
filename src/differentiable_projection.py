@@ -234,7 +234,7 @@ if __name__ == "__main__":
     from hip.inference_utils import get_model_from_checkpoint
     import os
     from hip.frequency_analysis import eckart_projection_notmw_torch as projection_not_differentiable
-    from nets.prediction_utils import Z_TO_ATOM_SYMBOL
+    from hip.ff_lmdb import Z_TO_ATOM_SYMBOL
     
     # Load model with the specified checkpoint
     project_root = os.path.dirname(os.path.dirname(__file__))

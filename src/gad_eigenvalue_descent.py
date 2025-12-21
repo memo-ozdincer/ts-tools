@@ -15,7 +15,7 @@ from .saddle_detection import classify_saddle_point, compute_adaptive_step_scale
 from hip.equiformer_torch_calculator import EquiformerTorchCalculator
 from hip.frequency_analysis import analyze_frequencies_torch
 from .differentiable_projection import differentiable_massweigh_and_eckartprojection_torch as massweigh_and_eckartprojection_torch
-from nets.prediction_utils import Z_TO_ATOM_SYMBOL
+from hip.ff_lmdb import Z_TO_ATOM_SYMBOL
 from .experiment_logger import (
     ExperimentLogger, RunResult, build_loss_type_flags,
     init_wandb_run, log_sample, log_summary, finish_wandb,
