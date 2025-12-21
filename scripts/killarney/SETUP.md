@@ -9,11 +9,11 @@ Complete setup instructions for running ts-tools on the Killarney cluster.
 ssh killarney.vectorinstitute.ai
 
 # Create directory structure
-mkdir -p ~/projects/aip-aspuru/memoozd/{data,models}
+mkdir -p /project/6101772/memoozd/{data,models}
 mkdir -p ~/scratch/ts-tools-output
 
 # Clone repositories
-cd ~/projects/aip-aspuru/memooz
+cd /project/6101772/memoozd
 git clone <your-ts-tools-repo-url> ts-tools
 git clone <your-HIP-repo-url> HIP
 ```
@@ -21,7 +21,7 @@ git clone <your-HIP-repo-url> HIP
 ## 2. Environment Setup
 
 ```bash
-cd ~/projects/aip-aspuru/memoozd/ts-tools
+cd /project/6101772/memoozd/ts-tools
 
 # Create virtual environment with UV
 uv venv .venv
@@ -40,7 +40,7 @@ uv pip install -e ../HIP
 # Make setup script executable
 chmod +x scripts/killarney/setup_data.sh
 
-# Run setup script (downloads to ~/projects/aip-aspuru/memoozd/data/)
+# Run setup script (downloads to /project/6101772/memoozd/data/)
 ./scripts/killarney/setup_data.sh
 ```
 
@@ -53,13 +53,13 @@ git clone https://gitlab.com/matschreiner/Transition1x
 cd Transition1x
 
 # Activate your venv
-source ~/projects/aip-aspuru/memoozd/ts-tools/.venv/bin/activate
+source /project/6101772/memoozd/ts-tools/.venv/bin/activate
 
 # Install transition1x
 pip install .
 
 # Download dataset to project directory
-python download_t1x.py ~/projects/aip-aspuru/memoozd/data
+python download_t1x.py /project/6101772/memoozd/data
 ```
 
 **Dataset Info:**
@@ -72,30 +72,30 @@ python download_t1x.py ~/projects/aip-aspuru/memoozd/data
 
 You'll need to manually download the HIP model checkpoint (`hip_v2.ckpt`) and place it in:
 ```
-~/projects/aip-aspuru/memoozd/models/hip_v2.ckpt
+/project/6101772/memoozd/models/hip_v2.ckpt
 ```
 
 If you have it on another cluster or locally, you can transfer it:
 
 ```bash
 # From your local machine or other cluster:
-scp /path/to/hip_v2.ckpt killarney:~/projects/aip-aspuru/memoozd/models/
+scp /path/to/hip_v2.ckpt killarney:/project/6101772/memoozd/models/
 ```
 
 ## 5. Verify Setup
 
 ```bash
-cd ~/projects/aip-aspuru/memoozd/ts-tools
+cd /project/6101772/memoozd/ts-tools
 source .venv/bin/activate
 
 # Check files exist
-ls -lh ~/projects/aip-aspuru/memoozd/data/transition1x.h5
-ls -lh ~/projects/aip-aspuru/memoozd/models/hip_v2.ckpt
+ls -lh /project/6101772/memoozd/data/transition1x.h5
+ls -lh /project/6101772/memoozd/models/hip_v2.ckpt
 
 # Test data loading
 python -c "
 from transition1x import Dataloader
-loader = Dataloader('$HOME/projects/aip-aspuru/memoozd/data/transition1x.h5',
+loader = Dataloader('/project/6101772/memoozd/data/transition1x.h5',
                     datasplit='test', only_final=True)
 mol = next(iter(loader))
 print('✅ Data loader works!')
@@ -107,7 +107,7 @@ print(f\"Sample reaction: {mol['transition_state']['rxn']}\")
 
 ```bash
 # Make sure you're in the ts-tools directory
-cd ~/projects/aip-aspuru/memoozd/ts-tools
+cd /project/6101772/memoozd/ts-tools
 
 # Submit a test job (small sample size)
 sbatch scripts/killarney/gad_euler.slurm
@@ -115,19 +115,20 @@ sbatch scripts/killarney/gad_euler.slurm
 # Check job status
 squeue -u $USER
 
-# Monitor output
-tail -f ~/scratch/ts-tools-output/slurm-<JOBID>.txt
+# Monitor output (e.g., for gad_euler)
+tail -f logs/gad_euler_<JOBID>.out
 ```
 
 ## Directory Structure After Setup
 
 ```
-~/projects/aip-aspuru/memoozd/
+/project/6101772/memoozd/
 ├── ts-tools/              # This repository
 │   ├── .venv/            # Virtual environment
 │   ├── src/
 │   ├── scripts/
 │   │   └── killarney/   # Killarney SLURM scripts
+│   ├── logs/             # Job output logs
 │   └── ...
 ├── HIP/                  # HIP dependency
 ├── data/
@@ -136,7 +137,7 @@ tail -f ~/scratch/ts-tools-output/slurm-<JOBID>.txt
     └── hip_v2.ckpt       # Model checkpoint
 
 ~/scratch/
-└── ts-tools-output/      # Job outputs (logs, results)
+└── ts-tools-output/      # Simulation results
 ```
 
 ## Using Different Dataset Splits
@@ -168,7 +169,7 @@ python -m src.gad_euler_rmsd \
 - **Solution**: Make sure you installed it: `pip install git+https://gitlab.com/matschreiner/Transition1x`
 
 **Issue**: Dataset file not found
-- **Solution**: Check path is correct: `ls ~/projects/aip-aspuru/memoozd/data/transition1x.h5`
+- **Solution**: Check path is correct: `ls /project/6101772/memoozd/data/transition1x.h5`
 
 **Issue**: GPU not allocated
 - **Solution**: Check SLURM output logs, may need to wait in queue for L40S GPUs

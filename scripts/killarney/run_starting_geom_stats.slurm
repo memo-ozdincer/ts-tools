@@ -1,12 +1,15 @@
 #!/bin/bash
-#SBATCH -A aip-aspuru
-#SBATCH -D /project/aip-aspuru/memoozd/ts-tools
+#SBATCH -A 6101772
+#SBATCH -D /project/6101772/memoozd/ts-tools
 #SBATCH --time=6:00:00
 #SBATCH --gres=gpu:l40s:1
 #SBATCH --mem=32GB
 #SBATCH --job-name=start_geom_stats
-#SBATCH --output=/scratch/memoozd/ts-tools-output/slurm-%j.txt
-#SBATCH --error=/scratch/memoozd/ts-tools-output/slurm-%j.txt
+#SBATCH --output=logs/start_geom_stats_%j.out
+#SBATCH --error=logs/start_geom_stats_%j.err
+
+# Create logs directory if it doesn't exist
+mkdir -p logs
 
 # Activate virtual environment
 source .venv/bin/activate
@@ -18,8 +21,8 @@ echo `date`: Job $SLURM_JOB_ID is allocated resources.
 echo ">>> Running Starting Geometry Statistics script..."
 
 # Killarney paths
-H5_PATH="$HOME/projects/aip-aspuru/memoozd/data/transition1x.h5"
-CKPT_PATH="$HOME/projects/aip-aspuru/memoozd/models/hip_v2.ckpt"
+H5_PATH="/project/6101772/memoozd/data/transition1x.h5"
+CKPT_PATH="/project/6101772/memoozd/models/hip_v2.ckpt"
 OUT_DIR="$HOME/scratch/ts-tools-output"
 
 # Test different noise levels to find distribution of higher-order saddle points

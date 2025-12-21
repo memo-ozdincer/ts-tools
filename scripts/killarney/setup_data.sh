@@ -7,7 +7,7 @@ echo "=== Transition1x Dataset Download for Killarney ==="
 echo ""
 
 # Define paths
-DATA_DIR="$HOME/projects/aip-aspuru/memoozd/data"
+DATA_DIR="/project/6101772/memoozd/data"
 TEMP_DIR="$HOME/scratch/tmp_t1x_download"
 
 # Create directories
@@ -26,7 +26,7 @@ cd Transition1x
 
 # Install transition1x package (should already be in your venv)
 echo ">>> Installing transition1x package..."
-source "$HOME/projects/aip-aspuru/memoozd/ts-tools/.venv/bin/activate"
+source "/project/6101772/memoozd/ts-tools/.venv/bin/activate"
 pip install .
 
 # Download the dataset
