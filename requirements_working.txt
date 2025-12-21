@@ -43,7 +43,6 @@ GitPython==3.1.45
 h11==0.16.0
 h5py==3.14.0
 hf-xet==1.1.10
--e git+https://github.com/BurgerAndreas/hip@4321c17e9383d8e810e7d45980d401fb989e203f#egg=hip
 httpcore==1.0.9
 httpx==0.28.1
 huggingface-hub==0.35.3
@@ -184,6 +183,7 @@ tinycss2==1.4.0
 toml==0.10.2
 tomli==2.2.1
 tomli_w==1.2.0
+# Note: Torch 2.7.0 is a nightly/preview version.
 torch==2.7.0+cu126
 torch-geometric==2.6.1
 torch_cluster==1.6.3+pt27cu126
@@ -192,7 +192,6 @@ torchmetrics==1.8.2
 tornado==6.5.2
 tqdm==4.67.1
 traitlets==5.14.3
--e ../hip
 triton==3.3.0
 types-python-dateutil==2.9.0.20250822
 typing-inspection==0.4.2
@@ -207,3 +206,7 @@ webencodings==0.5.1
 websocket-client==1.8.0
 widgetsnbextension==4.0.14
 yarl==1.20.1
+
+# Local Editable installs
+-e ../hip
+-e ../Transition1x
