@@ -12,6 +12,21 @@ from torch_geometric.loader import DataLoader
 from transition1x import Dataloader as T1xDataloader
 from hip.equiformer_torch_calculator import EquiformerTorchCalculator
 
+# Monkey-patch hip's fix_dataset_path to be lenient when loading checkpoints for inference
+# This allows loading pre-trained models without requiring the original training datasets
+from hip import path_config
+_original_fix_dataset_path = path_config.fix_dataset_path
+
+def _lenient_fix_dataset_path(path):
+    """Wrapper around fix_dataset_path that returns original path if not found."""
+    try:
+        return _original_fix_dataset_path(path)
+    except FileNotFoundError:
+        # For inference, we don't need the training datasets, so just return the original path
+        return path
+
+path_config.fix_dataset_path = _lenient_fix_dataset_path
+
 # --- Shared Dataset Class ---
 # src/common_utils.py
 
