@@ -122,6 +122,8 @@ def main() -> None:
         )
 
     calculator, dataloader, device, out_dir = setup_experiment(args, shuffle=False)
+    # setup_experiment() disables grads globally; this runner needs autograd.
+    torch.set_grad_enabled(True)
     predict_fn = make_predict_fn_from_calculator(calculator, getattr(args, "calculator", "hip"))
 
     loss_type_flags = build_loss_type_flags(args)

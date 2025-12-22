@@ -127,7 +127,10 @@ def main() -> None:
     args = parser.parse_args()
 
     calculator, dataloader, device, out_dir = setup_experiment(args, shuffle=False)
-    predict_fn = make_predict_fn_from_calculator(calculator, getattr(args, "calculator", "hip"))
+    calculator_type = getattr(args, "calculator", "hip").lower()
+    if calculator_type == "scine":
+        device = "cpu"
+    predict_fn = make_predict_fn_from_calculator(calculator, calculator_type)
 
     loss_type_flags = build_loss_type_flags(args)
     logger = ExperimentLogger(

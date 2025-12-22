@@ -39,6 +39,7 @@ sbatch scripts/killarney2/scine_gad_euler.slurm
 
 - `gad_euler.slurm` → `python -m src.runners.gad_euler_core`
 - `scine_gad_euler.slurm` → `python -m src.runners.gad_euler_core --calculator scine`
+- `scine_gad_euler_noisy.slurm` → `python -m src.runners.gad_euler_core --calculator scine --start-from reactant_noise2A`
 - `run_eigen_optimization.slurm` → `python -m src.runners.eigenvalue_descent_core` (HIP only)
 
 ## Initial Setup on Killarney
