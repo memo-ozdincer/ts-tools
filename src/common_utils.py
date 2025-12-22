@@ -109,6 +109,13 @@ def add_common_args(parser: argparse.ArgumentParser):
     parser.add_argument("--h5-path", type=str, default=os.path.join(PROJECT, "large-files", "data", "transition1x.h5"))
     parser.add_argument("--checkpoint-path", type=str, default=os.path.join(PROJECT, "large-files", "ckpt", "hip_v2.ckpt"))
     parser.add_argument("--out-dir", type=str, default=os.path.join(PROJECT, "large-files", "graphs", "out"))
+
+    # Calculator selection arguments
+    parser.add_argument("--calculator", type=str, default="hip",
+                        choices=["hip", "scine"],
+                        help="Calculator type: 'hip' (ML model) or 'scine' (analytical forcefield)")
+    parser.add_argument("--scine-functional", type=str, default="DFTB0",
+                        help="SCINE functional to use (e.g., DFTB0, PM6, AM1, RM1). Only used if --calculator=scine")
     return parser
 
 # --- Noise Generation Helper ---
@@ -240,23 +247,38 @@ def extract_vibrational_eigenvalues(hessian_proj: torch.Tensor, coords: torch.Te
 
 
 # --- Shared Experiment Setup Function ---
-def setup_experiment(args: argparse.Namespace, batch_size: int = 1, shuffle: bool = False, dataset_load_multiplier: int = 1) -> Tuple[EquiformerTorchCalculator, DataLoader, str, str]:
+def setup_experiment(args: argparse.Namespace, batch_size: int = 1, shuffle: bool = False, dataset_load_multiplier: int = 1):
     """
     Handles all boilerplate setup: model loading, dataset creation, etc.
 
     Returns:
         A tuple of (calculator, dataloader, device, output_directory).
+        Calculator can be either EquiformerTorchCalculator or ScineSparrowCalculator.
     """
     torch.set_grad_enabled(False)
     os.makedirs(args.out_dir, exist_ok=True)
-    
-    # Load model
-    print(f"Loading checkpoint: {args.checkpoint_path}")
-    calculator = EquiformerTorchCalculator(
-        checkpoint_path=args.checkpoint_path,
-        hessian_method="predict",
-    )
-    
+
+    # Load calculator based on args
+    calculator_type = getattr(args, 'calculator', 'hip').lower()
+
+    if calculator_type == 'scine':
+        # Use SCINE Sparrow calculator
+        from .scine_calculator import create_scine_calculator
+        scine_functional = getattr(args, 'scine_functional', 'DFTB0')
+        print(f"Creating SCINE Sparrow calculator: {scine_functional}")
+        calculator = create_scine_calculator(
+            functional=scine_functional,
+            device=args.device,
+        )
+        print(f"NOTE: SCINE calculations run on CPU regardless of --device setting")
+    else:
+        # Use HIP calculator (default)
+        print(f"Loading HIP checkpoint: {args.checkpoint_path}")
+        calculator = EquiformerTorchCalculator(
+            checkpoint_path=args.checkpoint_path,
+            hessian_method="predict",
+        )
+
     # Prepare data
     print(f"Loading dataset: {args.h5_path} (split={args.split})")
     dataset = Transition1xDataset(
@@ -266,11 +288,12 @@ def setup_experiment(args: argparse.Namespace, batch_size: int = 1, shuffle: boo
         transform=UsePos("pos_transition"),
     )
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=shuffle)
-    
+
     if len(dataset) == 0:
         raise RuntimeError("No Transition1x samples loaded. Check h5 path and split.")
 
     print(f"Device:     {args.device}")
+    print(f"Calculator: {calculator_type.upper()}")
     print(f"Loaded {len(dataset)} candidate samples.")
     print("-" * 30)
 
