@@ -175,5 +175,11 @@ def plot_gad_trajectory_3x2(
     )
 
     fig.tight_layout(rect=[0, 0, 1, 0.95])
-    filename = f"gad_{sample_index:03d}_{_sanitize_formula(formula)}_{start_from}_steps{num_steps}.png"
+
+    # Keep filenames consistent with the legacy convention so it's easy to
+    # visually bucket outputs by saddle-order transition.
+    filename = (
+        f"traj_{sample_index:03d}_{_sanitize_formula(formula)}_from_{start_from}_"
+        f"{initial_neg_num}to{final_neg_num}.png"
+    )
     return fig, filename
