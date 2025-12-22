@@ -28,18 +28,18 @@ OUT_DIR="$HOME/scratch/ts-tools-output"
 
 # === Baseline: SCINE DFTB0 - GAD Euler (core runner; fixed dt) ===
 echo ">>> [BASELINE] Euler core (fixed dt)"
-python -m src.runners.gad_euler_core \
-    --calculator scine \
-    --scine-functional DFTB0 \
-    --h5-path "$H5_PATH" \
-    --out-dir "$OUT_DIR" \
-    --max-samples 200 \
-    --n-steps 150 \
-    --start-from midpoint_rt \
-    --stop-at-ts \
-    --dt 0.001 \
-    --wandb \
-    --wandb-project "gad-ts-search-scine"
+# python -m src.runners.gad_euler_core \
+#     --calculator scine \
+#     --scine-functional DFTB0 \
+#     --h5-path "$H5_PATH" \
+#     --out-dir "$OUT_DIR" \
+#     --max-samples 200 \
+#     --n-steps 150 \
+#     --start-from midpoint_rt \
+#     --stop-at-ts \
+#     --dt 0.001 \
+#     --wandb \
+#     --wandb-project "gad-ts-search-scine"
 
 # === Experiment: SCINE DFTB0 - Euler with neg-eig plateau dt control ===
 echo ">>> [EXPERIMENT] Euler + neg-eig plateau dt control"
@@ -56,7 +56,7 @@ python -m src.experiments.scine_gad_plateau \
     --scine-functional DFTB0 \
     --h5-path "$H5_PATH" \
     --out-dir "$OUT_DIR" \
-    --max-samples 30 \
+    --max-samples 200 \
     --n-steps 150 \
     --start-from midpoint_rt \
     --stop-at-ts \
