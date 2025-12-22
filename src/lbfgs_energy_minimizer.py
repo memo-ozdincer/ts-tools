@@ -700,9 +700,9 @@ if __name__ == "__main__":
     
     print(f"Running L-BFGS Energy Minimization")
     print(f"  Start from: {args.start_from}")
-    print(f"  Target: <= {args.target_neg_eig} negative eigenvalues")
+    print(f"  Target: <= {args.target_neg_eig} negative eigenvalues (ONLY convergence criterion)")
     print(f"  Max iterations: {args.max_iterations}")
-    print(f"  Force tolerance: {args.force_tol} eV/Å")
+    print(f"  Max step: {args.max_step} Å")
     print(f"  Output directory: {logger.run_dir}")
     print("-" * 60)
     
