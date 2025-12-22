@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import re
 import time
 from collections import defaultdict
 from pathlib import Path
@@ -17,6 +19,40 @@ from ..dependencies.hessian import vibrational_eigvals, get_scine_elements_from_
 from ..logging import finish_wandb, init_wandb_run, log_sample, log_summary
 from ..logging.trajectory_plots import plot_gad_trajectory_3x2
 from ..runners._predict import make_predict_fn_from_calculator
+
+
+def _sanitize_wandb_name(s: str) -> str:
+    s = str(s)
+    s = s.strip().replace(" ", "_")
+    s = re.sub(r"[^A-Za-z0-9_.\-]+", "-", s)
+    s = re.sub(r"-+", "-", s)
+    return s[:128] if len(s) > 128 else s
+
+
+def _auto_wandb_name(*, script: str, loss_type_flags: str, args: argparse.Namespace) -> str:
+    calculator = getattr(args, "calculator", "hip")
+    start_from = getattr(args, "start_from", "unknown")
+    method = getattr(args, "method", "unknown")
+    dt_control = getattr(args, "dt_control", None)
+    dt = getattr(args, "dt", None)
+    n_steps = getattr(args, "n_steps", None)
+    noise_seed = getattr(args, "noise_seed", None)
+    job_id = os.environ.get("SLURM_JOB_ID")
+
+    parts = [
+        script,
+        str(calculator),
+        str(start_from),
+        str(method),
+        str(dt_control) if dt_control else None,
+        f"dt{dt}" if dt is not None else None,
+        f"steps{n_steps}" if n_steps is not None else None,
+        f"seed{noise_seed}" if noise_seed is not None else None,
+        f"job{job_id}" if job_id else None,
+        str(loss_type_flags),
+    ]
+    parts = [p for p in parts if p]
+    return _sanitize_wandb_name("__".join(parts))
 
 
 def _to_float(x) -> float:
@@ -363,6 +399,12 @@ def main() -> None:
     parser.add_argument("--wandb", action="store_true")
     parser.add_argument("--wandb-project", type=str, default="gad-ts-search")
     parser.add_argument("--wandb-entity", type=str, default=None)
+    parser.add_argument(
+        "--wandb-name",
+        type=str,
+        default=None,
+        help="Optional W&B run name. If omitted, an informative name is auto-generated.",
+    )
 
     args = parser.parse_args()
 
@@ -406,12 +448,16 @@ def main() -> None:
             "atol": args.atol,
             "max_steps": args.max_steps,
         }
+        wandb_name = args.wandb_name
+        if not wandb_name:
+            wandb_name = _auto_wandb_name(script=script_name, loss_type_flags=loss_type_flags, args=args)
+
         init_wandb_run(
             project=args.wandb_project,
-            name=f"{script_name}_{loss_type_flags}",
+            name=str(wandb_name),
             config=wandb_config,
             entity=args.wandb_entity,
-            tags=[args.start_from, args.method, "plateau"],
+            tags=[args.start_from, args.method, "plateau", str(args.dt_control)],
             run_dir=out_dir,
         )
 

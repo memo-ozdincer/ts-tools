@@ -110,6 +110,14 @@ def add_common_args(parser: argparse.ArgumentParser):
     parser.add_argument("--checkpoint-path", type=str, default=os.path.join(PROJECT, "large-files", "ckpt", "hip_v2.ckpt"))
     parser.add_argument("--out-dir", type=str, default=os.path.join(PROJECT, "large-files", "graphs", "out"))
 
+    # Noise control for `--start-from <geom>_noiseXA` modes (kept optional for backward compatibility)
+    parser.add_argument(
+        "--noise-seed",
+        type=int,
+        default=None,
+        help="Random seed for reproducible noisy starting geometries (used only for *_noiseXA start-from modes).",
+    )
+
     # Calculator selection arguments
     parser.add_argument("--calculator", type=str, default="hip",
                         choices=["hip", "scine"],
@@ -184,7 +192,10 @@ def parse_starting_geometry(start_from: str, batch, noise_seed: Optional[int] = 
         # Set random seed if provided for reproducibility
         # Use noise_seed + sample_index to get unique noise per sample
         if noise_seed is not None:
-            torch.manual_seed(noise_seed + sample_index)
+            seed = int(noise_seed) + int(sample_index)
+            torch.manual_seed(seed)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed_all(seed)
 
         # Add noise
         initial_coords = add_gaussian_noise_to_coords(initial_coords.clone(), noise_level)
