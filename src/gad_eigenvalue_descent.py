@@ -268,7 +268,7 @@ def plot_eig_descent_history(
 def evaluate_step(
     coords: torch.Tensor,
     atomic_nums: torch.Tensor,
-    calculator: EquiformerTorchCalculator,
+    calculator,
     loss_type: str,
     target_eig0: float,
     target_eig1: float,
@@ -281,14 +281,13 @@ def evaluate_step(
     Returns:
         (loss_value, eig0, eig1, eig_product, neg_vibrational)
     """
-    model = calculator.potential
-    device = model.device
+    device = calculator.potential.device
     atomsymbols = [Z_TO_ATOM_SYMBOL[z.item()] for z in atomic_nums]
 
     try:
         with torch.no_grad():
             batch = coord_atoms_to_torch_geometric(coords, atomic_nums, device)
-            _, _, out = model.forward(batch, otf_graph=True)
+            out = calculator.predict(batch, do_hessian=True)
             hess_raw = out["hessian"].reshape(coords.numel(), coords.numel())
             hess_proj = massweigh_and_eckartprojection_torch(hess_raw, coords, atomsymbols)
 
@@ -341,203 +340,9 @@ def evaluate_step(
         return float('inf'), float('nan'), float('nan'), float('inf'), -1
 
 
-def run_eigprod_bfgs(
-    calculator: EquiformerTorchCalculator,
-    initial_coords: torch.Tensor,
-    atomic_nums: torch.Tensor,
-    maxiter: int = 100,
-    gtol: float = 1e-5,
-    max_step: float = 1.0,
-    loss_type: str = "eig_product",
-    target_eig0: float = -0.05,
-    target_eig1: float = 0.10,
-) -> Dict[str, Any]:
-    """
-    Run L-BFGS-B optimization to find transition states via eigenvalue-based loss.
-    
-    Args:
-        calculator: The Equiformer calculator
-        initial_coords: Starting coordinates
-        atomic_nums: Atomic numbers
-        maxiter: Maximum BFGS iterations
-        gtol: Gradient tolerance for convergence
-        max_step: Maximum displacement per atom from start (Å)
-        loss_type: "eig_product" (minimize λ₀*λ₁) or "targeted_magnitude" (target specific values)
-        target_eig0: Target value for λ₀ (only used if loss_type="targeted_magnitude")
-        target_eig1: Target value for λ₁ (only used if loss_type="targeted_magnitude")
-        
-    Returns:
-        Dictionary with optimization results
-    """
-    model = calculator.potential
-    device = model.device
-    atomsymbols = [Z_TO_ATOM_SYMBOL[z.item()] for z in atomic_nums]
-    start_coords = initial_coords.clone().detach().cpu().numpy().flatten()
-    
-    # Track optimization history
-    history = {
-        "loss": [],
-        "eig0": [],
-        "eig1": [],
-        "eig_product": [],
-        "neg_vibrational": [],
-    }
-    
-    # Track best result
-    best_result = {
-        "loss": float('inf'),
-        "eig0": float('nan'),
-        "eig1": float('nan'),
-        "eig_product": float('inf'),
-        "neg_vibrational": -1,
-    }
-    
-    def objective_and_grad(x_flat):
-        """Compute loss and gradient for eigenvalue-based optimization."""
-        nonlocal best_result
-        
-        coords = torch.tensor(
-            x_flat.reshape(-1, 3),
-            dtype=torch.float32,
-            device=device,
-            requires_grad=True
-        )
-        
-        try:
-            with torch.enable_grad():
-                batch = coord_atoms_to_torch_geometric(coords, atomic_nums, device)
-                _, _, out = model.forward(batch, otf_graph=True)
-                hess_raw = out["hessian"].reshape(coords.numel(), coords.numel())
-                hess_proj = massweigh_and_eckartprojection_torch(hess_raw, coords, atomsymbols)
-                
-                vibrational_eigvals = extract_vibrational_eigenvalues(hess_proj, coords)
-                if vibrational_eigvals.numel() < 2:
-                    return 1e10, np.zeros_like(x_flat)
-                
-                eig0 = vibrational_eigvals[0]
-                eig1 = vibrational_eigvals[1]
-                eig_product = eig0 * eig1
-                neg_vibrational = (vibrational_eigvals < 0).sum().item()
-                
-                # Compute loss
-                if loss_type == "eig_product":
-                    loss = eig_product
-                elif loss_type == "targeted_magnitude":
-                    loss = (eig0 - target_eig0)**2 + (eig1 - target_eig1)**2
-                else:
-                    loss = eig_product  # Default to eig_product
-                
-                # Track history
-                history["loss"].append(loss.item())
-                history["eig0"].append(eig0.item())
-                history["eig1"].append(eig1.item())
-                history["eig_product"].append(eig_product.item())
-                history["neg_vibrational"].append(neg_vibrational)
-                
-                # Update best result
-                if loss.item() < best_result["loss"]:
-                    best_result["loss"] = loss.item()
-                    best_result["eig0"] = eig0.item()
-                    best_result["eig1"] = eig1.item()
-                    best_result["eig_product"] = eig_product.item()
-                    best_result["neg_vibrational"] = neg_vibrational
-                
-                # Compute gradient
-                grad = torch.autograd.grad(loss, coords)[0]
-                
-            return loss.item(), grad.detach().cpu().numpy().flatten().astype(np.float64)
-            
-        except Exception as e:
-            print(f"    [EIGPROD-BFGS] Evaluation failed: {e}")
-            return 1e10, np.zeros_like(x_flat)
-    
-    # Set up bounds
-    if max_step is not None and max_step > 0:
-        lower_bounds = start_coords - max_step
-        upper_bounds = start_coords + max_step
-        bounds = list(zip(lower_bounds, upper_bounds))
-    else:
-        bounds = None
-    
-    try:
-        result = scipy_minimize(
-            objective_and_grad,
-            x0=start_coords.astype(np.float64),
-            method='L-BFGS-B',
-            jac=True,
-            bounds=bounds,
-            options={
-                'maxiter': maxiter,
-                'gtol': gtol,
-                'disp': False,
-            }
-        )
-        
-        # Convert result back to torch
-        final_coords = torch.tensor(
-            result.x.reshape(-1, 3),
-            dtype=torch.float32,
-            device=device
-        )
-        
-        # Compute final displacement
-        displacement = (final_coords - initial_coords.to(device)).norm(dim=1)
-        max_atom_disp = displacement.max().item()
-        mean_disp = displacement.mean().item()
-        
-        # Get final state info
-        with torch.no_grad():
-            batch = coord_atoms_to_torch_geometric(final_coords, atomic_nums, device)
-            _, _, out = model.forward(batch, otf_graph=True)
-            hess_raw = out["hessian"].reshape(final_coords.numel(), final_coords.numel())
-            
-            # Get negative eigenvalue count from raw Hessian
-            hess_np = hess_raw.detach().cpu().numpy()
-            eigvals_raw = np.linalg.eigvalsh(hess_np)
-            neg_count_raw = int((eigvals_raw < 0).sum())
-        
-        return {
-            "final_coords": final_coords,
-            "history": history,
-            "nit": result.nit,
-            "success": result.success,
-            "message": result.message,
-            "final_loss": best_result["loss"],
-            "final_eig0": best_result["eig0"],
-            "final_eig1": best_result["eig1"],
-            "final_eig_product": best_result["eig_product"],
-            "final_neg_vibrational": best_result["neg_vibrational"],
-            "final_neg_eigvals": neg_count_raw,
-            "max_atom_disp": max_atom_disp,
-            "mean_disp": mean_disp,
-            "stop_reason": "bfgs_converged" if result.success else "bfgs_maxiter",
-        }
-        
-    except Exception as e:
-        print(f"    [EIGPROD-BFGS] Optimization failed: {e}")
-        import traceback
-        traceback.print_exc()
-        return {
-            "final_coords": initial_coords,
-            "history": history,
-            "nit": 0,
-            "success": False,
-            "message": str(e),
-            "final_loss": float('inf'),
-            "final_eig0": float('nan'),
-            "final_eig1": float('nan'),
-            "final_eig_product": float('inf'),
-            "final_neg_vibrational": -1,
-            "final_neg_eigvals": -1,
-            "max_atom_disp": 0.0,
-            "mean_disp": 0.0,
-            "stop_reason": "error",
-        }
-
-
 # --- Core Optimization Function with Improved Loss Functions ---
 def run_eigenvalue_descent(
-    calculator: EquiformerTorchCalculator,
+    calculator,
     initial_coords: torch.Tensor,
     atomic_nums: torch.Tensor,
     n_steps: int = 50,
@@ -581,8 +386,7 @@ def run_eigenvalue_descent(
         initial_max_displacement: Starting max displacement per atom (Å)
         final_max_displacement: Final max displacement per atom (Å)
     """
-    model = calculator.potential
-    device = model.device
+    device = calculator.potential.device
     coords = initial_coords.clone().to(torch.float32).to(device)
     coords.requires_grad = True
     atomsymbols = [Z_TO_ATOM_SYMBOL[z.item()] for z in atomic_nums]
@@ -622,7 +426,7 @@ def run_eigenvalue_descent(
         try:
             with torch.enable_grad():
                 batch = coord_atoms_to_torch_geometric(coords, atomic_nums, device)
-                _, _, out = model.forward(batch, otf_graph=True)
+                out = calculator.predict(batch, do_hessian=True)
                 hess_raw = out["hessian"].reshape(coords.numel(), coords.numel())
                 hess_proj = massweigh_and_eckartprojection_torch(hess_raw, coords, atomsymbols)
 
@@ -974,16 +778,6 @@ if __name__ == "__main__":
     parser.add_argument("--ts-multiplier", type=float, default=0.5,
                         help="Step size multiplier near TS (order-1) for refinement (default: 0.5)")
 
-    # BFGS optimization arguments
-    parser.add_argument("--use-bfgs", action="store_true",
-                        help="Use L-BFGS-B optimizer instead of gradient descent")
-    parser.add_argument("--bfgs-maxiter", type=int, default=100,
-                        help="Maximum iterations for BFGS optimization (default: 100)")
-    parser.add_argument("--bfgs-gtol", type=float, default=1e-5,
-                        help="Gradient tolerance for BFGS convergence (default: 1e-5)")
-    parser.add_argument("--bfgs-max-step", type=float, default=1.0,
-                        help="Maximum displacement per atom during BFGS (default: 1.0 Å)")
-
     # W&B arguments
     parser.add_argument("--wandb", action="store_true",
                         help="Enable Weights & Biases logging")
@@ -1019,10 +813,6 @@ if __name__ == "__main__":
             "target_eig0": args.target_eig0,
             "target_eig1": args.target_eig1,
             "adaptive_targets": args.adaptive_targets,
-            "use_bfgs": args.use_bfgs,
-            "bfgs_maxiter": args.bfgs_maxiter if args.use_bfgs else None,
-            "bfgs_gtol": args.bfgs_gtol if args.use_bfgs else None,
-            "bfgs_max_step": args.bfgs_max_step if args.use_bfgs else None,
             "max_samples": args.max_samples,
         }
         init_wandb_run(
@@ -1046,15 +836,9 @@ if __name__ == "__main__":
         "rmsd_to_known_ts": [],
     }
 
-    if args.use_bfgs:
-        print(f"Running Eigenvalue BFGS Optimization to Find Transition States")
-        print(f"Output directory: {logger.run_dir}")
-        print(f"Starting From: {args.start_from.upper()}")
-        print(f"BFGS Settings: maxiter={args.bfgs_maxiter}, gtol={args.bfgs_gtol}, max_step={args.bfgs_max_step}Å")
-    else:
-        print(f"Running Eigenvalue Descent to Find Transition States")
-        print(f"Output directory: {logger.run_dir}")
-        print(f"Starting From: {args.start_from.upper()}, Steps: {args.n_steps_opt}, LR: {args.lr}")
+    print(f"Running Eigenvalue Descent to Find Transition States")
+    print(f"Output directory: {logger.run_dir}")
+    print(f"Starting From: {args.start_from.upper()}, Steps: {args.n_steps_opt}, LR: {args.lr}")
     print(f"Loss Type: {args.loss_type}")
     if args.early_stop_eig_product and args.early_stop_eig_product > 0:
         print(f"  Early stop when λ₀·λ₁ ≤ -{args.early_stop_eig_product:.1e}")
@@ -1094,54 +878,37 @@ if __name__ == "__main__":
             # Use parse_starting_geometry to handle both standard and noisy starting points
             initial_coords = parse_starting_geometry(args.start_from, batch, noise_seed=42, sample_index=i)
 
-            if args.use_bfgs:
-                # --- BFGS MODE ---
-                print(f"  Running BFGS optimization...")
-                opt_results = run_eigprod_bfgs(
-                    calculator=calculator,
-                    initial_coords=initial_coords,
-                    atomic_nums=batch.z,
-                    maxiter=args.bfgs_maxiter,
-                    gtol=args.bfgs_gtol,
-                    max_step=args.bfgs_max_step,
-                    loss_type=args.loss_type,
-                    target_eig0=args.target_eig0,
-                    target_eig1=args.target_eig1,
-                )
-                print(f"  [BFGS] Done: nit={opt_results['nit']}, success={opt_results['success']}, "
-                      f"final_eig_product={opt_results['final_eig_product']:.6f}")
-            else:
-                # --- GRADIENT DESCENT MODE ---
-                opt_results = run_eigenvalue_descent(
-                    calculator=calculator,
-                    initial_coords=initial_coords,
-                    atomic_nums=batch.z,
-                    n_steps=args.n_steps_opt,
-                    lr=args.lr,
-                    loss_type=args.loss_type,
-                    target_eig0=args.target_eig0,
-                    target_eig1=args.target_eig1,
-                    adaptive_targets=args.adaptive_targets,
-                    adaptive_relax_steps=args.adaptive_relax_steps,
-                    adaptive_final_eig0=args.adaptive_final_eig0,
-                    adaptive_final_eig1=args.adaptive_final_eig1,
-                    early_stop_eig_product_threshold=args.early_stop_eig_product,
-                    sign_neg_target=args.sign_neg_target,
-                    sign_pos_floor=args.sign_pos_floor,
-                    use_line_search=args.use_line_search,
-                    adaptive_max_displacement=args.adaptive_max_displacement,
-                    initial_max_displacement=args.initial_max_displacement,
-                    final_max_displacement=args.final_max_displacement,
-                )
+            # --- GRADIENT DESCENT MODE ---
+            opt_results = run_eigenvalue_descent(
+                calculator=calculator,
+                initial_coords=initial_coords,
+                atomic_nums=batch.z,
+                n_steps=args.n_steps_opt,
+                lr=args.lr,
+                loss_type=args.loss_type,
+                target_eig0=args.target_eig0,
+                target_eig1=args.target_eig1,
+                adaptive_targets=args.adaptive_targets,
+                adaptive_relax_steps=args.adaptive_relax_steps,
+                adaptive_final_eig0=args.adaptive_final_eig0,
+                adaptive_final_eig1=args.adaptive_final_eig1,
+                early_stop_eig_product_threshold=args.early_stop_eig_product,
+                sign_neg_target=args.sign_neg_target,
+                sign_pos_floor=args.sign_pos_floor,
+                use_line_search=args.use_line_search,
+                adaptive_max_displacement=args.adaptive_max_displacement,
+                initial_max_displacement=args.initial_max_displacement,
+                final_max_displacement=args.final_max_displacement,
+            )
 
             with torch.no_grad():
                 final_batch = coord_atoms_to_torch_geometric(opt_results['final_coords'].to(device), batch.z, device)
-                _, _, final_out = calculator.potential.forward(final_batch, otf_graph=True)
+                final_out = calculator.predict(final_batch, do_hessian=True)
                 final_freq_info = analyze_frequencies_torch(final_out['hessian'], opt_results['final_coords'].to(device), batch.z)
 
             # Compute initial eigenvalues for transition tracking
             initial_batch = coord_atoms_to_torch_geometric(initial_coords.to(device), batch.z, device)
-            _, _, initial_out = calculator.potential.forward(initial_batch, otf_graph=True)
+            initial_out = calculator.predict(initial_batch, do_hessian=True)
             initial_freq_info = analyze_frequencies_torch(initial_out['hessian'], initial_coords.to(device), batch.z)
 
             # Compute steps_to_ts: find first step where neg_vibrational == 1
