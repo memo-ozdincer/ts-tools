@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from ..experiment_logger import (
+from ..dependencies.experiment_logger import (
     init_wandb_run,
     log_sample,
     log_summary,

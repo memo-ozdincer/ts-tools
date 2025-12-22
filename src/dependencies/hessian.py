@@ -4,8 +4,8 @@ from typing import List, Optional
 
 import torch
 
-from ..common_utils import extract_vibrational_eigenvalues
-from ..differentiable_projection import (
+from .common_utils import extract_vibrational_eigenvalues
+from .differentiable_projection import (
     differentiable_massweigh_and_eckartprojection_torch as _massweigh_and_eckartprojection_torch,
 )
 
