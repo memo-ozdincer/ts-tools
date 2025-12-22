@@ -48,8 +48,11 @@ def plot_gad_trajectory_3x2(
         noise_str = start_from.split("_noise")[1]
         noise_info = f" (noise {noise_str})"
 
+    # Add transition info to title (e.g., "17→4" for 17 neg eigs to 4 neg eigs)
+    transition_info = f" [{initial_neg_num}→{final_neg_num}]"
+
     fig, axes = plt.subplots(3, 2, figsize=(12, 10))
-    fig.suptitle(f"Sample {sample_index}: {formula}{noise_info}", fontsize=14)
+    fig.suptitle(f"Sample {sample_index}: {formula}{noise_info}{transition_info}", fontsize=14)
 
     # Panel 1: Energy
     ax = axes[0, 0]

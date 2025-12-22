@@ -202,8 +202,14 @@ class RunResult:
 
     @property
     def reached_ts(self) -> bool:
-        """Did this run reach a TS (1 negative eigenvalue)?"""
-        return self.final_neg_eigvals == 1
+        """Did this run reach a TS (eigenvalue product < 0)?
+
+        True TS signature: λ₀ < 0 and λ₁ > 0, meaning eig_product < 0.
+        This is more reliable than counting negative eigenvalues.
+        """
+        if self.final_eig_product is None:
+            return False
+        return self.final_eig_product < 0
 
 
 class ExperimentLogger:
@@ -381,10 +387,11 @@ class ExperimentLogger:
 
         stats["per_transition"] = transition_stats
 
-        # Success metrics
-        ts_signature_count = sum(1 for r in self.results if r.final_neg_eigvals == 1)
+        # Success metrics (TS signature: eigenvalue product < 0)
+        # This means λ₀ < 0 and λ₁ > 0, which is the true TS signature
+        ts_signature_count = sum(1 for r in self.results if r.reached_ts)
         stats["ts_signature_count"] = ts_signature_count
-        stats["ts_signature_rate"] = ts_signature_count / len(self.results)
+        stats["ts_signature_rate"] = ts_signature_count / len(self.results) if self.results else 0
 
         # Transition distribution
         transition_distribution = {}
@@ -445,7 +452,7 @@ class ExperimentLogger:
             print(f"  Final time: {stats['avg_final_time']:.3f} ± {stats['std_final_time']:.3f}")
 
         print(f"\n[Success Metrics]")
-        print(f"  TS signature (1 neg eig): {stats['ts_signature_count']}/{stats['total_runs']} ({stats['ts_signature_rate']*100:.1f}%)")
+        print(f"  TS signature (λ₀·λ₁ < 0): {stats['ts_signature_count']}/{stats['total_runs']} ({stats['ts_signature_rate']*100:.1f}%)")
 
         print(f"\n[Transition Distribution]")
         for transition_key, count in sorted(stats['transition_distribution'].items()):

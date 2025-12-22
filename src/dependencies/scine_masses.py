@@ -326,7 +326,11 @@ class ScineFrequencyAnalyzer:
         # Symmetrize to remove numerical noise
         proj_hessian = 0.5 * (proj_hessian + proj_hessian.T)
 
-        return proj_hessian, masses_amu
+        # 5. Convert back from SI to eV/Å²
+        # proj_hessian is currently in J/m² (SI), convert back to eV/Å²
+        proj_hessian_ev_ang2 = proj_hessian / (self.EV_TO_JOULES / self.ANGSTROM_TO_METERS**2)
+
+        return proj_hessian_ev_ang2, masses_amu
 
     def analyze(
         self,
