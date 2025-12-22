@@ -25,7 +25,7 @@ H5_PATH="/project/6101772/memoozd/data/transition1x.h5"
 CKPT_PATH="/project/6101772/memoozd/models/hip_v2.ckpt"
 OUT_DIR="$HOME/scratch/ts-tools-output"
 
-python -m src.runners.gad_euler_core \
+python -m src.gad_gad_euler_rmsd \
     --h5-path "$H5_PATH" \
     --checkpoint-path "$CKPT_PATH" \
     --out-dir "$OUT_DIR" \

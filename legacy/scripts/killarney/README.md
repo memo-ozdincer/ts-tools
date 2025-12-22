@@ -1,6 +1,6 @@
-# Killarney2 Cluster SLURM Scripts
+# Killarney Cluster SLURM Scripts
 
-This directory contains SLURM scripts configured for the Killarney cluster, updated to use the refactored runner entrypoints where available.
+This directory contains SLURM scripts configured for the Killarney cluster.
 
 ## Key Differences from Compute Canada Scripts
 
@@ -22,25 +22,21 @@ The scripts expect:
 From the ts-tools root directory:
 
 ```bash
-# Submit eigenvalue descent job (HIP only in the refactored runner)
-sbatch scripts/killarney2/run_eigen_optimization.slurm
+# Submit eigenvalue descent job
+sbatch scripts/killarney/run_eigen_optimization.slurm
 
-# Submit GAD Euler integration (HIP or SCINE)
-sbatch scripts/killarney2/gad_euler.slurm
+# Submit GAD Euler integration
+sbatch scripts/killarney/gad_euler.slurm
 
-# SCINE Euler integration
-sbatch scripts/killarney2/scine_gad_euler.slurm
+# Submit RK45 adaptive integration
+sbatch scripts/killarney/run_gad_rk45.slurm
 
-# Other scripts in this folder may still call legacy modules if the runner
-# equivalent hasn't been added yet.
+# Frequency analysis
+sbatch scripts/killarney/freq_analysis.slurm
+
+# Starting geometry statistics
+sbatch scripts/killarney/run_starting_geom_stats.slurm
 ```
-
-## Runner entrypoints used
-
-- `gad_euler.slurm` → `python -m src.runners.gad_euler_core`
-- `scine_gad_euler.slurm` → `python -m src.runners.gad_euler_core --calculator scine`
-- `scine_gad_euler_noisy.slurm` → `python -m src.runners.gad_euler_core --calculator scine --start-from reactant_noise2A`
-- `run_eigen_optimization.slurm` → `python -m src.runners.eigenvalue_descent_core` (HIP only)
 
 ## Initial Setup on Killarney
 

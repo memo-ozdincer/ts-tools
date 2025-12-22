@@ -29,19 +29,16 @@ OUT_DIR="$HOME/scratch/ts-tools-output"
 # Tests gradient descent optimization of the eigenvalue product λ₀*λ₁
 
 echo ">>> Running Linear Eigproduct Descent"
-python -m src.gad_eigenvalue_descent \
+python -m src.runners.eigenvalue_descent_core \
     --h5-path "$H5_PATH" \
     --checkpoint-path "$CKPT_PATH" \
     --out-dir "$OUT_DIR" \
     --max-samples 30 \
-    --start-from reactant_noise2A \
+    --start-from midpoint_rt \
     --loss-type eig_product \
     --n-steps-opt 200 \
     --lr 0.01 \
-    --use-line-search \
-    --adaptive-max-displacement \
-    --initial-max-displacement 2.0 \
-    --final-max-displacement 0.1 \
+    --max-disp 0.2 \
     --wandb \
     --wandb-project "gad-noise-experiments"
 

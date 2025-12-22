@@ -27,7 +27,7 @@ H5_PATH="/project/6101772/memoozd/data/transition1x.h5"
 OUT_DIR="$HOME/scratch/ts-tools-output"
 
 # === SCINE DFTB0 - GAD Euler Search ===
-python -m src.gad_gad_euler_rmsd \
+python -m src.runners.gad_euler_core \
     --calculator scine \
     --scine-functional DFTB0 \
     --h5-path "$H5_PATH" \

@@ -18,7 +18,7 @@ source .venv/bin/activate
 export WANDB_API_KEY="ed8d3e45635321a86859f77337bdb4dfb5ceb113"
 
 echo `date`: Job $SLURM_JOB_ID is allocated resources.
-echo ">>> Running GAD-RK45 Search script..."
+echo ">>> Running GAD-RK45 (core; no hybrid mode)..."
 
 # Killarney paths
 H5_PATH="/project/6101772/memoozd/data/transition1x.h5"
@@ -28,7 +28,7 @@ OUT_DIR="$HOME/scratch/ts-tools-output"
 # --- Main Experiment: Start from midpoint and search for TS ---
 # This version uses the standard GAD dynamics with the RK45 solver.
 # Now includes multi-stage early stopping for robust TS detection.
-python -m src.gad_rk45_search \
+python -m src.runners.gad_rk45_core \
     --h5-path "$H5_PATH" \
     --checkpoint-path "$CKPT_PATH" \
     --out-dir "$OUT_DIR" \
@@ -38,7 +38,6 @@ python -m src.gad_rk45_search \
     --t-end 2.0 \
     --max-steps 150 \
     --min-eig-product-threshold -0.0001 \
-    --confirmation-steps 10 \
     --wandb \
     --wandb-project "gad-ts-search"
 
