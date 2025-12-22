@@ -47,8 +47,10 @@ python -m src.experiments.scine_gad_plateau \
     --method euler \
     --dt-control neg_eig_plateau \
     --plateau-patience 10 \
-    --plateau-boost 1.5 \
+    --plateau-boost 2.0 \
     --plateau-shrink 0.5 \
+    --plateau-metric both \
+    --plateau-eig-tol 1e-6 \
     --dt-min 1e-6 \
     --dt-max 0.05 \
     --max-atom-disp 0.25 \

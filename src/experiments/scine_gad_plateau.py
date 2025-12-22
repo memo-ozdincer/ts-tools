@@ -113,6 +113,8 @@ def run_single_euler(
     plateau_patience: int,
     plateau_boost: float,
     plateau_shrink: float,
+    plateau_metric: str,
+    plateau_eig_tol: float,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     coords = coords0.detach().clone().to(torch.float32)
 
@@ -144,6 +146,8 @@ def run_single_euler(
     dt_eff_state = float(dt)
     best_neg_vib: Optional[int] = None
     no_improve = 0
+    plateau_strikes = 0
+    best_eig_prod: Optional[float] = None
 
     for step in range(n_steps + 1):
         out = predict_fn(coords, atomic_nums, do_hessian=True, require_grad=False)
@@ -185,24 +189,62 @@ def run_single_euler(
         gad_mean_norm = _mean_atom_norm(gad_vec)
 
         if dt_control == "neg_eig_plateau":
+            metric = str(plateau_metric or "both")
+
+            # Initialize bests
             if best_neg_vib is None:
                 best_neg_vib = int(neg_vib)
-                no_improve = 0
-            else:
-                if int(neg_vib) < int(best_neg_vib):
-                    best_neg_vib = int(neg_vib)
-                    no_improve = 0
-                    # After an improvement, be conservative again.
-                    dt_eff_state = min(float(dt_eff_state), float(dt))
-                elif int(neg_vib) > int(best_neg_vib):
-                    # Got worse -> shrink dt aggressively.
-                    dt_eff_state = max(float(dt_eff_state) * float(plateau_shrink), float(dt_min))
-                    no_improve = 0
+            if best_eig_prod is None and np.isfinite(eig_prod):
+                best_eig_prod = float(eig_prod)
+
+            # Define what counts as progress/worsening.
+            neg_progress = int(neg_vib) < int(best_neg_vib)
+            neg_worse = int(neg_vib) > int(best_neg_vib)
+
+            eig_progress = False
+            eig_worse = False
+            if np.isfinite(eig_prod):
+                if best_eig_prod is None:
+                    best_eig_prod = float(eig_prod)
                 else:
-                    no_improve += 1
+                    tol = float(abs(plateau_eig_tol))
+                    eig_progress = float(eig_prod) < float(best_eig_prod) - tol
+                    eig_worse = float(eig_prod) > float(best_eig_prod) + tol
+
+            if metric == "neg_vib":
+                progress = neg_progress
+                worse = neg_worse
+            elif metric == "eig_product":
+                progress = eig_progress
+                worse = eig_worse
+            elif metric == "both":
+                progress = neg_progress or eig_progress
+                worse = neg_worse or eig_worse
+            else:
+                raise ValueError(f"Unknown plateau_metric: {metric}")
+
+            if progress:
+                if neg_progress:
+                    best_neg_vib = int(neg_vib)
+                if eig_progress and np.isfinite(eig_prod):
+                    best_eig_prod = float(eig_prod)
+                no_improve = 0
+                plateau_strikes = 0
+                # After progress, reset toward the user-provided base dt (stay safe).
+                dt_eff_state = min(float(dt_eff_state), float(dt))
+            elif worse:
+                # If we regressed, cut dt and reset counters.
+                dt_eff_state = max(float(dt_eff_state) * float(plateau_shrink), float(dt_min))
+                no_improve = 0
+                plateau_strikes = 0
+            else:
+                no_improve += 1
 
             if no_improve >= int(max(1, plateau_patience)):
-                dt_eff_state = min(float(dt_eff_state) * float(plateau_boost), float(dt_max))
+                # Stronger over time: ramp the boost the longer we're stuck.
+                plateau_strikes += 1
+                boost_factor = float(plateau_boost) ** float(plateau_strikes)
+                dt_eff_state = min(float(dt_eff_state) * boost_factor, float(dt_max))
                 no_improve = 0
 
             dt_eff = float(np.clip(dt_eff_state, float(dt_min), float(dt_max)))
@@ -305,7 +347,7 @@ def main() -> None:
         type=str,
         default="fixed",
         choices=["fixed", "target_mean_disp", "min_mean_disp", "neg_eig_plateau"],
-        help="How to choose dt each step based on |GAD| magnitude.",
+        help="How to choose dt each step (some modes adapt based on progress/plateaus).",
     )
     parser.add_argument("--dt-min", type=float, default=1e-6)
     parser.add_argument("--dt-max", type=float, default=0.05)
@@ -338,14 +380,28 @@ def main() -> None:
     parser.add_argument(
         "--plateau-boost",
         type=float,
-        default=1.5,
-        help="For dt_control=neg_eig_plateau: multiplicative dt increase when plateau detected.",
+        default=2.0,
+        help="For dt_control=neg_eig_plateau: base multiplicative dt increase when plateau detected (ramps with repeated plateaus).",
     )
     parser.add_argument(
         "--plateau-shrink",
         type=float,
         default=0.5,
         help="For dt_control=neg_eig_plateau: multiplicative dt decrease if neg-eig count worsens.",
+    )
+
+    parser.add_argument(
+        "--plateau-metric",
+        type=str,
+        default="both",
+        choices=["neg_vib", "eig_product", "both"],
+        help="For dt_control=neg_eig_plateau: what 'progress' means. 'both' is strongest and usually best.",
+    )
+    parser.add_argument(
+        "--plateau-eig-tol",
+        type=float,
+        default=1e-6,
+        help="For dt_control=neg_eig_plateau when plateau-metric uses eig_product: minimum change to count as progress/worsening.",
     )
 
     # RK45 knobs (only used if --method=rk45)
@@ -401,6 +457,8 @@ def main() -> None:
             "plateau_patience": args.plateau_patience,
             "plateau_boost": args.plateau_boost,
             "plateau_shrink": args.plateau_shrink,
+            "plateau_metric": args.plateau_metric,
+            "plateau_eig_tol": args.plateau_eig_tol,
             "t_end": args.t_end,
             "rtol": args.rtol,
             "atol": args.atol,
@@ -530,6 +588,8 @@ def main() -> None:
                 plateau_patience=int(args.plateau_patience),
                 plateau_boost=float(args.plateau_boost),
                 plateau_shrink=float(args.plateau_shrink),
+                plateau_metric=str(args.plateau_metric),
+                plateau_eig_tol=float(args.plateau_eig_tol),
             )
 
         wall = time.time() - t0
@@ -574,6 +634,8 @@ def main() -> None:
                 "plateau_patience": int(args.plateau_patience) if args.method == "euler" and args.dt_control == "neg_eig_plateau" else None,
                 "plateau_boost": float(args.plateau_boost) if args.method == "euler" and args.dt_control == "neg_eig_plateau" else None,
                 "plateau_shrink": float(args.plateau_shrink) if args.method == "euler" and args.dt_control == "neg_eig_plateau" else None,
+                "plateau_metric": str(args.plateau_metric) if args.method == "euler" and args.dt_control == "neg_eig_plateau" else None,
+                "plateau_eig_tol": float(args.plateau_eig_tol) if args.method == "euler" and args.dt_control == "neg_eig_plateau" else None,
                 "dt_eff_min": aux.get("dt_eff_min"),
                 "dt_eff_median": aux.get("dt_eff_median"),
                 "dt_eff_max": aux.get("dt_eff_max"),
