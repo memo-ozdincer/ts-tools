@@ -1,0 +1,271 @@
+from __future__ import annotations
+
+import argparse
+import time
+from collections import defaultdict
+from typing import Any, Dict, Optional, Tuple
+
+import numpy as np
+import torch
+
+from ..common_utils import add_common_args, parse_starting_geometry, setup_experiment
+from ..experiment_logger import ExperimentLogger, RunResult, build_loss_type_flags
+from ..logging import (
+    finish_wandb,
+    init_wandb_run,
+    log_sample,
+    log_summary,
+)
+from ..logging.trajectory_plots import plot_gad_trajectory_3x2
+from ..core_algos.gad import gad_euler_step
+from ..dependencies.hessian import vibrational_eigvals
+from ._predict import make_predict_fn_from_calculator
+
+
+def _to_float(x) -> float:
+    if isinstance(x, torch.Tensor):
+        return float(x.detach().reshape(-1)[0].item())
+    return float(x)
+
+
+def _force_mean(forces: torch.Tensor) -> float:
+    if forces.dim() == 3 and forces.shape[0] == 1:
+        forces = forces[0]
+    f = forces.reshape(-1, 3)
+    return float(f.norm(dim=1).mean().item())
+
+
+def run_single(
+    predict_fn,
+    coords0: torch.Tensor,
+    atomic_nums: torch.Tensor,
+    *,
+    n_steps: int,
+    dt: float,
+    stop_at_ts: bool,
+    ts_eps: float,
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    coords = coords0.detach().clone().to(torch.float32)
+
+    trajectory = {k: [] for k in [
+        "energy",
+        "force_mean",
+        "eig0",
+        "eig1",
+        "eig_product",
+        "disp_from_last",
+        "disp_from_start",
+    ]}
+
+    start_pos = coords.clone()
+    prev_pos = coords.clone()
+
+    steps_to_ts: Optional[int] = None
+
+    for step in range(n_steps + 1):
+        out = predict_fn(coords, atomic_nums, do_hessian=True, require_grad=False)
+        energy = out.get("energy")
+        forces = out.get("forces")
+        hessian = out.get("hessian")
+
+        energy_value = _to_float(energy)
+        force_mean = _force_mean(forces)
+
+        vib = vibrational_eigvals(hessian, coords, atomic_nums)
+        eig0 = float(vib[0].item()) if vib.numel() >= 1 else float("nan")
+        eig1 = float(vib[1].item()) if vib.numel() >= 2 else float("nan")
+        eig_prod = float((vib[0] * vib[1]).item()) if vib.numel() >= 2 else float("inf")
+
+        disp_from_last = float((coords - prev_pos).norm(dim=1).mean().item()) if step > 0 else 0.0
+        disp_from_start = float((coords - start_pos).norm(dim=1).mean().item()) if step > 0 else 0.0
+
+        trajectory["energy"].append(energy_value)
+        trajectory["force_mean"].append(force_mean)
+        trajectory["eig0"].append(eig0)
+        trajectory["eig1"].append(eig1)
+        trajectory["eig_product"].append(eig_prod)
+        trajectory["disp_from_last"].append(disp_from_last)
+        trajectory["disp_from_start"].append(disp_from_start)
+
+        # stop condition: eigenproduct negative
+        if stop_at_ts and steps_to_ts is None and np.isfinite(eig_prod) and eig_prod < -abs(ts_eps):
+            steps_to_ts = step
+            break
+
+        if step == n_steps:
+            break
+
+        prev_pos = coords.clone()
+        step_out = gad_euler_step(predict_fn, coords, atomic_nums, dt=dt)
+        coords = step_out["new_coords"].detach()
+
+    final_out = {
+        "final_coords": coords.detach().cpu(),
+        "trajectory": trajectory,
+        "steps_taken": len(trajectory["energy"]) - 1,
+        "steps_to_ts": steps_to_ts,
+        "final_eig0": trajectory["eig0"][-1] if trajectory["eig0"] else None,
+        "final_eig1": trajectory["eig1"][-1] if trajectory["eig1"] else None,
+        "final_eig_product": trajectory["eig_product"][-1] if trajectory["eig_product"] else None,
+        "final_neg_vibrational": int((vibrational_eigvals(out["hessian"], coords, atomic_nums) < 0).sum().item()) if isinstance(out.get("hessian"), torch.Tensor) else -1,
+    }
+
+    aux = {
+        "steps_to_ts": steps_to_ts,
+    }
+
+    return final_out, aux
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Core GAD Euler runner (refactored entrypoint).")
+    parser = add_common_args(parser)
+    parser.add_argument("--n-steps", type=int, default=150)
+    parser.add_argument("--dt", type=float, default=0.001)
+    parser.add_argument("--start-from", type=str, default="midpoint_rt")
+    parser.add_argument("--stop-at-ts", action="store_true")
+    parser.add_argument("--ts-eps", type=float, default=1e-5, help="Stop when eig_product < -eps")
+
+    parser.add_argument("--wandb", action="store_true")
+    parser.add_argument("--wandb-project", type=str, default="gad-ts-search")
+    parser.add_argument("--wandb-entity", type=str, default=None)
+
+    args = parser.parse_args()
+
+    calculator, dataloader, device, out_dir = setup_experiment(args, shuffle=False)
+    predict_fn = make_predict_fn_from_calculator(calculator, getattr(args, "calculator", "hip"))
+
+    loss_type_flags = build_loss_type_flags(args)
+    logger = ExperimentLogger(
+        base_dir=out_dir,
+        script_name="gad-euler-core",
+        loss_type_flags=loss_type_flags,
+        max_graphs_per_transition=10,
+        random_seed=42,
+    )
+
+    if args.wandb:
+        wandb_config = {
+            "script": "gad_euler_core",
+            "start_from": args.start_from,
+            "n_steps": args.n_steps,
+            "dt": args.dt,
+            "stop_at_ts": bool(args.stop_at_ts),
+            "calculator": getattr(args, "calculator", "hip"),
+        }
+        init_wandb_run(
+            project=args.wandb_project,
+            name=f"gad-euler-core_{loss_type_flags}",
+            config=wandb_config,
+            entity=args.wandb_entity,
+            tags=[args.start_from, "euler", "core"],
+            run_dir=out_dir,
+        )
+
+    all_metrics = defaultdict(list)
+
+    for i, batch in enumerate(dataloader):
+        if i >= args.max_samples:
+            break
+
+        batch = batch.to(device)
+        atomic_nums = batch.z.detach().cpu()
+        formula = getattr(batch, "formula", "sample")
+
+        start_coords = parse_starting_geometry(args.start_from, batch, noise_seed=getattr(args, "noise_seed", None), sample_index=i)
+        start_coords = start_coords.detach().to(device)
+
+        # Compute initial saddle order (vibrational) for proper transition bucketing.
+        try:
+            init_out = predict_fn(start_coords, atomic_nums.to(device), do_hessian=True, require_grad=False)
+            init_vib = vibrational_eigvals(init_out["hessian"], start_coords, atomic_nums)
+            initial_neg = int((init_vib < 0).sum().item())
+        except Exception:
+            initial_neg = -1
+
+        t0 = time.time()
+        out, aux = run_single(
+            predict_fn,
+            start_coords,
+            atomic_nums.to(device),
+            n_steps=args.n_steps,
+            dt=args.dt,
+            stop_at_ts=bool(args.stop_at_ts),
+            ts_eps=float(args.ts_eps),
+        )
+        wall = time.time() - t0
+
+        final_neg = out.get("final_neg_vibrational", -1)
+
+        result = RunResult(
+            sample_index=i,
+            formula=str(formula),
+            initial_neg_eigvals=initial_neg,
+            final_neg_eigvals=int(final_neg) if final_neg is not None else -1,
+            initial_neg_vibrational=None,
+            final_neg_vibrational=int(final_neg) if final_neg is not None else None,
+            steps_taken=int(out["steps_taken"]),
+            steps_to_ts=aux.get("steps_to_ts"),
+            final_time=float(wall),
+            final_eig0=out.get("final_eig0"),
+            final_eig1=out.get("final_eig1"),
+            final_eig_product=out.get("final_eig_product"),
+            final_loss=None,
+            rmsd_to_known_ts=None,
+            stop_reason=None,
+            plot_path=None,
+        )
+
+        logger.add_result(result)
+
+        fig, filename = plot_gad_trajectory_3x2(
+            out["trajectory"],
+            sample_index=i,
+            formula=str(formula),
+            start_from=args.start_from,
+            initial_neg_num=initial_neg,
+            final_neg_num=int(final_neg) if final_neg is not None else -1,
+            steps_to_ts=aux.get("steps_to_ts"),
+        )
+        plot_path = logger.save_graph(result, fig, filename)
+        if plot_path:
+            result.plot_path = plot_path
+
+        metrics = {
+            "steps_taken": result.steps_taken,
+            "steps_to_ts": result.steps_to_ts,
+            "final_eig0": result.final_eig0,
+            "final_eig1": result.final_eig1,
+            "final_eig_product": result.final_eig_product,
+            "final_neg_vibrational": result.final_neg_vibrational,
+            "wallclock_s": result.final_time,
+        }
+
+        for k, v in metrics.items():
+            if v is not None:
+                all_metrics[k].append(v)
+
+        if args.wandb:
+            log_sample(i, metrics, fig=fig if plot_path else None, plot_name="trajectory")
+
+        try:
+            import matplotlib.pyplot as plt
+
+            plt.close(fig)
+        except Exception:
+            pass
+
+    all_runs_path, aggregate_stats_path = logger.save_all_results()
+    summary = logger.compute_aggregate_stats()
+    logger.print_summary()
+
+    if args.wandb:
+        log_summary(summary)
+        finish_wandb()
+
+    print(f"Saved results: {all_runs_path}")
+    print(f"Saved stats:   {aggregate_stats_path}")
+
+
+if __name__ == "__main__":
+    main()
