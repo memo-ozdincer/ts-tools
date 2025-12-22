@@ -138,13 +138,14 @@ def log_summary(summary_dict: Dict[str, Any]) -> None:
         if value is not None:
             _wandb_run.summary[key] = value
     
-    # Print summary
+    # Print summary with TS count
     total = summary_dict.get("total_samples", 0)
     avg_steps = summary_dict.get("avg_steps", 0)
     avg_time = summary_dict.get("avg_wallclock_time", 0)
+    ts_count = summary_dict.get("ts_signature_count", 0)
     ts_rate = summary_dict.get("ts_success_rate", 0)
     print(f"[W&B] Logged summary: {total} samples, avg steps={avg_steps:.1f}, "
-          f"avg time={avg_time:.2f}s, TS rate={ts_rate:.1%}")
+          f"avg time={avg_time:.2f}s, TS found={ts_count}/{total} ({ts_rate:.1%})")
 
 
 def finish_wandb() -> None:
@@ -398,6 +399,12 @@ class ExperimentLogger:
         for transition_key, samples in self.transition_samples.items():
             transition_distribution[transition_key] = len(samples)
         stats["transition_distribution"] = transition_distribution
+
+        # Add aliases for W&B log_summary() compatibility
+        stats["total_samples"] = stats["total_runs"]
+        stats["avg_steps"] = stats["avg_steps_taken"]
+        stats["avg_wallclock_time"] = stats["avg_final_time"]
+        stats["ts_success_rate"] = stats["ts_signature_rate"]
 
         return stats
 
