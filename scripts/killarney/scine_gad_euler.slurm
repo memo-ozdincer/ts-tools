@@ -32,7 +32,7 @@ python -m src.runners.gad_euler_core \
     --scine-functional DFTB0 \
     --h5-path "$H5_PATH" \
     --out-dir "$OUT_DIR" \
-    --max-samples 30 \
+    --max-samples 200 \
     --n-steps 150 \
     --start-from midpoint_rt \
     --stop-at-ts \
