@@ -10,7 +10,7 @@ import torch
 
 from ..common_utils import add_common_args, parse_starting_geometry, setup_experiment
 from ..core_algos.gad import gad_rk45_integrate
-from ..dependencies.hessian import vibrational_eigvals
+from ..dependencies.hessian import vibrational_eigvals, get_scine_elements_from_predict_output
 from ..experiment_logger import ExperimentLogger, RunResult, build_loss_type_flags
 from ..logging import finish_wandb, init_wandb_run, log_sample, log_summary
 from ..logging.trajectory_plots import plot_gad_trajectory_3x2
@@ -60,7 +60,9 @@ def _trajectory_metrics(
 
         force_mean = _force_mean(forces)
 
-        vib = vibrational_eigvals(hessian, coords, atomic_nums)
+        # Extract SCINE elements if using SCINE calculator
+        scine_elements = get_scine_elements_from_predict_output(out)
+        vib = vibrational_eigvals(hessian, coords, atomic_nums, scine_elements=scine_elements)
         eig0 = float(vib[0].item()) if vib.numel() >= 1 else float("nan")
         eig1 = float(vib[1].item()) if vib.numel() >= 2 else float("nan")
         eig_prod = float((vib[0] * vib[1]).item()) if vib.numel() >= 2 else float("inf")
@@ -81,8 +83,12 @@ def _trajectory_metrics(
 
         prev_pos = coords
 
+    # Get final vibrational analysis (use SCINE elements if applicable)
     final_coords = coords_list[-1].detach().cpu()
-    final_neg_vibrational = int((vibrational_eigvals(predict_fn(coords_list[-1], atomic_nums, do_hessian=True, require_grad=False)["hessian"], coords_list[-1], atomic_nums) < 0).sum().item())
+    final_out_data = predict_fn(coords_list[-1], atomic_nums, do_hessian=True, require_grad=False)
+    final_scine_elements = get_scine_elements_from_predict_output(final_out_data)
+    final_vib_eigvals = vibrational_eigvals(final_out_data["hessian"], coords_list[-1], atomic_nums, scine_elements=final_scine_elements)
+    final_neg_vibrational = int((final_vib_eigvals < 0).sum().item())
 
     final_out = {
         "final_coords": final_coords,
@@ -177,7 +183,8 @@ def main() -> None:
         # initial vibrational order for transition bucketing
         try:
             init_out = predict_fn(start_coords, atomic_nums, do_hessian=True, require_grad=False)
-            init_vib = vibrational_eigvals(init_out["hessian"], start_coords, atomic_nums)
+            init_scine_elements = get_scine_elements_from_predict_output(init_out)
+            init_vib = vibrational_eigvals(init_out["hessian"], start_coords, atomic_nums, scine_elements=init_scine_elements)
             initial_neg = int((init_vib < 0).sum().item())
         except Exception:
             initial_neg = -1

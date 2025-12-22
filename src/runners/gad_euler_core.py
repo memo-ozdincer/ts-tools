@@ -18,7 +18,7 @@ from ..logging import (
 )
 from ..logging.trajectory_plots import plot_gad_trajectory_3x2
 from ..core_algos.gad import gad_euler_step
-from ..dependencies.hessian import vibrational_eigvals
+from ..dependencies.hessian import vibrational_eigvals, get_scine_elements_from_predict_output
 from ._predict import make_predict_fn_from_calculator
 
 
@@ -71,7 +71,9 @@ def run_single(
         energy_value = _to_float(energy)
         force_mean = _force_mean(forces)
 
-        vib = vibrational_eigvals(hessian, coords, atomic_nums)
+        # Extract SCINE elements if using SCINE calculator
+        scine_elements = get_scine_elements_from_predict_output(out)
+        vib = vibrational_eigvals(hessian, coords, atomic_nums, scine_elements=scine_elements)
         eig0 = float(vib[0].item()) if vib.numel() >= 1 else float("nan")
         eig1 = float(vib[1].item()) if vib.numel() >= 2 else float("nan")
         eig_prod = float((vib[0] * vib[1]).item()) if vib.numel() >= 2 else float("inf")
@@ -99,6 +101,13 @@ def run_single(
         step_out = gad_euler_step(predict_fn, coords, atomic_nums, dt=dt)
         coords = step_out["new_coords"].detach()
 
+    # Get final vibrational analysis (use SCINE elements if applicable)
+    final_neg_vib = -1
+    if isinstance(out.get("hessian"), torch.Tensor):
+        scine_elements = get_scine_elements_from_predict_output(out)
+        final_vib_eigvals = vibrational_eigvals(out["hessian"], coords, atomic_nums, scine_elements=scine_elements)
+        final_neg_vib = int((final_vib_eigvals < 0).sum().item())
+
     final_out = {
         "final_coords": coords.detach().cpu(),
         "trajectory": trajectory,
@@ -107,7 +116,7 @@ def run_single(
         "final_eig0": trajectory["eig0"][-1] if trajectory["eig0"] else None,
         "final_eig1": trajectory["eig1"][-1] if trajectory["eig1"] else None,
         "final_eig_product": trajectory["eig_product"][-1] if trajectory["eig_product"] else None,
-        "final_neg_vibrational": int((vibrational_eigvals(out["hessian"], coords, atomic_nums) < 0).sum().item()) if isinstance(out.get("hessian"), torch.Tensor) else -1,
+        "final_neg_vibrational": final_neg_vib,
     }
 
     aux = {

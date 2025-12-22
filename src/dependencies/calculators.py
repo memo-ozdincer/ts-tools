@@ -56,6 +56,10 @@ def make_scine_predict_fn(scine_calculator) -> PredictFn:
     """Adapter for `ScineSparrowCalculator`.
 
     SCINE is CPU-only and not differentiable w.r.t coords via autograd.
+
+    Note: The returned dict includes a special "_scine_calculator" key
+    that allows downstream code to access get_last_elements() for
+    SCINE-specific mass-weighting.
     """
 
     def _predict(
@@ -72,6 +76,11 @@ def make_scine_predict_fn(scine_calculator) -> PredictFn:
 
         batch = coords_to_pyg_batch(coords.detach().cpu(), atomic_nums.detach().cpu(), device=torch.device("cpu"))
         with torch.no_grad():
-            return scine_calculator.predict(batch, do_hessian=do_hessian)
+            result = scine_calculator.predict(batch, do_hessian=do_hessian)
+
+        # Attach calculator reference for SCINE-specific mass-weighting
+        result["_scine_calculator"] = scine_calculator
+
+        return result
 
     return _predict

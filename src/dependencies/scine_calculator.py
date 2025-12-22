@@ -40,30 +40,8 @@ def suppress_output():
         os.close(old_stdout_fd)
 
 
-# Atomic number to SCINE ElementType mapping
-Z_TO_ELEMENT_TYPE = {
-    1: scine_utilities.ElementType.H,
-    2: scine_utilities.ElementType.He,
-    3: scine_utilities.ElementType.Li,
-    4: scine_utilities.ElementType.Be,
-    5: scine_utilities.ElementType.B,
-    6: scine_utilities.ElementType.C,
-    7: scine_utilities.ElementType.N,
-    8: scine_utilities.ElementType.O,
-    9: scine_utilities.ElementType.F,
-    10: scine_utilities.ElementType.Ne,
-    11: scine_utilities.ElementType.Na,
-    12: scine_utilities.ElementType.Mg,
-    13: scine_utilities.ElementType.Al,
-    14: scine_utilities.ElementType.Si,
-    15: scine_utilities.ElementType.P,
-    16: scine_utilities.ElementType.S,
-    17: scine_utilities.ElementType.Cl,
-    18: scine_utilities.ElementType.Ar,
-    19: scine_utilities.ElementType.K,
-    20: scine_utilities.ElementType.Ca,
-    # Add more as needed...
-}
+# Import element mapping from scine_masses module (centralized)
+from .scine_masses import Z_TO_SCINE_ELEMENT as Z_TO_ELEMENT_TYPE
 
 
 class ScineSparrowCalculator:
@@ -82,6 +60,9 @@ class ScineSparrowCalculator:
     def __init__(self, functional: str = "DFTB0", device: str = "cpu", **kwargs):
         self.functional = functional
         self.device_str = "cpu"  # SCINE always runs on CPU
+
+        # Cache for element list (used for mass-weighting in vibrational analysis)
+        self._last_elements = None
 
         # Force single-threaded execution to avoid conflicts with PyTorch
         for var in _THREADING_ENV_VARS:
@@ -118,6 +99,22 @@ class ScineSparrowCalculator:
                 self.device = torch.device(device_str)
         return FakePotential(self.device_str)
 
+    def get_last_elements(self) -> list:
+        """
+        Get the cached element list from the last calculation.
+
+        This is used by SCINE-specific mass-weighting helpers to avoid
+        redundant atomic number -> ElementType conversions.
+
+        Returns:
+            List of scine_utilities.ElementType from last predict() call
+        """
+        if self._last_elements is None:
+            raise RuntimeError(
+                "No elements cached. Call predict() or calculate() first."
+            )
+        return self._last_elements
+
     def _batch_to_geometry(self, batch: Batch) -> tuple:
         """
         Convert PyG batch to SCINE-compatible format.
@@ -142,6 +139,9 @@ class ScineSparrowCalculator:
             if z_int not in Z_TO_ELEMENT_TYPE:
                 raise ValueError(f"Unsupported element with Z={z_int}")
             elements.append(Z_TO_ELEMENT_TYPE[z_int])
+
+        # Cache elements for use in mass-weighting (accessed via get_last_elements())
+        self._last_elements = elements
 
         return elements, positions, torch.tensor(atomic_nums, dtype=torch.long)
 
