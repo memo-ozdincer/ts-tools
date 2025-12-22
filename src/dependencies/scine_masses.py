@@ -224,8 +224,8 @@ class ScineFrequencyAnalyzer:
         Uses SVD method for numerical robustness.
 
         Args:
-            coords: (N, 3) positions in meters (or consistent units)
-            masses: (N,) masses in kg (or consistent units)
+            coords: (N, 3) positions in Angstrom
+            masses: (N,) masses in AMU
 
         Returns:
             P: (3N-k, 3N) projection matrix where k is number of rigid modes (5 or 6)
@@ -300,37 +300,31 @@ class ScineFrequencyAnalyzer:
 
         Returns:
             proj_hessian: (3N-k, 3N-k) projected mass-weighted Hessian
+                         Eigenvalues are in eV/AMU (same units as HIP)
             masses_amu: (N,) masses in AMU (for reference)
         """
         n_atoms = len(elements)
         masses_amu = get_scine_masses(elements)
 
-        # 1. Convert to SI units
-        hessian_si = hessian_ev_ang2 * (self.EV_TO_JOULES / self.ANGSTROM_TO_METERS**2)
-        masses_kg = masses_amu * self.AMU_TO_KG
-        positions_m = positions_angstrom * self.ANGSTROM_TO_METERS
-
-        # 2. Mass-weight Hessian: M^{-1/2} H M^{-1/2}
-        m_sqrt = np.sqrt(masses_kg)
+        # Mass-weight Hessian in eV/Å² and AMU units (matching HIP's approach)
+        # M^{-1/2} H M^{-1/2} where H is in eV/Å² and M is in AMU
+        # Result has eigenvalues in eV/AMU
+        m_sqrt = np.sqrt(masses_amu)
         m_sqrt_repeat = np.repeat(m_sqrt, 3)  # (3N,)
         inv_m_sqrt_mat = np.outer(1.0 / m_sqrt_repeat, 1.0 / m_sqrt_repeat)
 
-        mw_hessian = hessian_si * inv_m_sqrt_mat
+        mw_hessian = hessian_ev_ang2 * inv_m_sqrt_mat
 
-        # 3. Build projection matrix P
-        P = self._get_vibrational_projector(positions_m, masses_kg)
+        # Build projection matrix P (using positions in Angstrom, masses in AMU)
+        P = self._get_vibrational_projector(positions_angstrom, masses_amu)
 
-        # 4. Project: P H_mw P^T
+        # Project: P H_mw P^T
         proj_hessian = P @ mw_hessian @ P.T
 
         # Symmetrize to remove numerical noise
         proj_hessian = 0.5 * (proj_hessian + proj_hessian.T)
 
-        # 5. Convert back from SI to eV/Å²
-        # proj_hessian is currently in J/m² (SI), convert back to eV/Å²
-        proj_hessian_ev_ang2 = proj_hessian / (self.EV_TO_JOULES / self.ANGSTROM_TO_METERS**2)
-
-        return proj_hessian_ev_ang2, masses_amu
+        return proj_hessian, masses_amu
 
     def analyze(
         self,
