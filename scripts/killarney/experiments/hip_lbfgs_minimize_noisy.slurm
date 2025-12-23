@@ -17,12 +17,12 @@ OUT_DIR="$HOME/scratch/ts-tools-output"
 
 # W&B setup
 # - Do NOT hardcode API keys in SLURM scripts; set WANDB_API_KEY in your shell or job env.
-# - On clusters without outbound internet, W&B often needs offline mode.
 export WANDB_DIR="$OUT_DIR/wandb"
 mkdir -p "$WANDB_DIR"
+export WANDB_MODE=online
 if [[ -z "${WANDB_API_KEY:-}" ]]; then
-    echo ">>> WANDB_API_KEY not set; using WANDB_MODE=offline"
-    export WANDB_MODE=offline
+    echo "ERROR: WANDB_API_KEY is not set (required for WANDB_MODE=online)." >&2
+    exit 2
 fi
 
 export WANDB_RUN_GROUP="Experiment-lbfgs-precondition-hip-scine"
@@ -41,7 +41,7 @@ MAX_STEP=0.5
 TARGET_NEG_EIG=1
 EIG_CHECK_FREQ=1
 
-WANDB_NAME="lbfgs-precondition__hip__${START_FROM}__seed${NOISE_SEED}__job${SLURM_JOB_ID}"
+WANDB_NAME="experiment | lbfgs minimize | HIP | ${START_FROM} | seed${NOISE_SEED} | job${SLURM_JOB_ID}"
 
 echo ">>> HIP L-BFGS, start-from=$START_FROM, noise-seed=$NOISE_SEED"
 python -m src.lbfgs_energy_minimizer \
@@ -57,7 +57,7 @@ python -m src.lbfgs_energy_minimizer \
     --target-neg-eig "$TARGET_NEG_EIG" \
     --eigenvalue-check-freq "$EIG_CHECK_FREQ" \
     --wandb \
-    --wandb-project "lbfgs-precondition" \
+    --wandb-project "experiment-lbfgs-minimize" \
     --wandb-name "$WANDB_NAME"
 
 echo "✅ Job completed successfully."

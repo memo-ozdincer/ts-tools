@@ -16,8 +16,12 @@ mkdir -p logs
 # Activate virtual environment
 source .venv/bin/activate
 
-# Set up W&B API key for logging
-export WANDB_API_KEY="ed8d3e45635321a86859f77337bdb4dfb5ceb113"
+# W&B setup (online)
+export WANDB_MODE=online
+if [[ -z "${WANDB_API_KEY:-}" ]]; then
+    echo "ERROR: WANDB_API_KEY is not set (required for WANDB_MODE=online)." >&2
+    exit 2
+fi
 
 echo `date`: Job $SLURM_JOB_ID is allocated resources.
 echo ">>> Running Eigenvalue Descent with SCINE Sparrow..."

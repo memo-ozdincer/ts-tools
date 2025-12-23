@@ -18,12 +18,12 @@ OUT_DIR="$HOME/scratch/ts-tools-output"
 
 # W&B setup
 # - Do NOT hardcode API keys in SLURM scripts; set WANDB_API_KEY in your shell or job env.
-# - On clusters without outbound internet, W&B often needs offline mode.
 export WANDB_DIR="$OUT_DIR/wandb"
 mkdir -p "$WANDB_DIR"
+export WANDB_MODE=online
 if [[ -z "${WANDB_API_KEY:-}" ]]; then
-    echo ">>> WANDB_API_KEY not set; using WANDB_MODE=offline"
-    export WANDB_MODE=offline
+    echo "ERROR: WANDB_API_KEY is not set (required for WANDB_MODE=online)." >&2
+    exit 2
 fi
 
 export WANDB_RUN_GROUP="Experiment-plateau-noise-hip-scine"
@@ -42,7 +42,7 @@ NOISE_SEED=42
 N_STEPS=1500
 MAX_SAMPLES=10
 
-WANDB_NAME="plateau-noise__scine__${START_FROM}__seed${NOISE_SEED}__job${SLURM_JOB_ID}"
+WANDB_NAME="experiment | gad plateau | SCINE | ${START_FROM} | seed${NOISE_SEED} | job${SLURM_JOB_ID}"
 
 echo ">>> SCINE Euler + neg-eig plateau dt control (+ floor), start-from=$START_FROM, noise-seed=$NOISE_SEED"
 python -m src.experiments.scine_gad_plateau \
@@ -65,7 +65,7 @@ python -m src.experiments.scine_gad_plateau \
     --stop-at-ts \
     --dt 0.001 \
     --wandb \
-    --wandb-project "gad-noise-experiments" \
+    --wandb-project "experiment-gad-plateau" \
     --wandb-name "$WANDB_NAME"
 
 echo "✅ Job completed successfully."
