@@ -5,6 +5,7 @@ import os
 import re
 import time
 from collections import defaultdict
+from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
@@ -348,7 +349,7 @@ def main() -> None:
 
         # 2. Save result logic (optional: Plotly can save to HTML if you want local copies)
         # To save Plotly locally as HTML:
-        html_path = out_dir / f"traj_{i:03d}.html"
+        html_path = Path(out_dir) / f"traj_{i:03d}.html"
         fig_interactive.write_html(str(html_path))
         result.plot_path = str(html_path)
 

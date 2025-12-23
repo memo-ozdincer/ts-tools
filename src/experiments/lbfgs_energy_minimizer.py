@@ -321,6 +321,7 @@ class LBFGSEnergyMinimizer:
         return out, diag
 
     def _objective_and_grad(self, x_flat: Any) -> Tuple[float, Any]:
+        self._nfev += 1
         coords = torch.tensor(
             x_flat.reshape(-1, 3),
             dtype=torch.float32,
@@ -330,6 +331,35 @@ class LBFGSEnergyMinimizer:
         _, diag = self._eval_energy_forces(coords, do_hessian=False)
         grad = (-diag.forces_proj.reshape(-1)).detach().cpu().numpy().astype(np.float64)
         self._latest_diag = diag
+
+        # Log trajectory for every evaluation (to see line search)
+        disp_from_last = None
+        disp_from_start = None
+        try:
+            x_arr = np.asarray(x_flat, dtype=np.float64)
+            if self._x_prev is not None:
+                prev = np.asarray(self._x_prev, dtype=np.float64)
+                d = (x_arr.reshape(-1, 3) - prev.reshape(-1, 3))
+                disp_from_last = float(np.linalg.norm(d, axis=1).mean())
+            if self._x_start is not None:
+                start = np.asarray(self._x_start, dtype=np.float64)
+                d0 = (x_arr.reshape(-1, 3) - start.reshape(-1, 3))
+                disp_from_start = float(np.linalg.norm(d0, axis=1).mean())
+        except Exception:
+            pass
+
+        self.trajectory["iteration"].append(int(self._iteration))
+        self.trajectory["energy"].append(float(diag.energy))
+        self.trajectory["force_mean_raw"].append(_force_mean(diag.forces_raw))
+        self.trajectory["force_mean_proj"].append(_force_mean(diag.forces_proj))
+        self.trajectory["force_mean"].append(_force_mean(diag.forces_proj))
+        self.trajectory["neg_vib"].append(None)
+        self.trajectory["eig0"].append(None)
+        self.trajectory["eig1"].append(None)
+        self.trajectory["eig_product"].append(None)
+        self.trajectory["disp_from_last"].append(disp_from_last)
+        self.trajectory["disp_from_start"].append(disp_from_start)
+
         return float(diag.energy), grad
 
     def _callback(self, xk: Any) -> None:
@@ -405,6 +435,7 @@ class LBFGSEnergyMinimizer:
                 "Install them in your runtime environment (e.g., on the cluster)."
             )
         self._iteration = 0
+        self._nfev = 0
         self._stop_x = None
         self._latest_diag = None
         self.trajectory = defaultdict(list)
