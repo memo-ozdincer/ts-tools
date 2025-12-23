@@ -57,9 +57,11 @@ def gad_euler_step(
     atomic_nums: torch.Tensor,
     *,
     dt: float,
+    out: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     coords0 = ensure_2d_coords(coords)
-    out = predict_fn(coords0, atomic_nums, do_hessian=True, require_grad=False)
+    if out is None:
+        out = predict_fn(coords0, atomic_nums, do_hessian=True, require_grad=False)
 
     forces = out["forces"]
     hessian = out["hessian"]

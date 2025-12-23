@@ -41,6 +41,7 @@ def init_wandb_run(
     entity: Optional[str] = None,
     tags: Optional[List[str]] = None,
     run_dir: Optional[str] = None,
+    group: Optional[str] = None,
 ) -> bool:
     """
     Initialize a W&B run. Call once at the start of your experiment.
@@ -63,6 +64,7 @@ def init_wandb_run(
         return False
     
     try:
+        group_value = group or os.environ.get("WANDB_RUN_GROUP") or os.environ.get("WANDB_GROUP")
         _wandb_run = wandb.init(
             project=project,
             entity=entity,
@@ -70,6 +72,7 @@ def init_wandb_run(
             tags=tags or [],
             config=config,
             dir=run_dir,
+            group=group_value,
         )
         print(f"[W&B] Initialized run: {_wandb_run.name} ({_wandb_run.url})")
         return True

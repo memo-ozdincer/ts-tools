@@ -11,18 +11,36 @@
 mkdir -p logs
 source .venv/bin/activate
 
-# W&B auth (mirrors older SLURMs)
-export WANDB_API_KEY="ed8d3e45635321a86859f77337bdb4dfb5ceb113"
-
-echo `date`: Job $SLURM_JOB_ID is allocated resources.
-echo ">>> Running HIP noisy plateau experiment (plateau+floor only)..."
-
 H5_PATH="/project/6101772/memoozd/data/transition1x.h5"
 CKPT_PATH="/project/6101772/memoozd/models/hip_v2.ckpt"
 OUT_DIR="$HOME/scratch/ts-tools-output"
 
+# W&B setup
+# - Do NOT hardcode API keys in SLURM scripts; set WANDB_API_KEY in your shell or job env.
+# - On clusters without outbound internet, W&B often needs offline mode.
+export WANDB_DIR="$OUT_DIR/wandb"
+mkdir -p "$WANDB_DIR"
+if [[ -z "${WANDB_API_KEY:-}" ]]; then
+    echo ">>> WANDB_API_KEY not set; using WANDB_MODE=offline"
+    export WANDB_MODE=offline
+fi
+
+export WANDB_RUN_GROUP="Experiment-plateau-noise-hip-scine"
+
+echo `date`: Job $SLURM_JOB_ID is allocated resources.
+echo ">>> Running HIP noisy plateau experiment (plateau+floor only)..."
+
 START_FROM="midpoint_rt_noise1.0A"
 NOISE_SEED=42
+
+# Experiment intent:
+# - 30-step Euler-GAD
+# - dt increases when neg-eig count plateaus (dt_control=neg_eig_plateau)
+# - floor on step size via --min-mean-disp
+N_STEPS=1500
+MAX_SAMPLES=10
+
+WANDB_NAME="plateau-noise__hip__${START_FROM}__seed${NOISE_SEED}__job${SLURM_JOB_ID}"
 
 echo ">>> HIP Euler + neg-eig plateau dt control (+ floor), start-from=$START_FROM, noise-seed=$NOISE_SEED"
 python -m src.experiments.hip_gad_plateau \
@@ -38,13 +56,14 @@ python -m src.experiments.hip_gad_plateau \
     --h5-path "$H5_PATH" \
     --checkpoint-path "$CKPT_PATH" \
     --out-dir "$OUT_DIR" \
-    --max-samples 30 \
-    --n-steps 150 \
+    --max-samples "$MAX_SAMPLES" \
+    --n-steps "$N_STEPS" \
     --start-from "$START_FROM" \
     --noise-seed "$NOISE_SEED" \
     --stop-at-ts \
     --dt 0.001 \
     --wandb \
-    --wandb-project "gad-ts-search"
+    --wandb-project "gad-noise-experiments" \
+    --wandb-name "$WANDB_NAME"
 
 echo "✅ Job completed successfully."

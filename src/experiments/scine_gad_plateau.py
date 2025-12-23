@@ -12,7 +12,7 @@ from typing import Any, Dict, Optional, Tuple
 import numpy as np
 import torch
 
-from ..core_algos.gad import compute_gad_vector
+from ..core_algos.gad import gad_euler_step
 from ..dependencies.common_utils import add_common_args, parse_starting_geometry, setup_experiment
 from ..dependencies.experiment_logger import ExperimentLogger, RunResult, build_loss_type_flags
 from ..dependencies.hessian import vibrational_eigvals, get_scine_elements_from_predict_output
@@ -217,7 +217,8 @@ def run_single_euler(
         if step == n_steps:
             break
 
-        gad_vec = compute_gad_vector(forces, hessian)
+        step_out = gad_euler_step(predict_fn, coords, atomic_nums, dt=0.0, out=out)
+        gad_vec = step_out["gad_vec"]
         gad_mean_norm = _mean_atom_norm(gad_vec)
 
         if dt_control == "neg_eig_plateau":
