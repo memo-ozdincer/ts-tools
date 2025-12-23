@@ -42,6 +42,7 @@ echo ">>> [EXPERIMENT] HIP Euler + neg-eig plateau dt control, start-from=$START
 python -m src.experiments.hip_gad_plateau \
     --method euler \
     --dt-control neg_eig_plateau \
+    --min-mean-disp 0.0005 \
     --plateau-patience 10 \
     --plateau-boost 1.5 \
     --plateau-shrink 0.5 \

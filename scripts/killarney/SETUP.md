@@ -5,9 +5,7 @@ Complete setup instructions for running ts-tools on the Killarney cluster.
 ## 1. Initial Directory Setup
 
 ```bash
-# SSH to Killarney
-ssh killarney.vectorinstitute.ai
-
+# SSH to Killarney (i forget the command)
 # Create directory structure
 mkdir -p /project/6101772/memoozd/{data,models}
 mkdir -p ~/scratch/ts-tools-output

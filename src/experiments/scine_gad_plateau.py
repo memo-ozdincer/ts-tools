@@ -242,6 +242,17 @@ def run_single_euler(
                 no_improve = 0
 
             dt_eff = float(np.clip(dt_eff_state, float(dt_min), float(dt_max)))
+
+            # Optional floor: enforce a minimum mean per-atom displacement per step.
+            # This is crucial for high-noise variants where ||GAD|| can collapse and
+            # fixed/plateau-only dt updates still yield tiny steps.
+            if min_mean_disp is not None:
+                if np.isfinite(gad_mean_norm) and gad_mean_norm > 0:
+                    dt_floor = float(min_mean_disp) / float(gad_mean_norm)
+                    if np.isfinite(dt_floor) and dt_floor > 0:
+                        dt_eff = max(dt_eff, dt_floor)
+                        dt_eff = float(np.clip(dt_eff, float(dt_min), float(dt_max)))
+
             dt_eff = _apply_max_atom_disp_cap(dt_eff, gad_vec, max_atom_disp)
         else:
             dt_eff = _compute_dt_eff(
@@ -364,7 +375,10 @@ def main(
         "--min-mean-disp",
         type=float,
         default=None,
-        help="Minimum mean per-atom displacement (Å) for dt_control=min_mean_disp.",
+        help=(
+            "Minimum mean per-atom displacement (Å). Used as dt_control=min_mean_disp, and also "
+            "as a floor when dt_control=neg_eig_plateau (so plateau runs can still take >= this step size)."
+        ),
     )
     parser.add_argument(
         "--max-atom-disp",
