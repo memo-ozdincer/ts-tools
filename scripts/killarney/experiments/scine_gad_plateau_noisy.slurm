@@ -13,6 +13,9 @@
 mkdir -p logs
 source .venv/bin/activate
 
+# W&B auth (mirrors older SLURMs)
+export WANDB_API_KEY="ed8d3e45635321a86859f77337bdb4dfb5ceb113"
+
 echo `date`: Job $SLURM_JOB_ID is allocated resources.
 echo ">>> Running SCINE noisy GAD plateau experiment (plateau+floor only)..."
 
