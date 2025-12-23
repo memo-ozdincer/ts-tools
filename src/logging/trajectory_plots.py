@@ -186,3 +186,139 @@ def plot_gad_trajectory_3x2(
         f"{initial_neg_num}to{final_neg_num}.png"
     )
     return fig, filename
+
+
+def plot_lbfgs_trajectory_3x2(
+    trajectory: Dict[str, List[Optional[float]]],
+    sample_index: int,
+    formula: str,
+    start_from: str,
+    initial_neg_num: int,
+    final_neg_num: int,
+    *,
+    stop_reason: Optional[str] = None,
+) -> Tuple[plt.Figure, str]:
+    """Standard 3x2 L-BFGS trajectory plot.
+
+    Mirrors the GAD plot style but uses the fields produced by
+    `src.experiments.lbfgs_energy_minimizer`.
+
+    Expected trajectory keys (best-effort):
+      - iteration
+      - energy
+      - force_mean_raw
+      - force_mean_proj
+      - eig0, eig1
+      - neg_vib
+
+    Returns:
+        (fig, suggested_filename)
+    """
+
+    def _nanify(values: List[Optional[float]]) -> np.ndarray:
+        return np.array([v if v is not None else np.nan for v in values], dtype=float)
+
+    it = trajectory.get("iteration", [])
+    if it:
+        x = _nanify(it)
+    else:
+        n = len(trajectory.get("energy", []))
+        x = np.arange(n)
+
+    noise_info = ""
+    if "_noise" in start_from:
+        noise_str = start_from.split("_noise")[1]
+        noise_info = f" (noise {noise_str})"
+
+    transition_info = f" [{initial_neg_num}→{final_neg_num}]"
+
+    fig, axes = plt.subplots(3, 2, figsize=(12, 10))
+    fig.suptitle(f"Sample {sample_index}: {formula}{noise_info}{transition_info}", fontsize=14)
+
+    # Panel 1: Energy
+    ax = axes[0, 0]
+    ax.plot(x, _nanify(trajectory.get("energy", [])), marker=".", lw=1.2, markersize=3)
+    ax.set_ylabel("Energy (eV)")
+    ax.set_title("Energy")
+    ax.set_xlabel("Iter")
+
+    # Panel 2: Force mean (raw vs projected)
+    ax = axes[0, 1]
+    f_raw = _nanify(trajectory.get("force_mean_raw", []))
+    f_proj = _nanify(trajectory.get("force_mean_proj", []))
+    if np.any(np.isfinite(f_raw)):
+        ax.plot(x, f_raw, marker=".", color="tab:orange", lw=1.2, markersize=3, label="raw")
+    ax.plot(x, f_proj, marker=".", color="tab:blue", lw=1.2, markersize=3, label="projected")
+    ax.set_ylabel("Mean |F| (eV/Å)")
+    ax.set_title("Force Magnitude")
+    ax.set_xlabel("Iter")
+    ax.legend(loc="best", fontsize=8)
+
+    # Panel 3: Eigenvalue product (λ0*λ1)
+    ax = axes[1, 0]
+    eig0 = _nanify(trajectory.get("eig0", []))
+    eig1 = _nanify(trajectory.get("eig1", []))
+    eig_prod = eig0 * eig1
+    ax.plot(x, eig_prod, marker=".", color="tab:purple", lw=1.2, markersize=3, label="λ₀·λ₁")
+    ax.axhline(0, color="grey", linestyle="--", linewidth=1, zorder=1)
+    ax.set_ylabel("Eigenvalue Product")
+    ax.set_title("Eigenvalue Product (λ₀ * λ₁)")
+    ax.set_xlabel("Iter")
+    ax.legend(loc="best", fontsize=8)
+
+    # Panel 4: Smallest eigenvalues
+    ax = axes[1, 1]
+    ax.plot(x, eig0, marker=".", color="tab:red", lw=1.2, markersize=3, label="λ₀")
+    ax.plot(x, eig1, marker=".", color="tab:green", lw=1.2, markersize=3, label="λ₁")
+    ax.axhline(0, color="grey", linestyle=":", linewidth=1, zorder=1)
+    ax.set_ylabel("Eigenvalue (eV/Å²)")
+    ax.set_title("Smallest Eigenvalues (λ₀, λ₁)")
+    ax.set_xlabel("Iter")
+    ax.legend(loc="best", fontsize=8)
+
+    # Panel 5: Negative vibrational eigenvalue count
+    ax = axes[2, 0]
+    neg_vib = _nanify(trajectory.get("neg_vib", []))
+    ax.plot(x, neg_vib, marker=".", color="tab:brown", lw=1.2, markersize=3)
+    ax.set_ylabel("Count")
+    ax.set_title("Negative Vibrational Eigenvalues")
+    ax.set_xlabel("Iter")
+    if np.any(np.isfinite(neg_vib)):
+        y_max = max(float(np.nanmax(neg_vib)) + 1.0, 2.5)
+        ax.set_ylim(-0.5, y_max)
+
+    # Panel 6: Text summary / diagnostics
+    ax = axes[2, 1]
+    ax.axis("off")
+    lines = [
+        f"neg vib: {initial_neg_num} → {final_neg_num}",
+    ]
+    if stop_reason:
+        lines.append(f"stop: {stop_reason}")
+    if len(f_proj) > 0 and np.isfinite(f_proj[-1]):
+        lines.append(f"final |F|_proj mean: {float(f_proj[-1]):.4f}")
+    if len(eig0) > 0 and np.isfinite(eig0[-1]):
+        lines.append(f"final λ₀: {float(eig0[-1]):.6f}")
+    if len(eig1) > 0 and np.isfinite(eig1[-1]):
+        lines.append(f"final λ₁: {float(eig1[-1]):.6f}")
+    if len(eig_prod) > 0 and np.isfinite(eig_prod[-1]):
+        lines.append(f"final λ₀·λ₁: {float(eig_prod[-1]):.6e}")
+
+    ax.text(
+        0.02,
+        0.95,
+        "\n".join(lines),
+        transform=ax.transAxes,
+        ha="left",
+        va="top",
+        fontsize=10,
+        bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8),
+    )
+
+    fig.tight_layout(rect=[0, 0, 1, 0.95])
+
+    filename = (
+        f"lbfgs_{sample_index:03d}_{_sanitize_formula(formula)}_from_{start_from}_"
+        f"{initial_neg_num}to{final_neg_num}.png"
+    )
+    return fig, filename

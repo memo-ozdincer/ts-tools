@@ -30,6 +30,7 @@ from ..dependencies.hessian import (
     vibrational_eigvals,
 )
 from ..logging import finish_wandb, init_wandb_run, log_sample, log_summary
+from ..logging.trajectory_plots import plot_lbfgs_trajectory_3x2
 from ..runners._predict import make_predict_fn_from_calculator
 
 
@@ -634,8 +635,6 @@ def main(
             "stop_reason": out.get("stop_reason"),
         }
 
-        log_sample(i, sample_metrics, fig=None, plot_name=None)
-
         # Persist per-sample JSON (ExperimentLogger tracks only RunResult summaries)
         sample_path = os.path.join(str(logger.run_dir), f"sample_{i:03d}.json")
         with open(sample_path, "w") as f:
@@ -682,30 +681,47 @@ def main(
         )
         logger.add_result(rr)
 
+        fig, filename = plot_lbfgs_trajectory_3x2(
+            out.get("trajectory", {}),
+            sample_index=int(i),
+            formula=str(formula),
+            start_from=str(args.start_from),
+            initial_neg_num=int(init_neg) if init_neg is not None else -1,
+            final_neg_num=int(final_neg) if final_neg is not None else -1,
+            stop_reason=str(out.get("stop_reason")) if out.get("stop_reason") is not None else None,
+        )
+        plot_path = logger.save_graph(rr, fig, filename)
+        if plot_path:
+            rr.plot_path = plot_path
+
+        if args.wandb:
+            log_sample(i, sample_metrics, fig=fig if plot_path else None, plot_name="trajectory")
+        else:
+            log_sample(i, sample_metrics, fig=None, plot_name=None)
+
+        try:
+            import matplotlib.pyplot as plt
+
+            plt.close(fig)
+        except Exception:
+            pass
+
         print(
             f"  Done in {wall:.2f}s | iters={out.get('n_iterations')} | "
             f"neg_vib {out.get('initial_neg_vib')} → {out.get('final_neg_vib')} | "
             f"converged={out.get('converged')} ({out.get('stop_reason')})"
         )
 
-    # Summary
-    total = len(all_metrics["converged"])
-    conv = int(np.sum(np.asarray(all_metrics["converged"], dtype=np.int32))) if total else 0
-    summary = {
-        "total_samples": int(total),
-        "converged_count": int(conv),
-        "converged_rate": float(conv / total) if total else 0.0,
-        "avg_wallclock_time": float(np.mean(all_metrics["wallclock_time"])) if total else None,
-        "avg_iterations": float(np.mean(all_metrics["n_iterations"])) if total else None,
-    }
-
-    log_summary(summary)
-
-    # Save canonical ExperimentLogger outputs
-    logger.save_all_results()
+    all_runs_path, aggregate_stats_path = logger.save_all_results()
+    summary = logger.compute_aggregate_stats()
+    logger.print_summary()
 
     if args.wandb:
+        log_summary(summary)
         finish_wandb()
+
+    print(f"Saved results: {all_runs_path}")
+    print(f"Saved stats:   {aggregate_stats_path}")
 
 
 if __name__ == "__main__":
