@@ -17,9 +17,9 @@ import torch
 import numpy as np
 from torch_geometric.data import Data as TGData, Batch as TGBatch
 
-from .common_utils import setup_experiment, add_common_args
+from .dependencies.common_utils import setup_experiment, add_common_args
 from hip.equiformer_torch_calculator import EquiformerTorchCalculator
-from .differentiable_projection import differentiable_massweigh_and_eckartprojection_torch as massweigh_and_eckartprojection_torch
+from .dependencies.differentiable_projection import differentiable_massweigh_and_eckartprojection_torch as massweigh_and_eckartprojection_torch
 from hip.ff_lmdb import Z_TO_ATOM_SYMBOL
 
 import matplotlib

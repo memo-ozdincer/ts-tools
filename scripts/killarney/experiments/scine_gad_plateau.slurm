@@ -58,7 +58,7 @@ python -m src.experiments.scine_gad_plateau \
     --out-dir "$OUT_DIR" \
     --max-samples 200 \
     --n-steps 150 \
-    --start-from midpoint_rt \
+    --start-from reactant \
     --stop-at-ts \
     --dt 0.001 \
     --wandb \

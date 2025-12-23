@@ -10,13 +10,13 @@ import numpy as np
 from scipy.optimize import minimize as scipy_minimize
 from torch_geometric.data import Data as TGData, Batch as TGBatch
 
-from .common_utils import setup_experiment, add_common_args, parse_starting_geometry, extract_vibrational_eigenvalues
+from .dependencies.common_utils import setup_experiment, add_common_args, parse_starting_geometry, extract_vibrational_eigenvalues
 from .saddle_detection import classify_saddle_point, compute_adaptive_step_scale
 from hip.equiformer_torch_calculator import EquiformerTorchCalculator
 from hip.frequency_analysis import analyze_frequencies_torch
-from .differentiable_projection import differentiable_massweigh_and_eckartprojection_torch as massweigh_and_eckartprojection_torch
+from .dependencies.differentiable_projection import differentiable_massweigh_and_eckartprojection_torch as massweigh_and_eckartprojection_torch
 from hip.ff_lmdb import Z_TO_ATOM_SYMBOL
-from .experiment_logger import (
+from .dependencies.experiment_logger import (
     ExperimentLogger, RunResult, build_loss_type_flags,
     init_wandb_run, log_sample, log_summary, finish_wandb,
 )

@@ -26,15 +26,15 @@ import numpy as np
 from scipy.optimize import minimize as scipy_minimize
 from torch_geometric.data import Data as TGData, Batch as TGBatch
 
-from .common_utils import (
+from .dependencies.common_utils import (
     setup_experiment, add_common_args, parse_starting_geometry
 )
-from .differentiable_projection import (
+from .dependencies.differentiable_projection import (
     differentiable_massweigh_and_eckartprojection_torch as massweigh_and_eckartprojection_torch
 )
 from hip.ff_lmdb import Z_TO_ATOM_SYMBOL
 from hip.equiformer_torch_calculator import EquiformerTorchCalculator
-from .experiment_logger import (
+from .dependencies.experiment_logger import (
     ExperimentLogger, RunResult, build_loss_type_flags,
     init_wandb_run, log_sample, log_summary, finish_wandb,
 )
