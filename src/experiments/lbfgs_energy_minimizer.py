@@ -9,14 +9,20 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
 
-import numpy as np
+try:
+    import numpy as np
+except Exception:  # pragma: no cover
+    np = None
 import torch
-from scipy.optimize import minimize as scipy_minimize
+try:
+    from scipy.optimize import minimize as scipy_minimize
+except Exception:  # pragma: no cover
+    scipy_minimize = None
 
 from ..dependencies.common_utils import add_common_args, parse_starting_geometry, setup_experiment
-from ..dependencies.differentiable_projection import eckartprojection_torch
 from ..dependencies.experiment_logger import (
     ExperimentLogger,
+    RunResult,
     build_loss_type_flags,
 )
 from ..dependencies.hessian import (
@@ -95,7 +101,7 @@ class LBFGSEnergyMinimizer:
         self.verbose = bool(verbose)
 
         self._iteration = 0
-        self._stop_x: Optional[np.ndarray] = None
+        self._stop_x: Optional[Any] = None
         self._latest_diag: Optional[_EvalDiagnostics] = None
 
         self.trajectory: Dict[str, list] = defaultdict(list)
@@ -134,10 +140,14 @@ class LBFGSEnergyMinimizer:
             from hip.ff_lmdb import Z_TO_ATOM_SYMBOL
 
             atom_symbols = [Z_TO_ATOM_SYMBOL[int(z)] for z in self.atomic_nums.detach().cpu().tolist()]
-            masses = torch.tensor([MASS_DICT[s.lower()] for s in atom_symbols], dtype=torch.float64, device=coords3d.device)
+            masses = torch.tensor(
+                [MASS_DICT[s.lower()] for s in atom_symbols],
+                dtype=torch.float64,
+                device=coords3d.device,
+            )
             masses3 = masses.repeat_interleave(3)
 
-            P_mw = eckartprojection_torch(coords3d.to(dtype=torch.float64), masses.to(dtype=torch.float64))
+            P_mw = self._hip_vibrational_projector_mw(coords3d.to(dtype=torch.float64), masses)
             f = forces3d.reshape(-1).to(dtype=torch.float64)
             f_mw = f / torch.sqrt(masses3)
             f_mw_proj = P_mw @ f_mw
@@ -162,6 +172,88 @@ class LBFGSEnergyMinimizer:
         f_mw_proj = P_mw @ f_mw
         f_proj = f_mw_proj * torch.sqrt(masses3)
         return f_proj.to(dtype=forces3d.dtype).reshape(-1, 3)
+
+    def _hip_vibrational_projector_mw(
+        self,
+        coords3d: torch.Tensor,
+        masses: torch.Tensor,
+        *,
+        rot_tol: float = 1e-6,
+        eps: float = 1e-12,
+    ) -> torch.Tensor:
+        """Build a mass-weighted vibrational projector that handles linear molecules.
+
+        We construct translational + rotational generators in mass-weighted space,
+        drop any near-zero rotation (linear molecules -> 2 rotations), then form:
+          P = I - Q Q^T
+        where Q is an orthonormal basis for the TR subspace.
+        """
+
+        xyz = coords3d.reshape(-1, 3)
+        n = int(xyz.shape[0])
+        if n <= 1:
+            return torch.eye(3 * n, dtype=torch.float64, device=xyz.device)
+
+        masses = masses.reshape(-1).to(dtype=torch.float64, device=xyz.device)
+        sqrt_m = torch.sqrt(masses)
+        sqrt_m3 = sqrt_m.repeat_interleave(3)
+
+        # Center on COM
+        total_mass = masses.sum()
+        com = (xyz * masses[:, None]).sum(dim=0) / (total_mass + eps)
+        r = xyz - com[None, :]
+
+        # --- Translation generators (3) ---
+        tcols = []
+        for axis in range(3):
+            v = torch.zeros((n, 3), dtype=torch.float64, device=xyz.device)
+            v[:, axis] = 1.0
+            col = (v.reshape(-1) * sqrt_m3)
+            col = col / (col.norm() + eps)
+            tcols.append(col)
+
+        # --- Rotation generators (up to 3; drop near-zero for linear molecules) ---
+        # Inertia tensor in AMU*Å^2 (mass units consistent with Hessian MW convention)
+        rx, ry, rz = r[:, 0], r[:, 1], r[:, 2]
+        Ixx = torch.sum(masses * (ry * ry + rz * rz))
+        Iyy = torch.sum(masses * (rx * rx + rz * rz))
+        Izz = torch.sum(masses * (rx * rx + ry * ry))
+        Ixy = -torch.sum(masses * (rx * ry))
+        Ixz = -torch.sum(masses * (rx * rz))
+        Iyz = -torch.sum(masses * (ry * rz))
+        inertia = torch.stack(
+            [
+                torch.stack([Ixx, Ixy, Ixz]),
+                torch.stack([Ixy, Iyy, Iyz]),
+                torch.stack([Ixz, Iyz, Izz]),
+            ],
+            dim=0,
+        )
+
+        # Principal axes
+        _, axes = torch.linalg.eigh(inertia)
+
+        rcols = []
+        for axis in range(3):
+            u = axes[:, axis]
+            disp = torch.cross(r, u[None, :].expand_as(r), dim=1)  # (N,3)
+            col = (disp * sqrt_m[:, None]).reshape(-1)
+            norm = col.norm()
+            if float(norm.item()) > float(rot_tol):
+                col = col / (norm + eps)
+                rcols.append(col)
+
+        # Stack TR generators -> (3N, k)
+        B = torch.stack(tcols + rcols, dim=1) if (tcols or rcols) else torch.zeros((3 * n, 0), dtype=torch.float64, device=xyz.device)
+
+        # Orthonormalize TR subspace
+        if B.shape[1] == 0:
+            return torch.eye(3 * n, dtype=torch.float64, device=xyz.device)
+
+        Q, _ = torch.linalg.qr(B, mode="reduced")
+        P = torch.eye(Q.shape[0], dtype=torch.float64, device=xyz.device) - (Q @ Q.T)
+        P = 0.5 * (P + P.T)
+        return P
 
     def _eval_energy_forces(
         self,
@@ -198,7 +290,7 @@ class LBFGSEnergyMinimizer:
 
         return out, diag
 
-    def _objective_and_grad(self, x_flat: np.ndarray) -> Tuple[float, np.ndarray]:
+    def _objective_and_grad(self, x_flat: Any) -> Tuple[float, Any]:
         coords = torch.tensor(
             x_flat.reshape(-1, 3),
             dtype=torch.float32,
@@ -210,7 +302,7 @@ class LBFGSEnergyMinimizer:
         self._latest_diag = diag
         return float(diag.energy), grad
 
-    def _callback(self, xk: np.ndarray) -> None:
+    def _callback(self, xk: Any) -> None:
         self._iteration += 1
 
         coords = torch.tensor(
@@ -247,6 +339,11 @@ class LBFGSEnergyMinimizer:
                 raise _EarlyStop()
 
     def minimize(self, initial_coords: torch.Tensor) -> Dict[str, Any]:
+        if np is None or scipy_minimize is None:
+            raise ImportError(
+                "This module requires numpy + scipy to run L-BFGS-B. "
+                "Install them in your runtime environment (e.g., on the cluster)."
+            )
         self._iteration = 0
         self._stop_x = None
         self._latest_diag = None
@@ -269,6 +366,11 @@ class LBFGSEnergyMinimizer:
                     "final_energy": float(init_diag.energy),
                     "initial_neg_vib": int(init_diag.neg_vib),
                     "final_neg_vib": int(init_diag.neg_vib),
+                    "initial_eig0": init_diag.eig0,
+                    "initial_eig1": init_diag.eig1,
+                    "final_eig0": init_diag.eig0,
+                    "final_eig1": init_diag.eig1,
+                    "final_eig_product": (float(init_diag.eig0) * float(init_diag.eig1)) if (init_diag.eig0 is not None and init_diag.eig1 is not None) else None,
                     "n_iterations": 0,
                     "converged": True,
                     "stop_reason": "already_at_target",
@@ -342,6 +444,11 @@ class LBFGSEnergyMinimizer:
             "final_energy": float(final_diag.energy),
             "initial_neg_vib": int(init_diag.neg_vib) if init_diag.neg_vib is not None else None,
             "final_neg_vib": int(final_diag.neg_vib) if final_diag.neg_vib is not None else None,
+            "initial_eig0": init_diag.eig0,
+            "initial_eig1": init_diag.eig1,
+            "final_eig0": final_diag.eig0,
+            "final_eig1": final_diag.eig1,
+            "final_eig_product": (float(final_diag.eig0) * float(final_diag.eig1)) if (final_diag.eig0 is not None and final_diag.eig1 is not None) else None,
             "n_iterations": int(self._iteration),
             "converged": bool(converged),
             "stop_reason": str(stop_reason),
@@ -496,6 +603,9 @@ def main(
             "final_neg_vib": out.get("final_neg_vib"),
             "initial_energy": out.get("initial_energy"),
             "final_energy": out.get("final_energy"),
+            "final_eig0": out.get("final_eig0"),
+            "final_eig1": out.get("final_eig1"),
+            "final_eig_product": out.get("final_eig_product"),
             "converged": bool(out.get("converged", False)),
             "stop_reason": out.get("stop_reason"),
         }
@@ -518,6 +628,35 @@ def main(
                 indent=2,
             )
 
+        # Add structured result for aggregate stats
+        init_neg = out.get("initial_neg_vib")
+        final_neg = out.get("final_neg_vib")
+        steps_taken = int(out.get("n_iterations", 0) or 0)
+        rr = RunResult(
+            sample_index=int(i),
+            formula=str(formula),
+            initial_neg_eigvals=int(init_neg) if init_neg is not None else -1,
+            final_neg_eigvals=int(final_neg) if final_neg is not None else -1,
+            initial_neg_vibrational=int(init_neg) if init_neg is not None else None,
+            final_neg_vibrational=int(final_neg) if final_neg is not None else None,
+            steps_taken=steps_taken,
+            steps_to_ts=None,
+            final_time=float(wall),
+            final_eig0=out.get("final_eig0"),
+            final_eig1=out.get("final_eig1"),
+            final_eig_product=out.get("final_eig_product"),
+            final_loss=None,
+            rmsd_to_known_ts=None,
+            stop_reason=str(out.get("stop_reason")),
+            plot_path=None,
+            extra_data={
+                "initial_energy": out.get("initial_energy"),
+                "final_energy": out.get("final_energy"),
+                "converged": bool(out.get("converged", False)),
+            },
+        )
+        logger.add_result(rr)
+
         print(
             f"  Done in {wall:.2f}s | iters={out.get('n_iterations')} | "
             f"neg_vib {out.get('initial_neg_vib')} → {out.get('final_neg_vib')} | "
@@ -537,11 +676,7 @@ def main(
 
     log_summary(summary)
 
-    # Also persist standard aggregate stats file expected by the repo
-    with open(os.path.join(str(logger.run_dir), "aggregate_stats.custom.json"), "w") as f:
-        json.dump(summary, f, indent=2)
-
-    # Save ExperimentLogger outputs (empty unless you add RunResult objects)
+    # Save canonical ExperimentLogger outputs
     logger.save_all_results()
 
     if args.wandb:

@@ -56,7 +56,7 @@ python -m src.experiments.scine_gad_plateau \
     --scine-functional DFTB0 \
     --h5-path "$H5_PATH" \
     --out-dir "$OUT_DIR" \
-    --max-samples 200 \
+    --max-samples 30 \
     --n-steps 150 \
     --start-from reactant \
     --stop-at-ts \
