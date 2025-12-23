@@ -54,6 +54,30 @@ def _force_mean(forces: torch.Tensor) -> float:
     return float(f.norm(dim=1).mean().item())
 
 
+def _json_default(obj):  # pragma: no cover
+    """Best-effort JSON serializer for tensors/arrays.
+
+    This module runs on clusters where we often want to write rich outputs
+    (including coords tensors) to JSON. Python's json can't serialize torch
+    objects by default.
+    """
+
+    if isinstance(obj, torch.Tensor):
+        t = obj.detach().cpu()
+        if t.numel() == 1:
+            return float(t.reshape(-1)[0].item())
+        return t.tolist()
+
+    if np is not None:
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        if isinstance(obj, (np.floating, np.integer)):
+            return obj.item()
+
+    # Fallback: stringify anything else we don't recognize
+    return str(obj)
+
+
 class _EarlyStop(Exception):
     pass
 
@@ -626,6 +650,7 @@ def main(
                 },
                 f,
                 indent=2,
+                default=_json_default,
             )
 
         # Add structured result for aggregate stats
