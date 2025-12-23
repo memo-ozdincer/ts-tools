@@ -4,41 +4,24 @@
 #SBATCH --time=10:00:00
 #SBATCH --gres=gpu:l40s:1
 #SBATCH --mem=32GB
-#SBATCH --job-name=hip_gad_plateau_noisy
-#SBATCH --output=logs/hip_gad_plateau_noisy_%j.out
-#SBATCH --error=logs/hip_gad_plateau_noisy_%j.err
+#SBATCH --job-name=hip_plateau_noisy_1A_30
+#SBATCH --output=logs/hip_plateau_noisy_1A_30_%j.out
+#SBATCH --error=logs/hip_plateau_noisy_1A_30_%j.err
 
 mkdir -p logs
 source .venv/bin/activate
 
-export WANDB_API_KEY="ed8d3e45635321a86859f77337bdb4dfb5ceb113"
-
 echo `date`: Job $SLURM_JOB_ID is allocated resources.
-echo ">>> Running HIP noisy plateau experiments (baseline vs plateau-fix)..."
+echo ">>> Running HIP noisy plateau experiment (plateau+floor only)..."
 
 H5_PATH="/project/6101772/memoozd/data/transition1x.h5"
 CKPT_PATH="/project/6101772/memoozd/models/hip_v2.ckpt"
 OUT_DIR="$HOME/scratch/ts-tools-output"
 
-START_FROM="midpoint_rt_noise2.0A"
+START_FROM="midpoint_rt_noise1.0A"
 NOISE_SEED=42
 
-echo ">>> [BASELINE] HIP Euler core (fixed dt), start-from=$START_FROM, noise-seed=$NOISE_SEED"
-python -m src.runners.gad_euler_core \
-    --calculator hip \
-    --h5-path "$H5_PATH" \
-    --checkpoint-path "$CKPT_PATH" \
-    --out-dir "$OUT_DIR" \
-    --max-samples 200 \
-    --n-steps 150 \
-    --start-from "$START_FROM" \
-    --noise-seed "$NOISE_SEED" \
-    --stop-at-ts \
-    --dt 0.001 \
-    --wandb \
-    --wandb-project "gad-ts-search"
-
-echo ">>> [EXPERIMENT] HIP Euler + neg-eig plateau dt control, start-from=$START_FROM, noise-seed=$NOISE_SEED"
+echo ">>> HIP Euler + neg-eig plateau dt control (+ floor), start-from=$START_FROM, noise-seed=$NOISE_SEED"
 python -m src.experiments.hip_gad_plateau \
     --method euler \
     --dt-control neg_eig_plateau \
@@ -52,7 +35,7 @@ python -m src.experiments.hip_gad_plateau \
     --h5-path "$H5_PATH" \
     --checkpoint-path "$CKPT_PATH" \
     --out-dir "$OUT_DIR" \
-    --max-samples 200 \
+    --max-samples 30 \
     --n-steps 150 \
     --start-from "$START_FROM" \
     --noise-seed "$NOISE_SEED" \
