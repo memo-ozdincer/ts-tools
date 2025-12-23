@@ -15,8 +15,6 @@ H5_PATH="/project/6101772/memoozd/data/transition1x.h5"
 CKPT_PATH="/project/6101772/memoozd/models/hip_v2.ckpt"
 OUT_DIR="$HOME/scratch/ts-tools-output"
 
-# W&B setup
-# - Do NOT hardcode API keys in SLURM scripts; set WANDB_API_KEY in your shell or job env.
 export WANDB_DIR="$OUT_DIR/wandb"
 mkdir -p "$WANDB_DIR"
 export WANDB_MODE=online

@@ -417,6 +417,22 @@ class LBFGSEnergyMinimizer:
         self._x_start = x0.copy()
         self._x_prev = x0.copy()
 
+        # IMPORTANT: match GAD plotting semantics.
+        # Add an explicit step=0 snapshot so plot_gad_trajectory_3x2 uses the correct x-axis.
+        self.trajectory["iteration"].append(0)
+        self.trajectory["energy"].append(float(init_diag.energy))
+        self.trajectory["force_mean_raw"].append(_force_mean(init_diag.forces_raw))
+        self.trajectory["force_mean_proj"].append(_force_mean(init_diag.forces_proj))
+        self.trajectory["force_mean"].append(_force_mean(init_diag.forces_proj))
+        self.trajectory["neg_vib"].append(int(init_diag.neg_vib) if init_diag.neg_vib is not None else None)
+        self.trajectory["eig0"].append(init_diag.eig0)
+        self.trajectory["eig1"].append(init_diag.eig1)
+        self.trajectory["eig_product"].append(
+            (float(init_diag.eig0) * float(init_diag.eig1)) if (init_diag.eig0 is not None and init_diag.eig1 is not None) else None
+        )
+        self.trajectory["disp_from_last"].append(0.0)
+        self.trajectory["disp_from_start"].append(0.0)
+
         if init_diag.neg_vib is not None and init_diag.neg_vib >= 0:
             if int(init_diag.neg_vib) <= int(self.target_neg_eig_count):
                 return {
