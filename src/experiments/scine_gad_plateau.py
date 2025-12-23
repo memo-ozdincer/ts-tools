@@ -17,7 +17,7 @@ from ..dependencies.common_utils import add_common_args, parse_starting_geometry
 from ..dependencies.experiment_logger import ExperimentLogger, RunResult, build_loss_type_flags
 from ..dependencies.hessian import vibrational_eigvals, get_scine_elements_from_predict_output
 from ..logging import finish_wandb, init_wandb_run, log_sample, log_summary
-from ..logging.trajectory_plots import plot_gad_trajectory_3x2
+from ..logging.plotly_utils import plot_gad_trajectory_interactive
 from ..runners._predict import make_predict_fn_from_calculator
 
 
@@ -662,7 +662,8 @@ def main(
 
         logger.add_result(result)
 
-        fig, filename = plot_gad_trajectory_3x2(
+        # 1. Generate the interactive figure
+        fig_interactive = plot_gad_trajectory_interactive(
             out_dict["trajectory"],
             sample_index=i,
             formula=str(formula),
@@ -671,9 +672,12 @@ def main(
             final_neg_num=int(final_neg) if final_neg is not None else -1,
             steps_to_ts=aux.get("steps_to_ts"),
         )
-        plot_path = logger.save_graph(result, fig, filename)
-        if plot_path:
-            result.plot_path = plot_path
+
+        # 2. Save result logic (optional: Plotly can save to HTML if you want local copies)
+        # To save Plotly locally as HTML:
+        html_path = out_dir / f"traj_{i:03d}.html"
+        fig_interactive.write_html(str(html_path))
+        result.plot_path = str(html_path)
 
         # Always write trajectory JSON (useful for dt_eff diagnostics)
         _save_trajectory_json(logger, result, out_dict["trajectory"])
@@ -695,14 +699,9 @@ def main(
                 all_metrics[k].append(v)
 
         if args.wandb:
-            log_sample(i, metrics, fig=fig if plot_path else None, plot_name="trajectory")
+            log_sample(i, metrics, fig=fig_interactive, plot_name="trajectory_interactive")
 
-        try:
-            import matplotlib.pyplot as plt
 
-            plt.close(fig)
-        except Exception:
-            pass
 
     all_runs_path, aggregate_stats_path = logger.save_all_results()
     summary = logger.compute_aggregate_stats()

@@ -111,7 +111,11 @@ def log_sample(
     # Add plot if provided
     if fig is not None:
         plot_key = f"plots/{plot_name or 'trajectory'}"
-        log_dict[plot_key] = wandb.Image(fig)
+        # Check if it looks like a plotly figure (has to_dict or write_html)
+        if hasattr(fig, "to_dict") or hasattr(fig, "write_html"):
+             log_dict[plot_key] = fig
+        else:
+             log_dict[plot_key] = wandb.Image(fig)
     
     # Log everything together for this sample
     wandb.log(log_dict, step=sample_index)

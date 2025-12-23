@@ -30,7 +30,7 @@ from ..dependencies.hessian import (
     vibrational_eigvals,
 )
 from ..logging import finish_wandb, init_wandb_run, log_sample, log_summary
-from ..logging.trajectory_plots import plot_gad_trajectory_3x2
+from ..logging.plotly_utils import plot_gad_trajectory_interactive
 from ..runners._predict import make_predict_fn_from_calculator
 
 
@@ -131,6 +131,8 @@ class LBFGSEnergyMinimizer:
 
         self._x_start: Optional[Any] = None
         self._x_prev: Optional[Any] = None
+
+        self._scipy_info: Dict[str, Any] = {}
 
         self.trajectory: Dict[str, list] = defaultdict(list)
 
@@ -462,6 +464,7 @@ class LBFGSEnergyMinimizer:
         converged = False
         stop_reason = "max_iterations"
         x_final = None
+        self._scipy_info = {}
 
         if self.verbose:
             print("  [L-BFGS] Starting minimization:")
@@ -479,12 +482,25 @@ class LBFGSEnergyMinimizer:
                 callback=self._callback,
                 options={
                     "maxiter": int(self.max_iterations),
+                    # Avoid premature termination from small internal line-search budgets.
+                    "maxls": 50,
+                    # Also cap by function evaluations as a secondary guardrail.
+                    "maxfun": int(max(1000, 50 * int(self.max_iterations))),
                     # Disable SciPy convergence criteria; we stop by eigenvalue criterion.
                     "gtol": 0.0,
                     "ftol": 0.0,
                 },
             )
             x_final = res.x
+
+            # Capture SciPy diagnostics so cluster logs/JSON tell us exactly why it stopped.
+            self._scipy_info = {
+                "nit": int(getattr(res, "nit", -1) or -1),
+                "nfev": int(getattr(res, "nfev", -1) or -1),
+                "status": int(getattr(res, "status", -1) or -1),
+                "success": bool(getattr(res, "success", False)),
+                "message": str(getattr(res, "message", "")),
+            }
         except _EarlyStop:
             converged = True
             stop_reason = "target_neg_vib"
@@ -528,6 +544,7 @@ class LBFGSEnergyMinimizer:
             "n_iterations": int(self._iteration),
             "converged": bool(converged),
             "stop_reason": str(stop_reason),
+            "scipy": dict(self._scipy_info),
             "trajectory": dict(self.trajectory),
         }
 
@@ -733,10 +750,10 @@ def main(
         logger.add_result(rr)
 
         # Plot (same 3x2, same filename convention as other runners)
-        fig = None
+        fig_interactive = None
         plot_path = None
         try:
-            fig, filename = plot_gad_trajectory_3x2(
+            fig_interactive = plot_gad_trajectory_interactive(
                 out.get("trajectory", {}),
                 sample_index=int(i),
                 formula=str(formula),
@@ -745,11 +762,13 @@ def main(
                 final_neg_num=int(final_neg) if final_neg is not None else -1,
                 steps_to_ts=None,
             )
-            plot_path = logger.save_graph(rr, fig, filename)
-            if plot_path:
-                rr.plot_path = plot_path
+            # To save Plotly locally as HTML:
+            html_path = logger.run_dir / f"traj_{i:03d}.html"
+            fig_interactive.write_html(str(html_path))
+            rr.plot_path = str(html_path)
+            plot_path = str(html_path)
         except Exception:
-            fig = None
+            fig_interactive = None
             plot_path = None
 
         print(
@@ -759,15 +778,9 @@ def main(
         )
 
         if args.wandb:
-            log_sample(i, sample_metrics, fig=fig if plot_path else None, plot_name="trajectory")
+            log_sample(i, sample_metrics, fig=fig_interactive if plot_path else None, plot_name="trajectory_interactive")
 
-        try:
-            import matplotlib.pyplot as plt
 
-            if fig is not None:
-                plt.close(fig)
-        except Exception:
-            pass
 
     # Summary
     total = len(all_metrics["converged"])
