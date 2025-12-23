@@ -39,7 +39,7 @@ python -m src.runners.gad_euler_core \
     --wandb-project "gad-ts-search"
 
 echo ">>> [EXPERIMENT] HIP Euler + neg-eig plateau dt control, start-from=$START_FROM, noise-seed=$NOISE_SEED"
-python -m src.experiments.scine_gad_plateau \
+python -m src.experiments.hip_gad_plateau \
     --method euler \
     --dt-control neg_eig_plateau \
     --plateau-patience 10 \
@@ -48,7 +48,6 @@ python -m src.experiments.scine_gad_plateau \
     --dt-min 1e-6 \
     --dt-max 0.05 \
     --max-atom-disp 0.25 \
-    --calculator hip \
     --h5-path "$H5_PATH" \
     --checkpoint-path "$CKPT_PATH" \
     --out-dir "$OUT_DIR" \

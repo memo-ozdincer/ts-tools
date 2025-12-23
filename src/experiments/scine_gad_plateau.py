@@ -321,11 +321,20 @@ def _save_trajectory_json(logger: ExperimentLogger, result: RunResult, trajector
         return None
 
 
-def main() -> None:
+def main(
+    argv: Optional[list[str]] = None,
+    *,
+    default_calculator: Optional[str] = None,
+    enforce_calculator: bool = False,
+    script_name_prefix: str = "exp-gad-plateau",
+) -> None:
     parser = argparse.ArgumentParser(
         description="Experiment: diagnose/fix Euler GAD plateaus on SCINE (dt control + RK45 comparison)."
     )
     parser = add_common_args(parser)
+
+    if default_calculator is not None:
+        parser.set_defaults(calculator=str(default_calculator))
 
     parser.add_argument("--method", type=str, default="euler", choices=["euler", "rk45"])
 
@@ -406,7 +415,14 @@ def main() -> None:
         help="Optional W&B run name. If omitted, an informative name is auto-generated.",
     )
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+
+    if enforce_calculator and default_calculator is not None:
+        if str(getattr(args, "calculator", "")).lower() != str(default_calculator).lower():
+            raise ValueError(
+                f"This entrypoint enforces --calculator={default_calculator}. "
+                f"Got --calculator={getattr(args, 'calculator', None)}."
+            )
 
     calculator, dataloader, device, out_dir = setup_experiment(args, shuffle=False)
     calculator_type = getattr(args, "calculator", "hip").lower()
@@ -416,7 +432,7 @@ def main() -> None:
     predict_fn = make_predict_fn_from_calculator(calculator, calculator_type)
 
     loss_type_flags = build_loss_type_flags(args)
-    script_name = f"exp-scine-gad-plateau-{args.method}"
+    script_name = f"{script_name_prefix}-{args.method}"
     logger = ExperimentLogger(
         base_dir=out_dir,
         script_name=script_name,
@@ -686,4 +702,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    # Keep this module SCINE-only going forward to avoid mixing HIP/SCINE runs.
+    main(default_calculator="scine", enforce_calculator=True, script_name_prefix="exp-scine-gad-plateau")
