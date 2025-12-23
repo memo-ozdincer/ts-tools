@@ -332,40 +332,28 @@ class LBFGSEnergyMinimizer:
         grad = (-diag.forces_proj.reshape(-1)).detach().cpu().numpy().astype(np.float64)
         self._latest_diag = diag
 
-        # Log trajectory for every evaluation (to see line search)
-        disp_from_last = None
-        disp_from_start = None
-        try:
-            x_arr = np.asarray(x_flat, dtype=np.float64)
-            if self._x_prev is not None:
-                prev = np.asarray(self._x_prev, dtype=np.float64)
-                d = (x_arr.reshape(-1, 3) - prev.reshape(-1, 3))
-                disp_from_last = float(np.linalg.norm(d, axis=1).mean())
-            if self._x_start is not None:
-                start = np.asarray(self._x_start, dtype=np.float64)
-                d0 = (x_arr.reshape(-1, 3) - start.reshape(-1, 3))
-                disp_from_start = float(np.linalg.norm(d0, axis=1).mean())
-        except Exception:
-            pass
-
-        self.trajectory["iteration"].append(int(self._iteration))
-        self.trajectory["energy"].append(float(diag.energy))
-        self.trajectory["force_mean_raw"].append(_force_mean(diag.forces_raw))
-        self.trajectory["force_mean_proj"].append(_force_mean(diag.forces_proj))
-        self.trajectory["force_mean"].append(_force_mean(diag.forces_proj))
-        self.trajectory["neg_vib"].append(None)
-        self.trajectory["eig0"].append(None)
-        self.trajectory["eig1"].append(None)
-        self.trajectory["eig_product"].append(None)
-        self.trajectory["disp_from_last"].append(disp_from_last)
-        self.trajectory["disp_from_start"].append(disp_from_start)
-
         return float(diag.energy), grad
 
     def _callback(self, xk: Any) -> None:
         self._iteration += 1
 
-        # Displacements (match GAD plot semantics: mean per-atom norm)
+        coords = torch.tensor(
+            np.asarray(xk, dtype=np.float64).reshape(-1, 3),
+            dtype=torch.float32,
+            device=torch.device(self.device),
+        )
+
+        do_hessian = (
+            self._iteration % self.eigenvalue_check_freq == 0
+            or self._iteration == 1
+        )
+
+        # Use latest diag (from objective call) or re-evaluate if Hessian needed
+        diag = self._latest_diag
+        if do_hessian:
+             _, diag = self._eval_energy_forces(coords, do_hessian=True)
+        
+        # Calculate displacements
         disp_from_last = None
         disp_from_start = None
         try:
@@ -379,34 +367,29 @@ class LBFGSEnergyMinimizer:
                 d0 = (x_arr.reshape(-1, 3) - start.reshape(-1, 3))
                 disp_from_start = float(np.linalg.norm(d0, axis=1).mean())
         except Exception:
-            disp_from_last = None
-            disp_from_start = None
+            pass
 
-        coords = torch.tensor(
-            np.asarray(xk, dtype=np.float64).reshape(-1, 3),
-            dtype=torch.float32,
-            device=torch.device(self.device),
-        )
-
-        do_hessian = (
-            self._iteration % self.eigenvalue_check_freq == 0
-            or self._iteration == 1
-        )
-
-        _, diag = self._eval_energy_forces(coords, do_hessian=do_hessian)
-
+        # Append accepted step to trajectory
         self.trajectory["iteration"].append(int(self._iteration))
         self.trajectory["energy"].append(float(diag.energy))
-        # Keep raw/proj for debugging, but also provide the canonical key used by plot_gad_trajectory_3x2
         self.trajectory["force_mean_raw"].append(_force_mean(diag.forces_raw))
         self.trajectory["force_mean_proj"].append(_force_mean(diag.forces_proj))
         self.trajectory["force_mean"].append(_force_mean(diag.forces_proj))
-        self.trajectory["neg_vib"].append(int(diag.neg_vib) if diag.neg_vib is not None else None)
-        self.trajectory["eig0"].append(diag.eig0)
-        self.trajectory["eig1"].append(diag.eig1)
-        self.trajectory["eig_product"].append(
-            (float(diag.eig0) * float(diag.eig1)) if (diag.eig0 is not None and diag.eig1 is not None) else None
-        )
+        
+        if diag.neg_vib is not None:
+             self.trajectory["neg_vib"].append(int(diag.neg_vib))
+             self.trajectory["eig0"].append(diag.eig0)
+             self.trajectory["eig1"].append(diag.eig1)
+             self.trajectory["eig_product"].append(
+                (float(diag.eig0) * float(diag.eig1)) 
+                if (diag.eig0 is not None and diag.eig1 is not None) else None
+            )
+        else:
+             self.trajectory["neg_vib"].append(None)
+             self.trajectory["eig0"].append(None)
+             self.trajectory["eig1"].append(None)
+             self.trajectory["eig_product"].append(None)
+
         self.trajectory["disp_from_last"].append(disp_from_last)
         self.trajectory["disp_from_start"].append(disp_from_start)
 
@@ -417,13 +400,17 @@ class LBFGSEnergyMinimizer:
             self._x_prev = None
 
         if self.verbose and (self._iteration == 1 or self._iteration % 10 == 0):
-            neg_str = str(diag.neg_vib) if diag.neg_vib is not None else "?"
+            # Use diag if we computed it, otherwise use latest available
+            d = diag if diag else self._latest_diag
+            neg_str = str(d.neg_vib) if (d and d.neg_vib is not None) else "?"
+            e_val = d.energy if d else 0.0
+            f_val = _force_mean(d.forces_proj) if d else 0.0
             print(
-                f"    [L-BFGS] Iter {self._iteration:4d}: E={diag.energy:12.6f} eV, "
-                f"|F|_mean={_force_mean(diag.forces_proj):.4f}, neg_vib={neg_str}"
+                f"    [L-BFGS] Iter {self._iteration:4d}: E={e_val:12.6f} eV, "
+                f"|F|_mean={f_val:.4f}, neg_vib={neg_str}"
             )
 
-        if do_hessian and diag.neg_vib is not None and diag.neg_vib >= 0:
+        if diag and diag.neg_vib is not None and diag.neg_vib >= 0:
             if int(diag.neg_vib) <= int(self.target_neg_eig_count):
                 self._stop_x = np.asarray(xk, dtype=np.float64).copy()
                 raise _EarlyStop()
