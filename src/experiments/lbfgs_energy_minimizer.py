@@ -30,7 +30,7 @@ from ..dependencies.hessian import (
     vibrational_eigvals,
 )
 from ..logging import finish_wandb, init_wandb_run, log_sample, log_summary
-from ..logging.trajectory_plots import plot_lbfgs_trajectory_3x2
+from ..logging.trajectory_plots import plot_gad_trajectory_3x2
 from ..runners._predict import make_predict_fn_from_calculator
 
 
@@ -128,6 +128,9 @@ class LBFGSEnergyMinimizer:
         self._iteration = 0
         self._stop_x: Optional[Any] = None
         self._latest_diag: Optional[_EvalDiagnostics] = None
+
+        self._x_start: Optional[Any] = None
+        self._x_prev: Optional[Any] = None
 
         self.trajectory: Dict[str, list] = defaultdict(list)
 
@@ -330,6 +333,23 @@ class LBFGSEnergyMinimizer:
     def _callback(self, xk: Any) -> None:
         self._iteration += 1
 
+        # Displacements (match GAD plot semantics: mean per-atom norm)
+        disp_from_last = None
+        disp_from_start = None
+        try:
+            x_arr = np.asarray(xk, dtype=np.float64)
+            if self._x_prev is not None:
+                prev = np.asarray(self._x_prev, dtype=np.float64)
+                d = (x_arr.reshape(-1, 3) - prev.reshape(-1, 3))
+                disp_from_last = float(np.linalg.norm(d, axis=1).mean())
+            if self._x_start is not None:
+                start = np.asarray(self._x_start, dtype=np.float64)
+                d0 = (x_arr.reshape(-1, 3) - start.reshape(-1, 3))
+                disp_from_start = float(np.linalg.norm(d0, axis=1).mean())
+        except Exception:
+            disp_from_last = None
+            disp_from_start = None
+
         coords = torch.tensor(
             np.asarray(xk, dtype=np.float64).reshape(-1, 3),
             dtype=torch.float32,
@@ -345,11 +365,24 @@ class LBFGSEnergyMinimizer:
 
         self.trajectory["iteration"].append(int(self._iteration))
         self.trajectory["energy"].append(float(diag.energy))
+        # Keep raw/proj for debugging, but also provide the canonical key used by plot_gad_trajectory_3x2
         self.trajectory["force_mean_raw"].append(_force_mean(diag.forces_raw))
         self.trajectory["force_mean_proj"].append(_force_mean(diag.forces_proj))
+        self.trajectory["force_mean"].append(_force_mean(diag.forces_proj))
         self.trajectory["neg_vib"].append(int(diag.neg_vib) if diag.neg_vib is not None else None)
         self.trajectory["eig0"].append(diag.eig0)
         self.trajectory["eig1"].append(diag.eig1)
+        self.trajectory["eig_product"].append(
+            (float(diag.eig0) * float(diag.eig1)) if (diag.eig0 is not None and diag.eig1 is not None) else None
+        )
+        self.trajectory["disp_from_last"].append(disp_from_last)
+        self.trajectory["disp_from_start"].append(disp_from_start)
+
+        # Update prev after logging
+        try:
+            self._x_prev = np.asarray(xk, dtype=np.float64).copy()
+        except Exception:
+            self._x_prev = None
 
         if self.verbose and (self._iteration == 1 or self._iteration % 10 == 0):
             neg_str = str(diag.neg_vib) if diag.neg_vib is not None else "?"
@@ -381,6 +414,8 @@ class LBFGSEnergyMinimizer:
         _, init_diag = self._eval_energy_forces(coords0, do_hessian=True)
 
         x0 = coords0.detach().cpu().numpy().reshape(-1).astype(np.float64)
+        self._x_start = x0.copy()
+        self._x_prev = x0.copy()
 
         if init_diag.neg_vib is not None and init_diag.neg_vib >= 0:
             if int(init_diag.neg_vib) <= int(self.target_neg_eig_count):
@@ -681,30 +716,25 @@ def main(
         )
         logger.add_result(rr)
 
-        fig, filename = plot_lbfgs_trajectory_3x2(
-            out.get("trajectory", {}),
-            sample_index=int(i),
-            formula=str(formula),
-            start_from=str(args.start_from),
-            initial_neg_num=int(init_neg) if init_neg is not None else -1,
-            final_neg_num=int(final_neg) if final_neg is not None else -1,
-            stop_reason=str(out.get("stop_reason")) if out.get("stop_reason") is not None else None,
-        )
-        plot_path = logger.save_graph(rr, fig, filename)
-        if plot_path:
-            rr.plot_path = plot_path
-
-        if args.wandb:
-            log_sample(i, sample_metrics, fig=fig if plot_path else None, plot_name="trajectory")
-        else:
-            log_sample(i, sample_metrics, fig=None, plot_name=None)
-
+        # Plot (same 3x2, same filename convention as other runners)
+        fig = None
+        plot_path = None
         try:
-            import matplotlib.pyplot as plt
-
-            plt.close(fig)
+            fig, filename = plot_gad_trajectory_3x2(
+                out.get("trajectory", {}),
+                sample_index=int(i),
+                formula=str(formula),
+                start_from=str(args.start_from),
+                initial_neg_num=int(init_neg) if init_neg is not None else -1,
+                final_neg_num=int(final_neg) if final_neg is not None else -1,
+                steps_to_ts=None,
+            )
+            plot_path = logger.save_graph(rr, fig, filename)
+            if plot_path:
+                rr.plot_path = plot_path
         except Exception:
-            pass
+            fig = None
+            plot_path = None
 
         print(
             f"  Done in {wall:.2f}s | iters={out.get('n_iterations')} | "
@@ -712,16 +742,35 @@ def main(
             f"converged={out.get('converged')} ({out.get('stop_reason')})"
         )
 
-    all_runs_path, aggregate_stats_path = logger.save_all_results()
-    summary = logger.compute_aggregate_stats()
-    logger.print_summary()
+        if args.wandb:
+            log_sample(i, sample_metrics, fig=fig if plot_path else None, plot_name="trajectory")
+
+        try:
+            import matplotlib.pyplot as plt
+
+            if fig is not None:
+                plt.close(fig)
+        except Exception:
+            pass
+
+    # Summary
+    total = len(all_metrics["converged"])
+    conv = int(np.sum(np.asarray(all_metrics["converged"], dtype=np.int32))) if total else 0
+    summary = {
+        "total_samples": int(total),
+        "converged_count": int(conv),
+        "converged_rate": float(conv / total) if total else 0.0,
+        "avg_wallclock_time": float(np.mean(all_metrics["wallclock_time"])) if total else None,
+        "avg_iterations": float(np.mean(all_metrics["n_iterations"])) if total else None,
+    }
+
+    log_summary(summary)
+
+    # Save canonical ExperimentLogger outputs
+    logger.save_all_results()
 
     if args.wandb:
-        log_summary(summary)
         finish_wandb()
-
-    print(f"Saved results: {all_runs_path}")
-    print(f"Saved stats:   {aggregate_stats_path}")
 
 
 if __name__ == "__main__":
