@@ -903,35 +903,85 @@ def main(
             hip_eigh_device=str(args.hip_eigh_device),
             profile_every=int(args.profile_every),
         )
-        wall = time.time() - t0
+        t0 = time.time()
+        try:
+            out_dict, aux = run_multi_mode_escape(
+                predict_fn,
+                start_coords,
+                atomic_nums,
+                n_steps=int(args.n_steps),
+                dt=float(args.dt),
+                stop_at_ts=bool(args.stop_at_ts),
+                ts_eps=float(args.ts_eps),
+                dt_control=str(args.dt_control),
+                dt_min=float(args.dt_min),
+                dt_max=float(args.dt_max),
+                max_atom_disp=float(args.max_atom_disp) if args.max_atom_disp is not None else None,
+                plateau_patience=int(args.plateau_patience),
+                plateau_boost=float(args.plateau_boost),
+                plateau_shrink=float(args.plateau_shrink),
+                escape_disp_threshold=float(args.escape_disp_threshold),
+                escape_window=int(args.escape_window),
+                hip_vib_mode=str(args.hip_vib_mode),
+                hip_rigid_tol=float(args.hip_rigid_tol),
+                hip_eigh_device=str(args.hip_eigh_device),
+                escape_neg_vib_std=float(args.escape_neg_vib_std),
+                escape_delta=float(args.escape_delta),
+                adaptive_delta=bool(args.adaptive_delta),
+                min_interatomic_dist=float(args.min_interatomic_dist),
+                max_escape_cycles=int(args.max_escape_cycles),
+                profile_every=int(args.profile_every),
+            )
+            wall = time.time() - t0
+        except Exception as e:
+            wall = time.time() - t0
+            stop_reason = f"{type(e).__name__}: {e}"
+            print(f"[WARN] Sample {i} failed during run: {stop_reason}")
 
-        final_neg = out_dict.get("final_neg_vibrational", -1)
+            result = RunResult(
+                sample_index=i,
+                formula=str(formula),
+                initial_neg_eigvals=int(initial_neg),
+                final_neg_eigvals=-1,
+                initial_neg_vibrational=None,
+                final_neg_vibrational=None,
+                steps_taken=0,
+                steps_to_ts=None,
+                final_time=float(wall),
+                final_eig0=None,
+                final_eig1=None,
+                final_eig_product=None,
+                final_loss=None,
+                rmsd_to_known_ts=None,
+                stop_reason=stop_reason,
+                plot_path=None,
+                extra_data={
+                    "method": str(args.method),
+                    "dt_control": str(args.dt_control),
+                    "start_from": str(args.start_from),
+                    "escape_disp_threshold": float(args.escape_disp_threshold),
+                    "escape_window": int(args.escape_window),
+                    "escape_neg_vib_std": float(args.escape_neg_vib_std),
+                    "escape_delta": float(args.escape_delta),
+                    "adaptive_delta": bool(args.adaptive_delta),
+                    "min_interatomic_dist": float(args.min_interatomic_dist),
+                    "max_escape_cycles": int(args.max_escape_cycles),
+                },
+            )
 
-        result = RunResult(
-            sample_index=i,
-            formula=str(formula),
-            initial_neg_eigvals=initial_neg,
-            final_neg_eigvals=int(final_neg) if final_neg is not None else -1,
-            initial_neg_vibrational=None,
-            final_neg_vibrational=int(final_neg) if final_neg is not None else None,
-            steps_taken=int(out_dict["steps_taken"]),
-            steps_to_ts=aux.get("steps_to_ts"),
-            final_time=float(wall),
-            final_eig0=out_dict.get("final_eig0"),
-            final_eig1=out_dict.get("final_eig1"),
-            final_eig_product=out_dict.get("final_eig_product"),
-            final_loss=None,
-            rmsd_to_known_ts=None,
-            stop_reason=None,
-            plot_path=None,
-            extra_data={
-                "method": str(args.method),
-                "dt_control": str(args.dt_control),
-                "escape_cycles_used": aux.get("escape_cycles_used"),
-                "escape_events": aux.get("escape_events"),
-                "escape_disp_threshold": float(args.escape_disp_threshold),
-                "escape_window": int(args.escape_window),
-                "escape_neg_vib_std": float(args.escape_neg_vib_std),
+            logger.add_result(result)
+
+            if args.wandb:
+                log_sample(
+                    i,
+                    {
+                        "steps_taken": result.steps_taken,
+                        "wallclock_s": result.final_time,
+                        "stop_reason": result.stop_reason,
+                        "failed": 1,
+                    },
+                )
+            continue
                 "escape_delta": float(args.escape_delta),
                 "adaptive_delta": bool(args.adaptive_delta),
                 "min_interatomic_dist": float(args.min_interatomic_dist),
