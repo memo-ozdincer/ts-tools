@@ -7,11 +7,16 @@ high-index saddle points. Instead of using a step-size floor (which can be unsta
 we detect when GAD converges to a high-index saddle (index > 1) and explicitly
 perturb along the second-lowest eigenvector (v2) to escape toward index-1.
 
+Detection uses DISPLACEMENT-based criteria (not GAD norm), since:
+- GAD norm ~ force_mean (0.2-3 eV/Å) stays moderate even at plateaus
+- disp_from_last dropping to ~1µÅ is the true indicator (dt shrinks/caps)
+- We trigger escape when: mean(disp[-window:]) < threshold AND neg_vib stable AND >1
+
 Algorithm:
-1. Run GAD until convergence (GAD vector norm < threshold)
-2. Check saddle index (count negative vibrational eigenvalues)
+1. Run GAD, tracking recent displacement history
+2. Detect plateau: mean displacement < threshold over window, stable neg_vib, index > 1
 3. If index = 1: Success - found TS
-4. If index > 1: Apply perturbation along v2, pick direction that lowers energy
+4. If plateau at index > 1: Apply perturbation along v2, pick direction that lowers energy
 5. Resume GAD from perturbed geometry
 6. Repeat until index = 1 or max escape cycles reached
 """
@@ -197,6 +202,38 @@ def perform_escape_perturbation(
     return new_coords.detach(), info
 
 
+def _check_plateau_convergence(
+    disp_history: list[float],
+    neg_vib_history: list[int],
+    current_neg_vib: int,
+    *,
+    window: int,
+    disp_threshold: float,
+    neg_vib_std_threshold: float,
+) -> bool:
+    """Check if we've converged to a plateau based on displacement history.
+
+    Triggers when:
+    1. mean(disp[-window:]) < disp_threshold (tiny steps)
+    2. std(neg_vib[-window:]) <= neg_vib_std_threshold (stable saddle index)
+    3. current_neg_vib > 1 (high-index saddle)
+    """
+    if len(disp_history) < window:
+        return False
+
+    recent_disp = disp_history[-window:]
+    recent_neg_vib = neg_vib_history[-window:]
+
+    mean_disp = float(np.mean(recent_disp))
+    std_neg_vib = float(np.std(recent_neg_vib))
+
+    return (
+        mean_disp < disp_threshold
+        and std_neg_vib <= neg_vib_std_threshold
+        and current_neg_vib > 1
+    )
+
+
 def run_multi_mode_escape(
     predict_fn,
     coords0: torch.Tensor,
@@ -213,19 +250,24 @@ def run_multi_mode_escape(
     plateau_patience: int,
     plateau_boost: float,
     plateau_shrink: float,
-    # Multi-mode escape parameters
-    escape_threshold: float,
+    # Multi-mode escape parameters (displacement-based detection)
+    escape_disp_threshold: float,
+    escape_window: int,
+    escape_neg_vib_std: float,
     escape_delta: float,
     adaptive_delta: bool,
     max_escape_cycles: int,
-    gad_steps_per_cycle: int,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """Run GAD with multi-mode escape mechanism.
 
-    The algorithm alternates between:
-    1. Running GAD for gad_steps_per_cycle steps (or until convergence)
-    2. Checking if converged to high-index saddle (index > 1)
-    3. If high-index: perturb along v2 and restart GAD
+    Uses displacement-based plateau detection:
+    - Triggers escape when mean(disp[-window:]) < threshold AND neg_vib stable AND >1
+    - This is more robust than GAD norm, which stays ~0.1-1 eV/Å even at plateaus
+
+    The algorithm:
+    1. Run GAD, accumulating displacement history
+    2. Check for plateau: tiny displacements + stable neg_vib + index > 1
+    3. If plateau at index > 1: perturb along v2 and restart GAD
     4. Repeat until index = 1 or max_escape_cycles reached
     """
     coords = coords0.detach().clone().to(torch.float32)
@@ -252,146 +294,139 @@ def run_multi_mode_escape(
     escape_cycle = 0
     escape_events: list[Dict[str, Any]] = []
 
+    # Rolling history for displacement-based plateau detection
+    disp_history: list[float] = []
+    neg_vib_history: list[int] = []
+
     # Stateful dt controller variables
     dt_eff_state = float(dt)
     best_neg_vib: Optional[int] = None
     no_improve = 0
 
     while escape_cycle < max_escape_cycles and total_steps < n_steps:
-        # Run GAD for this cycle
-        cycle_start_step = total_steps
-        steps_this_cycle = min(gad_steps_per_cycle, n_steps - total_steps)
+        out = predict_fn(coords, atomic_nums, do_hessian=True, require_grad=False)
+        energy = out.get("energy")
+        forces = out.get("forces")
+        hessian = out.get("hessian")
 
-        converged = False
-        final_gad_norm = float("inf")
-        neg_vib = -1
+        energy_value = _to_float(energy)
+        force_mean = _force_mean(forces)
 
-        for step_in_cycle in range(steps_this_cycle + 1):
-            out = predict_fn(coords, atomic_nums, do_hessian=True, require_grad=False)
-            energy = out.get("energy")
-            forces = out.get("forces")
-            hessian = out.get("hessian")
+        scine_elements = get_scine_elements_from_predict_output(out)
+        vib = vibrational_eigvals(hessian, coords, atomic_nums, scine_elements=scine_elements)
+        eig0 = float(vib[0].item()) if vib.numel() >= 1 else float("nan")
+        eig1 = float(vib[1].item()) if vib.numel() >= 2 else float("nan")
+        eig_prod = float((vib[0] * vib[1]).item()) if vib.numel() >= 2 else float("inf")
+        neg_vib = int((vib < 0).sum().item()) if vib.numel() > 0 else -1
 
-            energy_value = _to_float(energy)
-            force_mean = _force_mean(forces)
+        disp_from_last = float((coords - prev_pos).norm(dim=1).mean().item()) if total_steps > 0 else 0.0
+        disp_from_start = float((coords - start_pos).norm(dim=1).mean().item()) if total_steps > 0 else 0.0
 
-            scine_elements = get_scine_elements_from_predict_output(out)
-            vib = vibrational_eigvals(hessian, coords, atomic_nums, scine_elements=scine_elements)
-            eig0 = float(vib[0].item()) if vib.numel() >= 1 else float("nan")
-            eig1 = float(vib[1].item()) if vib.numel() >= 2 else float("nan")
-            eig_prod = float((vib[0] * vib[1]).item()) if vib.numel() >= 2 else float("inf")
-            neg_vib = int((vib < 0).sum().item()) if vib.numel() > 0 else -1
+        # Compute GAD vector and its norm
+        step_out = gad_euler_step(predict_fn, coords, atomic_nums, dt=0.0, out=out)
+        gad_vec = step_out["gad_vec"]
+        gad_norm = _mean_atom_norm(gad_vec)
 
-            disp_from_last = float((coords - prev_pos).norm(dim=1).mean().item()) if total_steps > 0 else 0.0
-            disp_from_start = float((coords - start_pos).norm(dim=1).mean().item()) if total_steps > 0 else 0.0
+        # Update rolling history
+        if total_steps > 0:  # Only add after first step (disp_from_last=0 at step 0)
+            disp_history.append(disp_from_last)
+            neg_vib_history.append(neg_vib)
 
-            # Compute GAD vector and its norm
-            step_out = gad_euler_step(predict_fn, coords, atomic_nums, dt=0.0, out=out)
-            gad_vec = step_out["gad_vec"]
-            gad_norm = _mean_atom_norm(gad_vec)
-            final_gad_norm = gad_norm
+        trajectory["energy"].append(energy_value)
+        trajectory["force_mean"].append(force_mean)
+        trajectory["eig0"].append(eig0)
+        trajectory["eig1"].append(eig1)
+        trajectory["eig_product"].append(eig_prod)
+        trajectory["neg_vib"].append(int(neg_vib))
+        trajectory["disp_from_last"].append(disp_from_last)
+        trajectory["disp_from_start"].append(disp_from_start)
+        trajectory["gad_norm"].append(gad_norm)
+        trajectory["escape_cycle"].append(escape_cycle)
 
-            trajectory["energy"].append(energy_value)
-            trajectory["force_mean"].append(force_mean)
-            trajectory["eig0"].append(eig0)
-            trajectory["eig1"].append(eig1)
-            trajectory["eig_product"].append(eig_prod)
-            trajectory["neg_vib"].append(int(neg_vib))
-            trajectory["disp_from_last"].append(disp_from_last)
-            trajectory["disp_from_start"].append(disp_from_start)
-            trajectory["gad_norm"].append(gad_norm)
-            trajectory["escape_cycle"].append(escape_cycle)
-
-            # Check for TS (index = 1)
-            if stop_at_ts and steps_to_ts is None and np.isfinite(eig_prod) and eig_prod < -abs(ts_eps):
-                steps_to_ts = total_steps
-                converged = True
-                # Don't break yet, record dt_eff first
-
-            if step_in_cycle == steps_this_cycle:
-                trajectory["dt_eff"].append(float("nan"))
-                total_steps += 1
-                break
-
-            # Check for convergence (GAD norm small AND not at TS yet)
-            if gad_norm < escape_threshold and neg_vib > 1:
-                converged = True
-                trajectory["dt_eff"].append(float("nan"))
-                total_steps += 1
-                break
-
-            # Compute dt_eff using plateau controller
-            if dt_control == "neg_eig_plateau":
-                if best_neg_vib is None:
-                    best_neg_vib = int(neg_vib)
-                    no_improve = 0
-                else:
-                    if int(neg_vib) < int(best_neg_vib):
-                        best_neg_vib = int(neg_vib)
-                        no_improve = 0
-                        dt_eff_state = min(float(dt_eff_state), float(dt))
-                    elif int(neg_vib) > int(best_neg_vib):
-                        dt_eff_state = max(float(dt_eff_state) * float(plateau_shrink), float(dt_min))
-                        no_improve = 0
-                    else:
-                        no_improve += 1
-
-                if no_improve >= int(max(1, plateau_patience)):
-                    dt_eff_state = min(float(dt_eff_state) * float(plateau_boost), float(dt_max))
-                    no_improve = 0
-
-                dt_eff = float(np.clip(dt_eff_state, float(dt_min), float(dt_max)))
-            else:
-                dt_eff = float(dt)
-
-            # Apply max atom displacement cap
-            if max_atom_disp is not None and max_atom_disp > 0:
-                step = dt_eff * gad_vec
-                max_disp = _max_atom_norm(step)
-                if np.isfinite(max_disp) and max_disp > float(max_atom_disp) and max_disp > 0:
-                    dt_eff = dt_eff * (float(max_atom_disp) / float(max_disp))
-
-            trajectory["dt_eff"].append(float(dt_eff))
-
-            # Take GAD step
-            prev_pos = coords.clone()
-            coords = (coords + dt_eff * gad_vec).detach()
-            total_steps += 1
-
-            # If we found TS, break
-            if converged and steps_to_ts is not None:
-                break
-
-        # After this GAD cycle, check if we need to escape
-        if steps_to_ts is not None:
-            # Found TS, we're done
+        # Check for TS (index = 1)
+        if stop_at_ts and steps_to_ts is None and np.isfinite(eig_prod) and eig_prod < -abs(ts_eps):
+            steps_to_ts = total_steps
+            trajectory["dt_eff"].append(float("nan"))
             break
 
-        if converged and neg_vib > 1 and escape_cycle < max_escape_cycles - 1:
+        # Check for plateau convergence (displacement-based)
+        is_plateau = _check_plateau_convergence(
+            disp_history,
+            neg_vib_history,
+            neg_vib,
+            window=escape_window,
+            disp_threshold=escape_disp_threshold,
+            neg_vib_std_threshold=escape_neg_vib_std,
+        )
+
+        if is_plateau:
             # Converged to high-index saddle, perform escape
+            trajectory["dt_eff"].append(float("nan"))
+
             new_coords, escape_info = perform_escape_perturbation(
                 predict_fn,
                 coords,
                 atomic_nums,
-                out["hessian"],
+                hessian,
                 escape_delta=escape_delta,
                 adaptive_delta=adaptive_delta,
             )
             coords = new_coords
             escape_info["step"] = total_steps
             escape_info["neg_vib_before"] = neg_vib
-            escape_info["gad_norm"] = final_gad_norm
+            escape_info["gad_norm"] = gad_norm
+            escape_info["mean_disp_at_trigger"] = float(np.mean(disp_history[-escape_window:]))
             escape_events.append(escape_info)
 
-            # Reset plateau controller state after escape
+            # Reset state after escape
+            disp_history.clear()
+            neg_vib_history.clear()
             best_neg_vib = None
             no_improve = 0
             dt_eff_state = float(dt)
+            prev_pos = coords.clone()
 
             escape_cycle += 1
+            total_steps += 1
+            continue
+
+        # Compute dt_eff using plateau controller
+        if dt_control == "neg_eig_plateau":
+            if best_neg_vib is None:
+                best_neg_vib = int(neg_vib)
+                no_improve = 0
+            else:
+                if int(neg_vib) < int(best_neg_vib):
+                    best_neg_vib = int(neg_vib)
+                    no_improve = 0
+                    dt_eff_state = min(float(dt_eff_state), float(dt))
+                elif int(neg_vib) > int(best_neg_vib):
+                    dt_eff_state = max(float(dt_eff_state) * float(plateau_shrink), float(dt_min))
+                    no_improve = 0
+                else:
+                    no_improve += 1
+
+            if no_improve >= int(max(1, plateau_patience)):
+                dt_eff_state = min(float(dt_eff_state) * float(plateau_boost), float(dt_max))
+                no_improve = 0
+
+            dt_eff = float(np.clip(dt_eff_state, float(dt_min), float(dt_max)))
         else:
-            # Either didn't converge or reached max cycles
-            escape_cycle += 1
+            dt_eff = float(dt)
+
+        # Apply max atom displacement cap
+        if max_atom_disp is not None and max_atom_disp > 0:
+            step = dt_eff * gad_vec
+            max_disp = _max_atom_norm(step)
+            if np.isfinite(max_disp) and max_disp > float(max_atom_disp) and max_disp > 0:
+                dt_eff = dt_eff * (float(max_atom_disp) / float(max_disp))
+
+        trajectory["dt_eff"].append(float(dt_eff))
+
+        # Take GAD step
+        prev_pos = coords.clone()
+        coords = (coords + dt_eff * gad_vec).detach()
+        total_steps += 1
 
     # Pad trajectories to same length
     while len(trajectory["dt_eff"]) < len(trajectory["energy"]):
@@ -493,12 +528,25 @@ def main(
     parser.add_argument("--plateau-boost", type=float, default=1.5)
     parser.add_argument("--plateau-shrink", type=float, default=0.5)
 
-    # Multi-mode escape parameters
+    # Multi-mode escape parameters (displacement-based detection)
     parser.add_argument(
-        "--escape-threshold",
+        "--escape-disp-threshold",
         type=float,
-        default=1e-4,
-        help="GAD vector norm threshold for detecting convergence to saddle.",
+        default=5e-4,
+        help="Mean displacement threshold (A) for plateau detection. Trigger escape when "
+             "mean(disp[-window:]) < this value.",
+    )
+    parser.add_argument(
+        "--escape-window",
+        type=int,
+        default=20,
+        help="Number of recent steps to consider for plateau detection.",
+    )
+    parser.add_argument(
+        "--escape-neg-vib-std",
+        type=float,
+        default=0.5,
+        help="Max std(neg_vib) over window for plateau detection (stable saddle index).",
     )
     parser.add_argument(
         "--escape-delta",
@@ -523,12 +571,6 @@ def main(
         type=int,
         default=10,
         help="Maximum number of escape attempts.",
-    )
-    parser.add_argument(
-        "--gad-steps-per-cycle",
-        type=int,
-        default=150,
-        help="Max GAD steps between escape attempts.",
     )
 
     parser.add_argument("--wandb", action="store_true")
@@ -583,11 +625,12 @@ def main(
             "plateau_patience": args.plateau_patience,
             "plateau_boost": args.plateau_boost,
             "plateau_shrink": args.plateau_shrink,
-            "escape_threshold": args.escape_threshold,
+            "escape_disp_threshold": args.escape_disp_threshold,
+            "escape_window": args.escape_window,
+            "escape_neg_vib_std": args.escape_neg_vib_std,
             "escape_delta": args.escape_delta,
             "adaptive_delta": args.adaptive_delta,
             "max_escape_cycles": args.max_escape_cycles,
-            "gad_steps_per_cycle": args.gad_steps_per_cycle,
         }
         wandb_name = args.wandb_name
         if not wandb_name:
@@ -644,11 +687,12 @@ def main(
             plateau_patience=int(args.plateau_patience),
             plateau_boost=float(args.plateau_boost),
             plateau_shrink=float(args.plateau_shrink),
-            escape_threshold=float(args.escape_threshold),
+            escape_disp_threshold=float(args.escape_disp_threshold),
+            escape_window=int(args.escape_window),
+            escape_neg_vib_std=float(args.escape_neg_vib_std),
             escape_delta=float(args.escape_delta),
             adaptive_delta=bool(args.adaptive_delta),
             max_escape_cycles=int(args.max_escape_cycles),
-            gad_steps_per_cycle=int(args.gad_steps_per_cycle),
         )
         wall = time.time() - t0
 
@@ -676,11 +720,12 @@ def main(
                 "dt_control": str(args.dt_control),
                 "escape_cycles_used": aux.get("escape_cycles_used"),
                 "escape_events": aux.get("escape_events"),
-                "escape_threshold": float(args.escape_threshold),
+                "escape_disp_threshold": float(args.escape_disp_threshold),
+                "escape_window": int(args.escape_window),
+                "escape_neg_vib_std": float(args.escape_neg_vib_std),
                 "escape_delta": float(args.escape_delta),
                 "adaptive_delta": bool(args.adaptive_delta),
                 "max_escape_cycles": int(args.max_escape_cycles),
-                "gad_steps_per_cycle": int(args.gad_steps_per_cycle),
             },
         )
 

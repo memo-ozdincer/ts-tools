@@ -36,16 +36,18 @@ NOISE_SEED=42
 N_STEPS=1500
 MAX_SAMPLES=10
 
-# Multi-mode escape parameters
-# escape_threshold: GAD norm below which we consider convergence to saddle
+# Multi-mode escape parameters (displacement-based detection)
+# escape_disp_threshold: Mean displacement threshold (A) for plateau detection
+# escape_window: Number of recent steps to average for plateau detection
+# escape_neg_vib_std: Max std(neg_vib) over window (stable saddle index)
 # escape_delta: Base perturbation magnitude (Angstrom) along v2
 # adaptive_delta: Scale delta by 1/sqrt(|lambda2|) for stronger curvature
 # max_escape_cycles: Max attempts to escape high-index saddles
-# gad_steps_per_cycle: GAD steps between escape checks
-ESCAPE_THRESHOLD=${ESCAPE_THRESHOLD:-1e-4}
+ESCAPE_DISP_THRESHOLD=${ESCAPE_DISP_THRESHOLD:-5e-4}
+ESCAPE_WINDOW=${ESCAPE_WINDOW:-20}
+ESCAPE_NEG_VIB_STD=${ESCAPE_NEG_VIB_STD:-0.5}
 ESCAPE_DELTA=${ESCAPE_DELTA:-0.2}
 MAX_ESCAPE_CYCLES=${MAX_ESCAPE_CYCLES:-10}
-GAD_STEPS_PER_CYCLE=${GAD_STEPS_PER_CYCLE:-150}
 
 WANDB_NAME="experiment | multi-mode | HIP | ${START_FROM} | seed${NOISE_SEED} | job${SLURM_JOB_ID}"
 
@@ -53,17 +55,18 @@ echo ">>> HIP Euler + multi-mode escape, start-from=$START_FROM, noise-seed=$NOI
 python -m src.experiments.hip_multi_mode \
     --method euler \
     --dt-control neg_eig_plateau \
-    --plateau-patience 10 \
-    --plateau-boost 1.5 \
+    --plateau-patience 5 \
+    --plateau-boost 2.0 \
     --plateau-shrink 0.5 \
     --dt-min 1e-6 \
     --dt-max 0.05 \
     --max-atom-disp 0.25 \
-    --escape-threshold "$ESCAPE_THRESHOLD" \
+    --escape-disp-threshold "$ESCAPE_DISP_THRESHOLD" \
+    --escape-window "$ESCAPE_WINDOW" \
+    --escape-neg-vib-std "$ESCAPE_NEG_VIB_STD" \
     --escape-delta "$ESCAPE_DELTA" \
     --adaptive-delta \
     --max-escape-cycles "$MAX_ESCAPE_CYCLES" \
-    --gad-steps-per-cycle "$GAD_STEPS_PER_CYCLE" \
     --h5-path "$H5_PATH" \
     --checkpoint-path "$CKPT_PATH" \
     --out-dir "$OUT_DIR" \
