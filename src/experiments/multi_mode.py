@@ -651,8 +651,8 @@ def main(
     parser.add_argument(
         "--max-escape-cycles",
         type=int,
-        default=10,
-        help="Maximum number of escape attempts.",
+        default=1000,
+        help="Maximum number of escape attempts. Set high to let n_steps be the limiting factor.",
     )
 
     parser.add_argument("--wandb", action="store_true")
