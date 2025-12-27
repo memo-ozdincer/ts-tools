@@ -111,6 +111,30 @@ def _prepare_hessian(hess: torch.Tensor, num_atoms: int) -> torch.Tensor:
     return hess
 
 
+def _min_interatomic_distance(coords: torch.Tensor) -> float:
+    """Compute minimum pairwise distance between atoms."""
+    if coords.dim() == 3 and coords.shape[0] == 1:
+        coords = coords[0]
+    coords = coords.reshape(-1, 3)
+    n = coords.shape[0]
+    if n < 2:
+        return float("inf")
+
+    # Compute pairwise distances
+    diff = coords.unsqueeze(0) - coords.unsqueeze(1)  # (N, N, 3)
+    dist = diff.norm(dim=2)  # (N, N)
+
+    # Set diagonal to inf to ignore self-distances
+    dist = dist + torch.eye(n, device=coords.device, dtype=coords.dtype) * 1e10
+
+    return float(dist.min().item())
+
+
+def _geometry_is_valid(coords: torch.Tensor, min_dist_threshold: float) -> bool:
+    """Check if geometry has all atom pairs above minimum distance threshold."""
+    return _min_interatomic_distance(coords) >= min_dist_threshold
+
+
 def perform_escape_perturbation(
     predict_fn,
     coords: torch.Tensor,
@@ -119,10 +143,15 @@ def perform_escape_perturbation(
     *,
     escape_delta: float,
     adaptive_delta: bool = True,
+    min_interatomic_dist: float = 0.5,
+    delta_shrink_factor: float = 0.5,
+    max_shrink_attempts: int = 5,
 ) -> Tuple[torch.Tensor, Dict[str, Any]]:
     """Perturb geometry along v2 (second-lowest eigenvector) to escape high-index saddle.
 
     Tries both +delta and -delta directions, picks the one with lower energy.
+    Validates that new geometry doesn't have atoms too close together.
+    If both directions create invalid geometries, tries progressively smaller deltas.
 
     Args:
         predict_fn: Energy/forces prediction function
@@ -131,9 +160,12 @@ def perform_escape_perturbation(
         hessian: Hessian matrix
         escape_delta: Base displacement magnitude in Angstrom
         adaptive_delta: If True, scale delta by 1/sqrt(|lambda2|)
+        min_interatomic_dist: Minimum allowed distance between atoms (A)
+        delta_shrink_factor: Factor to reduce delta when geometry is invalid
+        max_shrink_attempts: Max number of times to try smaller delta
 
     Returns:
-        new_coords: Perturbed coordinates
+        new_coords: Perturbed coordinates (or original if all attempts fail)
         info: Dict with escape details (delta_used, direction, energy_change, etc.)
     """
     if coords.dim() == 3 and coords.shape[0] == 1:
@@ -151,55 +183,97 @@ def perform_escape_perturbation(
     lambda2 = float(evals[1].item())
 
     # Adaptive delta scaling based on curvature
-    delta = float(escape_delta)
+    base_delta = float(escape_delta)
     if adaptive_delta and lambda2 < -0.01:
         # Scale larger for strong negative curvature
-        delta = float(escape_delta) / np.sqrt(abs(lambda2))
-        delta = min(delta, 1.0)  # Cap at 1 Angstrom to avoid steric clashes
+        base_delta = float(escape_delta) / np.sqrt(abs(lambda2))
+        base_delta = min(base_delta, 1.0)  # Cap at 1 Angstrom
 
     # Reshape v2 to (N, 3)
     v2_3d = v2.reshape(num_atoms, 3)
 
-    # Compute displacement magnitude per atom (for logging)
-    disp_per_atom = float(v2_3d.norm(dim=1).mean().item()) * delta
+    # Get current energy once
+    E_current = _to_float(predict_fn(coords, atomic_nums, do_hessian=False, require_grad=False)["energy"])
 
-    # Try both directions
-    coords_plus = coords + delta * v2_3d
-    coords_minus = coords - delta * v2_3d
+    # Try progressively smaller deltas if geometry becomes invalid
+    delta = base_delta
+    for shrink_attempt in range(max_shrink_attempts + 1):
+        # Try both directions
+        coords_plus = coords + delta * v2_3d
+        coords_minus = coords - delta * v2_3d
 
-    # Evaluate energies (no hessian needed here, just energy)
-    out_plus = predict_fn(coords_plus, atomic_nums, do_hessian=False, require_grad=False)
-    out_minus = predict_fn(coords_minus, atomic_nums, do_hessian=False, require_grad=False)
+        plus_valid = _geometry_is_valid(coords_plus, min_interatomic_dist)
+        minus_valid = _geometry_is_valid(coords_minus, min_interatomic_dist)
 
-    E_current = predict_fn(coords, atomic_nums, do_hessian=False, require_grad=False)["energy"]
-    E_plus = out_plus["energy"]
-    E_minus = out_minus["energy"]
+        if not plus_valid and not minus_valid:
+            # Both invalid, try smaller delta
+            delta = delta * delta_shrink_factor
+            continue
 
-    E_current = _to_float(E_current)
-    E_plus = _to_float(E_plus)
-    E_minus = _to_float(E_minus)
+        # At least one direction is valid, evaluate energies for valid ones
+        candidates = []
 
-    # Pick lower energy direction
-    if E_plus < E_minus:
-        new_coords = coords_plus
-        direction = +1
-        energy_after = E_plus
-    else:
-        new_coords = coords_minus
-        direction = -1
-        energy_after = E_minus
+        if plus_valid:
+            try:
+                out_plus = predict_fn(coords_plus, atomic_nums, do_hessian=False, require_grad=False)
+                E_plus = _to_float(out_plus["energy"])
+                if np.isfinite(E_plus):
+                    candidates.append((coords_plus, +1, E_plus))
+            except Exception:
+                pass  # Model error, skip this direction
 
+        if minus_valid:
+            try:
+                out_minus = predict_fn(coords_minus, atomic_nums, do_hessian=False, require_grad=False)
+                E_minus = _to_float(out_minus["energy"])
+                if np.isfinite(E_minus):
+                    candidates.append((coords_minus, -1, E_minus))
+            except Exception:
+                pass  # Model error, skip this direction
+
+        if candidates:
+            # Pick lowest energy valid candidate
+            candidates.sort(key=lambda x: x[2])
+            new_coords, direction, energy_after = candidates[0]
+
+            disp_per_atom = float(v2_3d.norm(dim=1).mean().item()) * delta
+            min_dist_after = _min_interatomic_distance(new_coords)
+
+            info = {
+                "delta_used": delta,
+                "delta_base": base_delta,
+                "shrink_attempts": shrink_attempt,
+                "direction": direction,
+                "lambda2": lambda2,
+                "energy_before": E_current,
+                "energy_after": energy_after,
+                "energy_change": energy_after - E_current,
+                "disp_per_atom": disp_per_atom,
+                "min_dist_after": min_dist_after,
+                "escape_success": True,
+            }
+
+            return new_coords.detach(), info
+
+        # Both directions valid but model errored, try smaller delta
+        delta = delta * delta_shrink_factor
+
+    # All attempts failed - return original coords with failure info
     info = {
-        "delta_used": delta,
-        "direction": direction,
+        "delta_used": 0.0,
+        "delta_base": base_delta,
+        "shrink_attempts": max_shrink_attempts + 1,
+        "direction": 0,
         "lambda2": lambda2,
         "energy_before": E_current,
-        "energy_after": energy_after,
-        "energy_change": energy_after - E_current,
-        "disp_per_atom": disp_per_atom,
+        "energy_after": E_current,
+        "energy_change": 0.0,
+        "disp_per_atom": 0.0,
+        "min_dist_after": _min_interatomic_distance(coords),
+        "escape_success": False,
     }
 
-    return new_coords.detach(), info
+    return coords.detach(), info
 
 
 def _check_plateau_convergence(
@@ -256,6 +330,7 @@ def run_multi_mode_escape(
     escape_neg_vib_std: float,
     escape_delta: float,
     adaptive_delta: bool,
+    min_interatomic_dist: float,
     max_escape_cycles: int,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """Run GAD with multi-mode escape mechanism.
@@ -370,6 +445,7 @@ def run_multi_mode_escape(
                 hessian,
                 escape_delta=escape_delta,
                 adaptive_delta=adaptive_delta,
+                min_interatomic_dist=min_interatomic_dist,
             )
             coords = new_coords
             escape_info["step"] = total_steps
@@ -551,7 +627,7 @@ def main(
     parser.add_argument(
         "--escape-delta",
         type=float,
-        default=0.2,
+        default=0.1,
         help="Base displacement magnitude (A) for v2 perturbation.",
     )
     parser.add_argument(
@@ -565,6 +641,12 @@ def main(
         action="store_false",
         dest="adaptive_delta",
         help="Disable adaptive delta scaling.",
+    )
+    parser.add_argument(
+        "--min-interatomic-dist",
+        type=float,
+        default=0.5,
+        help="Minimum allowed interatomic distance (A). Perturbations creating closer atoms are rejected.",
     )
     parser.add_argument(
         "--max-escape-cycles",
@@ -630,6 +712,7 @@ def main(
             "escape_neg_vib_std": args.escape_neg_vib_std,
             "escape_delta": args.escape_delta,
             "adaptive_delta": args.adaptive_delta,
+            "min_interatomic_dist": args.min_interatomic_dist,
             "max_escape_cycles": args.max_escape_cycles,
         }
         wandb_name = args.wandb_name
@@ -692,6 +775,7 @@ def main(
             escape_neg_vib_std=float(args.escape_neg_vib_std),
             escape_delta=float(args.escape_delta),
             adaptive_delta=bool(args.adaptive_delta),
+            min_interatomic_dist=float(args.min_interatomic_dist),
             max_escape_cycles=int(args.max_escape_cycles),
         )
         wall = time.time() - t0
@@ -725,6 +809,7 @@ def main(
                 "escape_neg_vib_std": float(args.escape_neg_vib_std),
                 "escape_delta": float(args.escape_delta),
                 "adaptive_delta": bool(args.adaptive_delta),
+                "min_interatomic_dist": float(args.min_interatomic_dist),
                 "max_escape_cycles": int(args.max_escape_cycles),
             },
         )

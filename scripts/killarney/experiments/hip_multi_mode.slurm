@@ -33,7 +33,7 @@ START_FROM="midpoint_rt_noise1.0A"
 NOISE_SEED=42
 
 # Experiment parameters
-N_STEPS=3000
+N_STEPS=15000
 MAX_SAMPLES=15
 
 # Multi-mode escape parameters (displacement-based detection)
@@ -46,7 +46,8 @@ MAX_SAMPLES=15
 ESCAPE_DISP_THRESHOLD=${ESCAPE_DISP_THRESHOLD:-5e-4}
 ESCAPE_WINDOW=${ESCAPE_WINDOW:-20}
 ESCAPE_NEG_VIB_STD=${ESCAPE_NEG_VIB_STD:-0.5}
-ESCAPE_DELTA=${ESCAPE_DELTA:-0.2}
+ESCAPE_DELTA=${ESCAPE_DELTA:-0.1}
+MIN_INTERATOMIC_DIST=${MIN_INTERATOMIC_DIST:-0.5}
 MAX_ESCAPE_CYCLES=${MAX_ESCAPE_CYCLES:-10}
 
 WANDB_NAME="experiment | multi-mode | HIP | ${START_FROM} | seed${NOISE_SEED} | job${SLURM_JOB_ID}"
@@ -66,6 +67,7 @@ python -m src.experiments.hip_multi_mode \
     --escape-neg-vib-std "$ESCAPE_NEG_VIB_STD" \
     --escape-delta "$ESCAPE_DELTA" \
     --adaptive-delta \
+    --min-interatomic-dist "$MIN_INTERATOMIC_DIST" \
     --max-escape-cycles "$MAX_ESCAPE_CYCLES" \
     --h5-path "$H5_PATH" \
     --checkpoint-path "$CKPT_PATH" \
