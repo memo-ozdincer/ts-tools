@@ -2,17 +2,18 @@
 #SBATCH -A aip-aspuru
 #SBATCH -D /project/6101772/memoozd/ts-tools
 #SBATCH --time=10:00:00
-#SBATCH --gres=gpu:l40s:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32GB
-#SBATCH --job-name=hip_multi_mode_1A
-#SBATCH --output=logs/hip_multi_mode_1A_%j.out
-#SBATCH --error=logs/hip_multi_mode_1A_%j.err
+#SBATCH --job-name=scine_multi_mode_eckartmw_1A
+#SBATCH --output=logs/scine_multi_mode_eckartmw_1A_%j.out
+#SBATCH --error=logs/scine_multi_mode_eckartmw_1A_%j.err
+
+# NOTE: No GPU needed for SCINE - it runs on CPU only
 
 mkdir -p logs
 source .venv/bin/activate
 
-# Ensure CPU-side ops (PyG batch building, linear algebra on CPU, etc.) can actually use the allocated cores.
+# Ensure CPU-side linear algebra can use allocated cores.
 export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
 export OPENBLAS_NUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
 export MKL_NUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
@@ -20,7 +21,6 @@ export NUMEXPR_NUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
 export VECLIB_MAXIMUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
 
 H5_PATH="/project/6101772/memoozd/data/transition1x.h5"
-CKPT_PATH="/project/6101772/memoozd/models/hip_v2.ckpt"
 OUT_DIR="$HOME/scratch/ts-tools-output"
 
 # W&B setup
@@ -32,16 +32,16 @@ if [[ -z "${WANDB_API_KEY:-}" ]]; then
     exit 2
 fi
 
-export WANDB_RUN_GROUP="Experiment-multi-mode-hip-scine"
+export WANDB_RUN_GROUP="Experiment-multi-mode-eckartmw-hip-scine"
 
 echo `date`: Job $SLURM_JOB_ID is allocated resources.
-echo ">>> Running HIP multi-mode escape experiment..."
+echo ">>> Running SCINE multi-mode escape (Eckart-MW) experiment..."
 
 START_FROM="midpoint_rt_noise1.0A"
 NOISE_SEED=42
 
 # Experiment parameters
-N_STEPS=15000
+N_STEPS=15000 
 MAX_SAMPLES=15
 
 # Multi-mode escape parameters (displacement-based detection)
@@ -58,10 +58,10 @@ ESCAPE_DELTA=${ESCAPE_DELTA:-0.1}
 MIN_INTERATOMIC_DIST=${MIN_INTERATOMIC_DIST:-0.5}
 MAX_ESCAPE_CYCLES=${MAX_ESCAPE_CYCLES:-1000}
 
-WANDB_NAME="experiment | multi-mode | HIP | ${START_FROM} | seed${NOISE_SEED} | job${SLURM_JOB_ID}"
+WANDB_NAME="experiment | multi-mode-eckartmw | SCINE | ${START_FROM} | seed${NOISE_SEED} | job${SLURM_JOB_ID}"
 
-echo ">>> HIP Euler + multi-mode escape, start-from=$START_FROM, noise-seed=$NOISE_SEED"
-python -m src.experiments.hip_multi_mode \
+echo ">>> SCINE Euler + multi-mode escape (Eckart-MW), start-from=$START_FROM, noise-seed=$NOISE_SEED"
+python -m src.experiments.scine_multi_mode_eckartmw \
     --method euler \
     --dt-control neg_eig_plateau \
     --plateau-patience 5 \
@@ -72,16 +72,13 @@ python -m src.experiments.hip_multi_mode \
     --max-atom-disp 0.25 \
     --escape-disp-threshold "$ESCAPE_DISP_THRESHOLD" \
     --escape-window "$ESCAPE_WINDOW" \
-    --hip-vib-mode raw_tol \
-    --hip-rigid-tol 1e-6 \
-    --hip-eigh-device cpu \
     --escape-neg-vib-std "$ESCAPE_NEG_VIB_STD" \
     --escape-delta "$ESCAPE_DELTA" \
     --adaptive-delta \
     --min-interatomic-dist "$MIN_INTERATOMIC_DIST" \
     --max-escape-cycles "$MAX_ESCAPE_CYCLES" \
+    --scine-functional DFTB0 \
     --h5-path "$H5_PATH" \
-    --checkpoint-path "$CKPT_PATH" \
     --out-dir "$OUT_DIR" \
     --max-samples "$MAX_SAMPLES" \
     --n-steps "$N_STEPS" \
@@ -90,7 +87,7 @@ python -m src.experiments.hip_multi_mode \
     --stop-at-ts \
     --dt 0.001 \
     --wandb \
-    --wandb-project "experiment-multi-mode" \
+    --wandb-project "experiment-multi-mode-eckartmw" \
     --wandb-name "$WANDB_NAME"
 
 echo "Job completed successfully."

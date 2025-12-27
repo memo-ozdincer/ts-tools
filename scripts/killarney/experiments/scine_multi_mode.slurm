@@ -13,6 +13,13 @@
 mkdir -p logs
 source .venv/bin/activate
 
+# Ensure CPU-side linear algebra can use allocated cores.
+export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
+export OPENBLAS_NUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
+export MKL_NUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
+export NUMEXPR_NUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
+export VECLIB_MAXIMUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
+
 H5_PATH="/project/6101772/memoozd/data/transition1x.h5"
 OUT_DIR="$HOME/scratch/ts-tools-output"
 

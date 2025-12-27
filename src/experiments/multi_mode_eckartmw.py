@@ -1,11 +1,19 @@
 from __future__ import annotations
 
-"""Multi-mode escape experiment for GAD.
+"""Multi-mode escape experiment for GAD with ECKART-PROJECTED MASS-WEIGHTED Hessian.
 
-This experiment implements the "Perturbation & Saddle Escape" algorithm to handle
-high-index saddle points. Instead of using a step-size floor (which can be unstable),
-we detect when GAD converges to a high-index saddle (index > 1) and explicitly
-perturb along the second-lowest eigenvector (v2) to escape toward index-1.
+This is a variant of multi_mode.py that uses the Eckart-projected, mass-weighted
+Hessian for ALL eigenvector computations. This stabilizes eigenvectors by:
+1. Removing translation/rotation null modes via Eckart projection
+2. Mass-weighting ensures physically meaningful vibrational modes
+
+Key difference from multi_mode.py:
+- GAD direction uses lowest eigenvector of PROJECTED Hessian (not raw)
+- Escape v2 direction uses second eigenvector of PROJECTED Hessian
+- Vibrational eigenvalue analysis uses projected Hessian (already the case)
+
+For HIP: Uses project_hessian_remove_rigid_modes (3N x 3N, 6 near-zero eigenvalues)
+For SCINE: Uses scine_project_hessian_full (3N x 3N, 6 near-zero eigenvalues)
 
 Detection uses DISPLACEMENT-based criteria (not GAD norm), since:
 - GAD norm ~ force_mean (0.2-3 eV/Å) stays moderate even at plateaus
@@ -13,10 +21,10 @@ Detection uses DISPLACEMENT-based criteria (not GAD norm), since:
 - We trigger escape when: mean(disp[-window:]) < threshold AND neg_vib stable AND >1
 
 Algorithm:
-1. Run GAD, tracking recent displacement history
+1. Run GAD using projected Hessian for eigenvector computation
 2. Detect plateau: mean displacement < threshold over window, stable neg_vib, index > 1
 3. If index = 1: Success - found TS
-4. If plateau at index > 1: Apply perturbation along v2, pick direction that lowers energy
+4. If plateau at index > 1: Apply perturbation along v2 (from projected Hessian)
 5. Resume GAD from perturbed geometry
 6. Repeat until index = 1 or max escape cycles reached
 """
@@ -33,13 +41,28 @@ from typing import Any, Dict, Optional, Tuple
 import numpy as np
 import torch
 
-from ..core_algos.gad import gad_euler_step
+# Note: We use gad_euler_step_projected defined below, not from core_algos
 from ..dependencies.common_utils import add_common_args, parse_starting_geometry, setup_experiment
 from ..dependencies.experiment_logger import ExperimentLogger, RunResult, build_loss_type_flags
-from ..dependencies.hessian import vibrational_eigvals, get_scine_elements_from_predict_output
+from ..dependencies.hessian import (
+    vibrational_eigvals,
+    get_scine_elements_from_predict_output,
+    project_hessian_remove_rigid_modes,
+    prepare_hessian,
+)
 from ..logging import finish_wandb, init_wandb_run, log_sample, log_summary
 from ..logging.plotly_utils import plot_gad_trajectory_interactive
 from ..runners._predict import make_predict_fn_from_calculator
+
+# SCINE projection (may not be available)
+try:
+    from ..dependencies.scine_masses import (
+        ScineFrequencyAnalyzer,
+        get_scine_masses,
+    )
+    SCINE_PROJECTION_AVAILABLE = True
+except ImportError:
+    SCINE_PROJECTION_AVAILABLE = False
 
 
 def _sanitize_wandb_name(s: str) -> str:
@@ -99,55 +122,54 @@ def _max_atom_norm(x: torch.Tensor) -> float:
     return float(x.reshape(-1, 3).norm(dim=1).max().item())
 
 
-def _hip_rigid_mode_mask(evals: torch.Tensor, *, rigid_tol: float) -> torch.Tensor:
-    """Mask out (near-)zero rigid modes in raw Hessian spectrum.
-
-    We use a tolerance rather than geometry-rank based (5 vs 6) removal to avoid
-    per-step CPU sync (matrix_rank) and expensive Eckart projection.
-    """
-    if rigid_tol <= 0:
+def _vib_mask_from_evals(evals: torch.Tensor, *, tr_threshold: float) -> torch.Tensor:
+    """Mask out translation/rotation (near-zero) modes."""
+    if tr_threshold <= 0:
         return torch.ones_like(evals, dtype=torch.bool)
-    return evals.abs() > float(rigid_tol)
+    return evals.abs() > float(tr_threshold)
 
 
-def _hip_step_metrics_from_raw_hessian(
+def _step_metrics_from_projected_hessian(
     *,
     forces: torch.Tensor,
-    hessian: torch.Tensor,
-    rigid_tol: float,
+    hessian_proj: torch.Tensor,
+    tr_threshold: float,
     eigh_device: str,
 ) -> tuple[torch.Tensor, float, float, float, int]:
-    """Compute GAD vector + eigen metrics from a single raw-Hessian eigendecomp.
-
-    Returns:
-        gad_vec (N,3), eig0, eig1, eig_product, neg_vib
-    """
+    """Compute GAD vec + eigen metrics from ONE eigendecomp of projected Hessian."""
     forces = forces[0] if forces.dim() == 3 and forces.shape[0] == 1 else forces
     forces = forces.reshape(-1, 3)
     num_atoms = int(forces.shape[0])
 
-    hess = _prepare_hessian(hessian, num_atoms)
+    hess = hessian_proj
+    if hess.dim() != 2 or hess.shape[0] != 3 * num_atoms:
+        hess = prepare_hessian(hess, num_atoms)
 
-    # Optionally move eigendecomposition to CPU (often faster for small/medium matrices).
     if str(eigh_device).lower() == "cpu":
         hess_eigh = hess.detach().to(device=torch.device("cpu"))
     else:
         hess_eigh = hess
 
     evals, evecs = torch.linalg.eigh(hess_eigh)
+    evals = evals.to(device=forces.device, dtype=torch.float32)
 
-    # GAD direction uses the lowest eigenvector of the *raw* Hessian.
-    v0 = evecs[:, 0].to(dtype=forces.dtype, device=forces.device)
-    v0 = v0 / (v0.norm() + 1e-12)
+    vib_mask = _vib_mask_from_evals(evals, tr_threshold=tr_threshold)
+    vib_indices = torch.where(vib_mask)[0]
+    if int(vib_indices.numel()) == 0:
+        first_vib_idx = 0
+        v = evecs[:, 0]
+        evals_vib = evals
+    else:
+        first_vib_idx = int(vib_indices[0].item())
+        v = evecs[:, first_vib_idx]
+        evals_vib = evals[vib_mask]
+
+    v = v.to(device=forces.device, dtype=forces.dtype)
+    v = v / (v.norm() + 1e-12)
 
     f_flat = forces.reshape(-1)
-    gad_flat = f_flat + 2.0 * torch.dot(-f_flat, v0) * v0
+    gad_flat = f_flat + 2.0 * torch.dot(-f_flat, v) * v
     gad_vec = gad_flat.view(num_atoms, 3)
-
-    # "Vibrational" metrics from raw spectrum with a tolerance-based rigid-mode mask.
-    evals = evals.to(device=forces.device, dtype=torch.float32)
-    keep = _hip_rigid_mode_mask(evals, rigid_tol=rigid_tol)
-    evals_vib = evals[keep]
 
     if int(evals_vib.numel()) >= 2:
         eig0 = float(evals_vib[0].item())
@@ -156,9 +178,182 @@ def _hip_step_metrics_from_raw_hessian(
     else:
         eig0, eig1, eig_product = float("nan"), float("nan"), float("inf")
 
-    neg_vib = int((evals_vib < -float(rigid_tol)).sum().item()) if int(evals_vib.numel()) > 0 else -1
+    neg_vib = int((evals_vib < -float(tr_threshold)).sum().item()) if int(evals_vib.numel()) > 0 else -1
 
     return gad_vec, eig0, eig1, eig_product, neg_vib
+
+
+# ============================================================================
+# Eckart-projected, mass-weighted Hessian functions
+# ============================================================================
+
+def get_projected_hessian(
+    hessian_raw: torch.Tensor,
+    coords: torch.Tensor,
+    atomic_nums: torch.Tensor,
+    scine_elements: Optional[list] = None,
+) -> torch.Tensor:
+    """Get Eckart-projected, mass-weighted Hessian (3N x 3N).
+
+    For HIP: Uses project_hessian_remove_rigid_modes (differentiable)
+    For SCINE: Uses full 3N x 3N projection (non-differentiable, NumPy backend)
+
+    Both return 3N x 3N Hessians with 6 near-zero eigenvalues for TR modes.
+
+    Args:
+        hessian_raw: Raw Hessian tensor
+        coords: Atomic coordinates (N, 3)
+        atomic_nums: Atomic numbers
+        scine_elements: If provided, uses SCINE-specific mass-weighting
+
+    Returns:
+        Projected Hessian (3N, 3N) with TR modes zeroed out
+    """
+    if scine_elements is not None:
+        # SCINE path: compute full 3N x 3N projected Hessian
+        if not SCINE_PROJECTION_AVAILABLE:
+            raise RuntimeError("SCINE projection requested but scine_masses not available")
+        return _scine_project_hessian_full(hessian_raw, coords, scine_elements)
+
+    # HIP path: use existing projection
+    return project_hessian_remove_rigid_modes(hessian_raw, coords, atomic_nums)
+
+
+def _scine_project_hessian_full(
+    hessian_raw: torch.Tensor,
+    coords: torch.Tensor,
+    elements: list,
+) -> torch.Tensor:
+    """SCINE Eckart projection returning full 3N x 3N Hessian.
+
+    Unlike scine_project_hessian_remove_rigid_modes which returns (3N-6, 3N-6),
+    this returns (3N, 3N) with 6 near-zero eigenvalues for TR modes.
+    This allows eigenvectors to be used directly in 3N space (like HIP).
+    """
+    import numpy as np
+    from scipy.linalg import eigh
+
+    # Convert to numpy
+    hess_np = hessian_raw.detach().cpu().numpy()
+    coords_np = coords.detach().cpu().numpy().reshape(-1, 3)
+    n_atoms = len(elements)
+
+    # Get masses
+    masses_amu = get_scine_masses(elements)
+    m_sqrt = np.sqrt(masses_amu)
+    m_sqrt_3n = np.repeat(m_sqrt, 3)
+
+    # Mass-weight Hessian: M^{-1/2} H M^{-1/2}
+    inv_m_sqrt_mat = np.outer(1.0 / m_sqrt_3n, 1.0 / m_sqrt_3n)
+    hess_np_2d = hess_np.reshape(3 * n_atoms, 3 * n_atoms)
+    H_mw = hess_np_2d * inv_m_sqrt_mat
+
+    # Build full 3N x 3N projector using ScineFrequencyAnalyzer's method
+    analyzer = ScineFrequencyAnalyzer()
+    P_reduced = analyzer._get_vibrational_projector(coords_np, masses_amu)  # (3N-k, 3N)
+
+    # P_full = I - P_reduced.T @ P_reduced would give us the TR space projector
+    # We want the vibrational projector: P_vib = P_reduced.T @ P_reduced
+    # Then H_proj = P_vib @ H_mw @ P_vib
+    P_full = P_reduced.T @ P_reduced  # (3N, 3N)
+
+    # Project
+    H_proj = P_full @ H_mw @ P_full
+    H_proj = 0.5 * (H_proj + H_proj.T)  # Symmetrize
+
+    return torch.from_numpy(H_proj).to(device=hessian_raw.device, dtype=hessian_raw.dtype)
+
+
+def compute_gad_vector_projected(
+    forces: torch.Tensor,
+    hessian_proj: torch.Tensor,
+) -> torch.Tensor:
+    """Compute GAD direction using PROJECTED Hessian.
+
+    The projected Hessian has 6 near-zero eigenvalues (TR modes).
+    We skip these and use the first vibrational mode (most negative eigenvalue
+    among the non-TR modes, or smallest positive if at minimum).
+
+    Args:
+        forces: Forces tensor (N, 3) or (1, N, 3)
+        hessian_proj: Projected mass-weighted Hessian (3N, 3N)
+
+    Returns:
+        GAD vector in Cartesian space (N, 3)
+    """
+    if forces.dim() == 3 and forces.shape[0] == 1:
+        forces = forces[0]
+    forces = forces.reshape(-1, 3)
+    num_atoms = int(forces.shape[0])
+
+    hess = hessian_proj
+    if hess.dim() != 2 or hess.shape[0] != 3 * num_atoms:
+        hess = prepare_hessian(hess, num_atoms)
+
+    # Get eigenvalues and eigenvectors
+    evals, evecs = torch.linalg.eigh(hess)
+
+    # Skip near-zero TR modes (eigenvalue magnitude < threshold)
+    tr_threshold = 1e-6
+    vib_mask = torch.abs(evals) > tr_threshold
+
+    if not vib_mask.any():
+        # All eigenvalues are near-zero (shouldn't happen for valid molecule)
+        # Fall back to using first eigenvector
+        v = evecs[:, 0].to(forces.dtype)
+    else:
+        # Find first vibrational mode (smallest eigenvalue among non-TR modes)
+        # evals are sorted ascending, so we want the first one above threshold
+        vib_indices = torch.where(vib_mask)[0]
+        first_vib_idx = vib_indices[0]
+        v = evecs[:, first_vib_idx].to(forces.dtype)
+
+    v = v / (v.norm() + 1e-12)
+
+    # GAD formula: F_gad = F + 2 * (F . v) * v
+    # (inverting force along lowest mode)
+    f_flat = forces.reshape(-1)
+    gad_flat = f_flat + 2.0 * torch.dot(-f_flat, v) * v
+
+    return gad_flat.view(num_atoms, 3)
+
+
+def gad_euler_step_projected(
+    predict_fn,
+    coords: torch.Tensor,
+    atomic_nums: torch.Tensor,
+    *,
+    dt: float,
+    out: Optional[Dict[str, Any]] = None,
+    scine_elements: Optional[list] = None,
+) -> Dict[str, Any]:
+    """GAD Euler step using PROJECTED Hessian for eigenvector computation.
+
+    This is the Eckart-MW variant of gad_euler_step.
+    """
+    if coords.dim() == 3 and coords.shape[0] == 1:
+        coords = coords[0]
+    coords = coords.reshape(-1, 3)
+
+    if out is None:
+        out = predict_fn(coords, atomic_nums, do_hessian=True, require_grad=False)
+
+    forces = out["forces"]
+    hessian = out["hessian"]
+
+    # Get projected Hessian
+    hessian_proj = get_projected_hessian(hessian, coords, atomic_nums, scine_elements)
+
+    # Compute GAD vector using projected Hessian
+    gad_vec = compute_gad_vector_projected(forces, hessian_proj)
+    new_coords = coords + dt * gad_vec
+
+    return {
+        "new_coords": new_coords,
+        "gad_vec": gad_vec,
+        "out": out,
+        "hessian_proj": hessian_proj,
+    }
 
 
 def _prepare_hessian(hess: torch.Tensor, num_atoms: int) -> torch.Tensor:
@@ -208,9 +403,11 @@ def perform_escape_perturbation(
     min_interatomic_dist: float = 0.5,
     delta_shrink_factor: float = 0.5,
     max_shrink_attempts: int = 5,
+    scine_elements: Optional[list] = None,
 ) -> Tuple[torch.Tensor, Dict[str, Any]]:
-    """Perturb geometry along v2 (second-lowest eigenvector) to escape high-index saddle.
+    """Perturb geometry along v2 (second-lowest VIBRATIONAL eigenvector) to escape high-index saddle.
 
+    Uses PROJECTED Hessian to find v2, skipping translation/rotation modes.
     Tries both +delta and -delta directions, picks the one with lower energy.
     Validates that new geometry doesn't have atoms too close together.
     If both directions create invalid geometries, tries progressively smaller deltas.
@@ -219,12 +416,13 @@ def perform_escape_perturbation(
         predict_fn: Energy/forces prediction function
         coords: Current coordinates (N, 3)
         atomic_nums: Atomic numbers
-        hessian: Hessian matrix
+        hessian: Raw Hessian matrix (will be projected internally)
         escape_delta: Base displacement magnitude in Angstrom
         adaptive_delta: If True, scale delta by 1/sqrt(|lambda2|)
         min_interatomic_dist: Minimum allowed distance between atoms (A)
         delta_shrink_factor: Factor to reduce delta when geometry is invalid
         max_shrink_attempts: Max number of times to try smaller delta
+        scine_elements: SCINE element types (if using SCINE calculator)
 
     Returns:
         new_coords: Perturbed coordinates (or original if all attempts fail)
@@ -235,14 +433,28 @@ def perform_escape_perturbation(
     coords = coords.reshape(-1, 3)
     num_atoms = int(coords.shape[0])
 
-    hess = _prepare_hessian(hessian, num_atoms)
+    # Get PROJECTED Hessian (Eckart + mass-weighted)
+    hess_proj = get_projected_hessian(hessian, coords, atomic_nums, scine_elements)
 
-    # Get eigenvalues and eigenvectors
-    evals, evecs = torch.linalg.eigh(hess)
-    v2 = evecs[:, 1]  # Second-lowest eigenvector
+    # Get eigenvalues and eigenvectors from PROJECTED Hessian
+    evals, evecs = torch.linalg.eigh(hess_proj)
+
+    # Skip near-zero TR modes and get second vibrational mode (v2)
+    tr_threshold = 1e-6
+    vib_mask = torch.abs(evals) > tr_threshold
+    vib_indices = torch.where(vib_mask)[0]
+
+    if len(vib_indices) < 2:
+        # Not enough vibrational modes, fall back to second eigenvector
+        v2 = evecs[:, 1]
+        lambda2 = float(evals[1].item())
+    else:
+        # Second vibrational mode (skip TR modes)
+        second_vib_idx = vib_indices[1]
+        v2 = evecs[:, second_vib_idx]
+        lambda2 = float(evals[second_vib_idx].item())
+
     v2 = v2 / (v2.norm() + 1e-12)  # Normalize
-
-    lambda2 = float(evals[1].item())
 
     # Adaptive delta scaling based on curvature
     base_delta = float(escape_delta)
@@ -392,12 +604,12 @@ def run_multi_mode_escape(
     hip_vib_mode: str = "projected",
     hip_rigid_tol: float = 1e-6,
     hip_eigh_device: str = "auto",
-    profile_every: int = 0,
     escape_neg_vib_std: float,
     escape_delta: float,
     adaptive_delta: bool,
     min_interatomic_dist: float,
     max_escape_cycles: int,
+    profile_every: int = 0,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """Run GAD with multi-mode escape mechanism.
 
@@ -458,11 +670,12 @@ def run_multi_mode_escape(
         scine_elements = get_scine_elements_from_predict_output(out)
 
         t_eigs0 = time.time() if t_predict0 is not None else None
-        if scine_elements is None and hip_vib_mode == "raw_tol":
-            gad_vec, eig0, eig1, eig_prod, neg_vib = _hip_step_metrics_from_raw_hessian(
+        if scine_elements is None and hip_vib_mode == "proj_tol":
+            hess_proj = get_projected_hessian(hessian, coords, atomic_nums, scine_elements=None)
+            gad_vec, eig0, eig1, eig_prod, neg_vib = _step_metrics_from_projected_hessian(
                 forces=forces,
-                hessian=hessian,
-                rigid_tol=hip_rigid_tol,
+                hessian_proj=hess_proj,
+                tr_threshold=hip_rigid_tol,
                 eigh_device=hip_eigh_device,
             )
         else:
@@ -472,9 +685,16 @@ def run_multi_mode_escape(
             eig_prod = float((vib[0] * vib[1]).item()) if vib.numel() >= 2 else float("inf")
             neg_vib = int((vib < 0).sum().item()) if vib.numel() > 0 else -1
 
-            # Compute GAD vector and its norm (legacy path)
-            step_out = gad_euler_step(predict_fn, coords, atomic_nums, dt=0.0, out=out)
+            # Compute GAD vector using PROJECTED Hessian (Eckart-MW)
+            step_out = gad_euler_step_projected(
+                predict_fn, coords, atomic_nums, dt=0.0, out=out, scine_elements=scine_elements
+            )
             gad_vec = step_out["gad_vec"]
+
+        disp_from_last = float((coords - prev_pos).norm(dim=1).mean().item()) if total_steps > 0 else 0.0
+        disp_from_start = float((coords - start_pos).norm(dim=1).mean().item()) if total_steps > 0 else 0.0
+
+        gad_norm = _mean_atom_norm(gad_vec)
 
         if t_predict0 is not None and t_predict1 is not None and t_eigs0 is not None:
             t_eigs1 = time.time()
@@ -482,11 +702,6 @@ def run_multi_mode_escape(
                 f"[profile] step={total_steps} predict={t_predict1 - t_predict0:.4f}s eigs+gad={t_eigs1 - t_eigs0:.4f}s "
                 f"mode={hip_vib_mode} eigh_device={hip_eigh_device}"
             )
-
-        disp_from_last = float((coords - prev_pos).norm(dim=1).mean().item()) if total_steps > 0 else 0.0
-        disp_from_start = float((coords - start_pos).norm(dim=1).mean().item()) if total_steps > 0 else 0.0
-
-        gad_norm = _mean_atom_norm(gad_vec)
 
         # Update rolling history
         if total_steps > 0:  # Only add after first step (disp_from_last=0 at step 0)
@@ -532,6 +747,7 @@ def run_multi_mode_escape(
                 escape_delta=escape_delta,
                 adaptive_delta=adaptive_delta,
                 min_interatomic_dist=min_interatomic_dist,
+                scine_elements=scine_elements,
             )
             coords = new_coords
             escape_info["step"] = total_steps
@@ -710,26 +926,25 @@ def main(
         "--hip-vib-mode",
         type=str,
         default="projected",
-        choices=["projected", "raw_tol"],
+        choices=["projected", "proj_tol"],
         help="How to compute eigenvalue-based metrics on HIP. "
-             "'projected' uses Eckart projection (more accurate, slower). "
-             "'raw_tol' uses a single raw-Hessian eigendecomp and filters near-zero modes (faster).",
+             "'projected' uses the full Eckart-projected pipeline (more accurate, slower). "
+             "'proj_tol' uses a single eigendecomp of the projected Hessian and filters TR modes by tolerance (faster).",
     )
     parser.add_argument(
         "--hip-rigid-tol",
         type=float,
         default=1e-6,
-        help="Tolerance for treating eigenvalues as rigid/zero modes when --hip-vib-mode=raw_tol.",
+        help="Tolerance for treating eigenvalues as translation/rotation modes when --hip-vib-mode=proj_tol.",
     )
     parser.add_argument(
         "--hip-eigh-device",
         type=str,
         default="auto",
         choices=["auto", "cpu"],
-        help="Where to run the raw-Hessian eigendecomposition for HIP fast mode. "
+        help="Where to run the projected-Hessian eigendecomposition for HIP fast mode. "
              "'cpu' can be faster for small/medium Hessians when you request multiple CPUs.",
     )
-
     parser.add_argument(
         "--profile-every",
         type=int,
@@ -830,6 +1045,7 @@ def main(
             "hip_vib_mode": args.hip_vib_mode,
             "hip_rigid_tol": args.hip_rigid_tol,
             "hip_eigh_device": args.hip_eigh_device,
+            "profile_every": args.profile_every,
             "escape_neg_vib_std": args.escape_neg_vib_std,
             "escape_delta": args.escape_delta,
             "adaptive_delta": args.adaptive_delta,
@@ -893,14 +1109,14 @@ def main(
             plateau_shrink=float(args.plateau_shrink),
             escape_disp_threshold=float(args.escape_disp_threshold),
             escape_window=int(args.escape_window),
+            hip_vib_mode=str(args.hip_vib_mode),
+            hip_rigid_tol=float(args.hip_rigid_tol),
+            hip_eigh_device=str(args.hip_eigh_device),
             escape_neg_vib_std=float(args.escape_neg_vib_std),
             escape_delta=float(args.escape_delta),
             adaptive_delta=bool(args.adaptive_delta),
             min_interatomic_dist=float(args.min_interatomic_dist),
             max_escape_cycles=int(args.max_escape_cycles),
-            hip_vib_mode=str(args.hip_vib_mode),
-            hip_rigid_tol=float(args.hip_rigid_tol),
-            hip_eigh_device=str(args.hip_eigh_device),
             profile_every=int(args.profile_every),
         )
         wall = time.time() - t0
@@ -991,5 +1207,5 @@ def main(
 
 
 if __name__ == "__main__":
-    # Default to SCINE for this module
-    main(default_calculator="scine", enforce_calculator=True, script_name_prefix="exp-scine-multi-mode")
+    # Default to SCINE for this module (Eckart-MW variant)
+    main(default_calculator="scine", enforce_calculator=True, script_name_prefix="exp-scine-multi-mode-eckartmw")
