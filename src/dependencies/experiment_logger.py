@@ -111,11 +111,41 @@ def log_sample(
     # Add plot if provided
     if fig is not None:
         plot_key = f"plots/{plot_name or 'trajectory'}"
-        # Check if it looks like a plotly figure (has to_dict or write_html)
-        if hasattr(fig, "to_dict") or hasattr(fig, "write_html"):
-             log_dict[plot_key] = fig
+
+        # If it looks like a Plotly figure, prefer logging it interactively.
+        # In W&B, `wandb.Plotly(fig)` (when available) tends to behave better than
+        # logging the raw figure object, and an explicit HTML embed enables scroll-zoom.
+        is_plotly_like = hasattr(fig, "to_dict") or hasattr(fig, "to_plotly_json") or hasattr(fig, "write_html")
+        if is_plotly_like:
+            if hasattr(wandb, "Plotly"):
+                try:
+                    log_dict[plot_key] = wandb.Plotly(fig)
+                except Exception:
+                    # Fallback: raw figure (W&B may still render it)
+                    log_dict[plot_key] = fig
+            else:
+                log_dict[plot_key] = fig
+
+            # Extra: HTML embed with explicit Plotly config for better usability in W&B panels.
+            # This is especially helpful for scroll-zoom + modebar controls.
+            if hasattr(wandb, "Html") and hasattr(fig, "to_html"):
+                try:
+                    html = fig.to_html(
+                        full_html=False,
+                        include_plotlyjs="cdn",
+                        config={
+                            "scrollZoom": True,
+                            "displayModeBar": True,
+                            "displaylogo": False,
+                            "responsive": True,
+                            "doubleClick": "reset",
+                        },
+                    )
+                    log_dict[f"{plot_key}_html"] = wandb.Html(html)
+                except Exception:
+                    pass
         else:
-             log_dict[plot_key] = wandb.Image(fig)
+            log_dict[plot_key] = wandb.Image(fig)
     
     # Log everything together for this sample
     wandb.log(log_dict, step=sample_index)

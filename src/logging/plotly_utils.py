@@ -35,23 +35,30 @@ def plot_gad_trajectory_interactive(
     )
 
     # --- ROW 1: Energy & Force ---
-    fig.add_trace(go.Scatter(x=steps, y=get_data("energy"), mode='lines+markers', name='Energy'), row=1, col=1)
-    fig.add_trace(go.Scatter(x=steps, y=get_data("force_mean"), mode='lines+markers', name='Force Mean', line=dict(color='orange')), row=1, col=2)
+    fig.add_trace(go.Scatter(x=steps, y=get_data("energy"), mode='lines+markers', name='Energy', 
+                            line=dict(width=1.5), marker=dict(size=3)), row=1, col=1)
+    fig.add_trace(go.Scatter(x=steps, y=get_data("force_mean"), mode='lines+markers', name='Force Mean', 
+                            line=dict(color='orange', width=1.5), marker=dict(size=3)), row=1, col=2)
 
     # --- ROW 2: Eig Product & Eigenvalues ---
     
     # Eig Product
-    fig.add_trace(go.Scatter(x=steps, y=get_data("eig_product"), mode='lines+markers', name='λ₀·λ₁', line=dict(color='purple')), row=2, col=1)
+    fig.add_trace(go.Scatter(x=steps, y=get_data("eig_product"), mode='lines+markers', name='λ₀·λ₁', 
+                            line=dict(color='purple', width=1.5), marker=dict(size=3)), row=2, col=1)
     fig.add_hline(y=0, line_dash="dash", line_color="gray", row=2, col=1)
     
     # Eigenvalues (Two lines on one plot)
-    fig.add_trace(go.Scatter(x=steps, y=get_data("eig0"), mode='lines+markers', name='λ₀', line=dict(color='red')), row=2, col=2)
-    fig.add_trace(go.Scatter(x=steps, y=get_data("eig1"), mode='lines+markers', name='λ₁', line=dict(color='green')), row=2, col=2)
+    fig.add_trace(go.Scatter(x=steps, y=get_data("eig0"), mode='lines+markers', name='λ₀', 
+                            line=dict(color='red', width=1.5), marker=dict(size=3)), row=2, col=2)
+    fig.add_trace(go.Scatter(x=steps, y=get_data("eig1"), mode='lines+markers', name='λ₁', 
+                            line=dict(color='green', width=1.5), marker=dict(size=3)), row=2, col=2)
     fig.add_hline(y=0, line_dash="dot", line_color="gray", row=2, col=2)
 
     # --- ROW 3: Displacements ---
-    fig.add_trace(go.Scatter(x=steps, y=get_data("disp_from_last"), mode='lines+markers', name='Disp (Last)', line=dict(color='crimson')), row=3, col=1)
-    fig.add_trace(go.Scatter(x=steps, y=get_data("disp_from_start"), mode='lines+markers', name='Disp (Start)', line=dict(color='blue')), row=3, col=2)
+    fig.add_trace(go.Scatter(x=steps, y=get_data("disp_from_last"), mode='lines+markers', name='Disp (Last)', 
+                            line=dict(color='crimson', width=1.5), marker=dict(size=3)), row=3, col=1)
+    fig.add_trace(go.Scatter(x=steps, y=get_data("disp_from_start"), mode='lines+markers', name='Disp (Start)', 
+                            line=dict(color='blue', width=1.5), marker=dict(size=3)), row=3, col=2)
 
     # 3. Add TS Marker (Vertical Line)
     if steps_to_ts is not None:
@@ -68,12 +75,47 @@ def plot_gad_trajectory_interactive(
     if "_noise" in start_from:
         title_text += f" ({start_from})"
         
+    # Plot defaults tuned for readability in embedded viewers (e.g., W&B panels).
+    # Keep `autosize=True` so the host container can control width.
     fig.update_layout(
-        height=900, 
-        width=1000, 
+        template="plotly_white",
+        autosize=True,
+        height=950,
         title_text=title_text,
         showlegend=True,
-        hovermode="x unified"  # This shows all values for a specific step when hovering
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0.0),
+        margin=dict(l=55, r=25, t=80, b=55),
+        font=dict(size=12),
+        hovermode="x unified",  # show all values for a step
+        hoverlabel=dict(font_size=12),
+    )
+
+    # Make zooming/reading easier: spikelines across subplots and clearer axes.
+    fig.update_xaxes(
+        showspikes=True,
+        spikemode="across",
+        spikesnap="cursor",
+        spikedash="dot",
+        spikecolor="rgba(0,0,0,0.35)",
+        showline=True,
+        mirror=True,
+        ticks="outside",
+        ticklen=4,
+        tickwidth=1,
+        gridcolor="rgba(0,0,0,0.08)",
+    )
+    fig.update_yaxes(
+        showspikes=True,
+        spikemode="across",
+        spikesnap="cursor",
+        spikedash="dot",
+        spikecolor="rgba(0,0,0,0.35)",
+        showline=True,
+        mirror=True,
+        ticks="outside",
+        ticklen=4,
+        tickwidth=1,
+        gridcolor="rgba(0,0,0,0.08)",
     )
 
     return fig

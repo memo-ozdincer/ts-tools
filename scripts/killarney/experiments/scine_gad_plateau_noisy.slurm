@@ -42,13 +42,18 @@ NOISE_SEED=42
 N_STEPS=1500
 MAX_SAMPLES=10
 
+# Mean per-atom displacement floor (Å).
+# If you see long plateaus at ~5e-4 Å in "Disp. from Last", this is usually the floor kicking in.
+# Try 0.0025 (x5) or 0.005 (x10) depending on stability.
+MIN_MEAN_DISP=${MIN_MEAN_DISP:-0.0025}
+
 WANDB_NAME="experiment | gad plateau | SCINE | ${START_FROM} | seed${NOISE_SEED} | job${SLURM_JOB_ID}"
 
 echo ">>> SCINE Euler + neg-eig plateau dt control (+ floor), start-from=$START_FROM, noise-seed=$NOISE_SEED"
 python -m src.experiments.scine_gad_plateau \
     --method euler \
     --dt-control neg_eig_plateau \
-    --min-mean-disp 0.0005 \
+    --min-mean-disp "$MIN_MEAN_DISP" \
     --plateau-patience 10 \
     --plateau-boost 1.5 \
     --plateau-shrink 0.5 \
