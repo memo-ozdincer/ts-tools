@@ -30,8 +30,69 @@ def _prepare_hessian(hess: torch.Tensor, num_atoms: int) -> torch.Tensor:
     return hess
 
 
-def compute_gad_vector(forces: torch.Tensor, hessian: torch.Tensor) -> torch.Tensor:
-    """Compute the GAD direction from forces and (unprojected) Hessian."""
+def pick_tracked_mode(
+    evecs: torch.Tensor,
+    v_prev: torch.Tensor | None,
+    *,
+    k: int = 8,
+) -> tuple[torch.Tensor, int, float]:
+    """Pick a stable eigenmode across steps.
+
+    When low eigenvalues are close/degenerate, the ordering of eigenvectors returned by
+    `torch.linalg.eigh` can swap between steps. Tracking chooses, among the lowest `k`
+    eigenvectors, the one with maximum overlap with the previous direction and enforces
+    consistent sign.
+
+    Returns:
+        v: normalized (3N,) vector
+        j: chosen index within the first-k block (0..k-1)
+        overlap: |dot(v_prev, v_raw)| before sign correction (1.0 if v_prev is None)
+    """
+    if v_prev is None:
+        v0 = evecs[:, 0]
+        v0 = v0 / (v0.norm() + 1e-12)
+        return v0, 0, 1.0
+
+    k_eff = int(min(int(k), int(evecs.shape[1])))
+    V = evecs[:, :k_eff]  # (3N, k)
+
+    v_prev = v_prev.reshape(-1)
+    overlaps = torch.abs(V.transpose(0, 1) @ v_prev)  # (k,)
+    j = int(torch.argmax(overlaps).item())
+
+    v = V[:, j]
+    overlap = float(overlaps[j].item())
+
+    # Sign continuity: choose sign so dot(v, v_prev) >= 0
+    if torch.dot(v, v_prev) < 0:
+        v = -v
+
+    v = v / (v.norm() + 1e-12)
+    return v, j, overlap
+
+
+def compute_gad_vector_tracked(
+    forces: torch.Tensor,
+    hessian: torch.Tensor,
+    v_prev: torch.Tensor | None,
+    *,
+    k_track: int = 8,
+    beta: float = 1.0,
+) -> tuple[torch.Tensor, torch.Tensor, dict[str, float]]:
+    """Compute the GAD direction with mode tracking.
+
+    Args:
+        forces: (N,3) or (1,N,3)
+        hessian: raw (3N,3N) Hessian or reshaped equivalent
+        v_prev: previous tracked mode (3N,) or None
+        k_track: search among lowest k eigenvectors
+        beta: optional smoothing in [0,1]; smaller damps jerkiness
+
+    Returns:
+        gad_vec: (N,3)
+        v_next: (3N,) tracked mode for next step
+        info: dict with 'mode_overlap' and 'mode_index'
+    """
 
     if forces.dim() == 3 and forces.shape[0] == 1:
         forces = forces[0]
@@ -40,15 +101,39 @@ def compute_gad_vector(forces: torch.Tensor, hessian: torch.Tensor) -> torch.Ten
     num_atoms = int(forces.shape[0])
 
     hess = _prepare_hessian(hessian, num_atoms)
+    _, evecs = torch.linalg.eigh(hess)
 
-    # Lowest eigenvector of full Hessian
-    evals, evecs = torch.linalg.eigh(hess)
-    v = evecs[:, 0].to(forces.dtype)
-    v = v / (v.norm() + 1e-12)
+    if v_prev is not None:
+        v_prev = v_prev.to(device=evecs.device, dtype=evecs.dtype).reshape(-1)
+
+    v_new, j, overlap = pick_tracked_mode(evecs, v_prev, k=k_track)
+
+    # Optional smoothing to avoid sudden changes when tracking is imperfect
+    if v_prev is not None and float(beta) < 1.0:
+        v = (1.0 - float(beta)) * v_prev + float(beta) * v_new
+        v = v / (v.norm() + 1e-12)
+    else:
+        v = v_new
+
+    v = v.to(device=forces.device, dtype=forces.dtype)
+    v_next = v.detach().clone().reshape(-1)
 
     f_flat = forces.reshape(-1)
     gad_flat = f_flat + 2.0 * torch.dot(-f_flat, v) * v
-    return gad_flat.view(num_atoms, 3)
+    gad_vec = gad_flat.view(num_atoms, 3)
+
+    info = {
+        "mode_overlap": float(overlap),
+        "mode_index": float(j),
+    }
+    return gad_vec, v_next, info
+
+
+def compute_gad_vector(forces: torch.Tensor, hessian: torch.Tensor) -> torch.Tensor:
+    """Compute the GAD direction from forces and (unprojected) Hessian."""
+
+    gad_vec, _v_next, _info = compute_gad_vector_tracked(forces, hessian, None)
+    return gad_vec
 
 
 def gad_euler_step(
@@ -58,6 +143,9 @@ def gad_euler_step(
     *,
     dt: float,
     out: Optional[Dict[str, Any]] = None,
+    v_prev: torch.Tensor | None = None,
+    k_track: int = 8,
+    beta: float = 1.0,
 ) -> Dict[str, Any]:
     coords0 = ensure_2d_coords(coords)
     if out is None:
@@ -66,13 +154,21 @@ def gad_euler_step(
     forces = out["forces"]
     hessian = out["hessian"]
 
-    gad_vec = compute_gad_vector(forces, hessian)
+    gad_vec, v_next, info = compute_gad_vector_tracked(
+        forces,
+        hessian,
+        v_prev,
+        k_track=k_track,
+        beta=beta,
+    )
     new_coords = coords0 + dt * gad_vec
 
     return {
         "new_coords": new_coords,
         "gad_vec": gad_vec,
         "out": out,
+        "v_next": v_next,
+        **info,
     }
 
 
@@ -186,10 +282,13 @@ def gad_rk45_integrate(
 
     trajectory: List[torch.Tensor] = []
 
+    v_prev: torch.Tensor | None = None
+
     def f(_t: float, y_flat: np.ndarray) -> np.ndarray:
         coords = torch.from_numpy(y_flat).to(device=device, dtype=torch.float32).reshape(n_atoms, 3)
         out = predict_fn(coords, atomic_nums, do_hessian=True, require_grad=False)
-        gad_vec = compute_gad_vector(out["forces"], out["hessian"])
+        nonlocal v_prev
+        gad_vec, v_prev, _info = compute_gad_vector_tracked(out["forces"], out["hessian"], v_prev)
         trajectory.append(coords.detach().cpu())
         return gad_vec.detach().cpu().numpy().reshape(-1)
 

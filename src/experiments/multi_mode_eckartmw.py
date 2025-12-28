@@ -42,6 +42,7 @@ import numpy as np
 import torch
 
 # Note: We use gad_euler_step_projected defined below, not from core_algos
+from ..core_algos.gad import pick_tracked_mode
 from ..dependencies.common_utils import add_common_args, parse_starting_geometry, setup_experiment
 from ..dependencies.experiment_logger import ExperimentLogger, RunResult, build_loss_type_flags
 from ..dependencies.hessian import (
@@ -135,7 +136,10 @@ def _step_metrics_from_projected_hessian(
     hessian_proj: torch.Tensor,
     tr_threshold: float,
     eigh_device: str,
-) -> tuple[torch.Tensor, float, float, float, int]:
+    v_prev: torch.Tensor | None,
+    k_track: int = 8,
+    beta: float = 1.0,
+) -> tuple[torch.Tensor, float, float, float, int, torch.Tensor, float, int]:
     """Compute GAD vec + eigen metrics from ONE eigendecomp of projected Hessian."""
     forces = forces[0] if forces.dim() == 3 and forces.shape[0] == 1 else forces
     forces = forces.reshape(-1, 3)
@@ -155,17 +159,22 @@ def _step_metrics_from_projected_hessian(
 
     vib_mask = _vib_mask_from_evals(evals, tr_threshold=tr_threshold)
     vib_indices = torch.where(vib_mask)[0]
-    if int(vib_indices.numel()) == 0:
-        first_vib_idx = 0
-        v = evecs[:, 0]
-        evals_vib = evals
-    else:
-        first_vib_idx = int(vib_indices[0].item())
-        v = evecs[:, first_vib_idx]
-        evals_vib = evals[vib_mask]
 
-    v = v.to(device=forces.device, dtype=forces.dtype)
-    v = v / (v.norm() + 1e-12)
+    if int(vib_indices.numel()) == 0:
+        evals_vib = evals
+        candidate_indices = torch.arange(min(int(k_track), int(evecs.shape[1])), device=evecs.device)
+    else:
+        evals_vib = evals[vib_mask]
+        candidate_indices = vib_indices[: int(min(int(k_track), int(vib_indices.numel())))]
+
+    V = evecs[:, candidate_indices].to(device=forces.device, dtype=forces.dtype)
+    v_prev_local = v_prev.to(device=forces.device, dtype=forces.dtype).reshape(-1) if v_prev is not None else None
+    v_new, j, overlap = pick_tracked_mode(V, v_prev_local, k=int(V.shape[1]))
+    if v_prev_local is not None and float(beta) < 1.0:
+        v = (1.0 - float(beta)) * v_prev_local + float(beta) * v_new
+        v = v / (v.norm() + 1e-12)
+    else:
+        v = v_new
 
     f_flat = forces.reshape(-1)
     gad_flat = f_flat + 2.0 * torch.dot(-f_flat, v) * v
@@ -180,7 +189,52 @@ def _step_metrics_from_projected_hessian(
 
     neg_vib = int((evals_vib < -float(tr_threshold)).sum().item()) if int(evals_vib.numel()) > 0 else -1
 
-    return gad_vec, eig0, eig1, eig_product, neg_vib
+    v_next = v.detach().clone().reshape(-1)
+    return gad_vec, eig0, eig1, eig_product, neg_vib, v_next, float(overlap), int(j)
+
+
+def compute_gad_vector_projected_tracked(
+    forces: torch.Tensor,
+    hessian_proj: torch.Tensor,
+    v_prev: torch.Tensor | None,
+    *,
+    k_track: int = 8,
+    beta: float = 1.0,
+    tr_threshold: float = 1e-6,
+) -> tuple[torch.Tensor, torch.Tensor, dict[str, float]]:
+    """GAD direction using projected Hessian with mode tracking."""
+    if forces.dim() == 3 and forces.shape[0] == 1:
+        forces = forces[0]
+    forces = forces.reshape(-1, 3)
+    num_atoms = int(forces.shape[0])
+
+    hess = hessian_proj
+    if hess.dim() != 2 or hess.shape[0] != 3 * num_atoms:
+        hess = prepare_hessian(hess, num_atoms)
+
+    evals, evecs = torch.linalg.eigh(hess)
+
+    vib_mask = torch.abs(evals) > float(tr_threshold)
+    if not vib_mask.any():
+        candidate_indices = torch.arange(min(int(k_track), int(evecs.shape[1])), device=evecs.device)
+    else:
+        vib_indices = torch.where(vib_mask)[0]
+        candidate_indices = vib_indices[: int(min(int(k_track), int(vib_indices.numel())))]
+
+    V = evecs[:, candidate_indices].to(device=forces.device, dtype=forces.dtype)
+    v_prev_local = v_prev.to(device=forces.device, dtype=forces.dtype).reshape(-1) if v_prev is not None else None
+    v_new, j, overlap = pick_tracked_mode(V, v_prev_local, k=int(V.shape[1]))
+    if v_prev_local is not None and float(beta) < 1.0:
+        v = (1.0 - float(beta)) * v_prev_local + float(beta) * v_new
+        v = v / (v.norm() + 1e-12)
+    else:
+        v = v_new
+
+    f_flat = forces.reshape(-1)
+    gad_flat = f_flat + 2.0 * torch.dot(-f_flat, v) * v
+    gad_vec = gad_flat.view(num_atoms, 3)
+    v_next = v.detach().clone().reshape(-1)
+    return gad_vec, v_next, {"mode_overlap": float(overlap), "mode_index": float(j)}
 
 
 # ============================================================================
@@ -326,6 +380,9 @@ def gad_euler_step_projected(
     dt: float,
     out: Optional[Dict[str, Any]] = None,
     scine_elements: Optional[list] = None,
+    v_prev: torch.Tensor | None = None,
+    k_track: int = 8,
+    beta: float = 1.0,
 ) -> Dict[str, Any]:
     """GAD Euler step using PROJECTED Hessian for eigenvector computation.
 
@@ -344,8 +401,14 @@ def gad_euler_step_projected(
     # Get projected Hessian
     hessian_proj = get_projected_hessian(hessian, coords, atomic_nums, scine_elements)
 
-    # Compute GAD vector using projected Hessian
-    gad_vec = compute_gad_vector_projected(forces, hessian_proj)
+    # Compute GAD vector using projected Hessian (with mode tracking)
+    gad_vec, v_next, info = compute_gad_vector_projected_tracked(
+        forces,
+        hessian_proj,
+        v_prev,
+        k_track=k_track,
+        beta=beta,
+    )
     new_coords = coords + dt * gad_vec
 
     return {
@@ -353,6 +416,8 @@ def gad_euler_step_projected(
         "gad_vec": gad_vec,
         "out": out,
         "hessian_proj": hessian_proj,
+        "v_next": v_next,
+        **info,
     }
 
 
@@ -656,6 +721,9 @@ def run_multi_mode_escape(
     best_neg_vib: Optional[int] = None
     no_improve = 0
 
+    # Track the ascent eigenmode across steps (prevents mode switching).
+    v_prev: torch.Tensor | None = None
+
     while escape_cycle < max_escape_cycles and total_steps < n_steps:
         t_predict0 = time.time() if profile_every and (total_steps % profile_every == 0) else None
         out = predict_fn(coords, atomic_nums, do_hessian=True, require_grad=False)
@@ -672,11 +740,14 @@ def run_multi_mode_escape(
         t_eigs0 = time.time() if t_predict0 is not None else None
         if scine_elements is None and hip_vib_mode == "proj_tol":
             hess_proj = get_projected_hessian(hessian, coords, atomic_nums, scine_elements=None)
-            gad_vec, eig0, eig1, eig_prod, neg_vib = _step_metrics_from_projected_hessian(
+            gad_vec, eig0, eig1, eig_prod, neg_vib, v_prev, mode_overlap, mode_index = _step_metrics_from_projected_hessian(
                 forces=forces,
                 hessian_proj=hess_proj,
                 tr_threshold=hip_rigid_tol,
                 eigh_device=hip_eigh_device,
+                v_prev=v_prev,
+                k_track=8,
+                beta=1.0,
             )
         else:
             vib = vibrational_eigvals(hessian, coords, atomic_nums, scine_elements=scine_elements)
@@ -687,9 +758,20 @@ def run_multi_mode_escape(
 
             # Compute GAD vector using PROJECTED Hessian (Eckart-MW)
             step_out = gad_euler_step_projected(
-                predict_fn, coords, atomic_nums, dt=0.0, out=out, scine_elements=scine_elements
+                predict_fn,
+                coords,
+                atomic_nums,
+                dt=0.0,
+                out=out,
+                scine_elements=scine_elements,
+                v_prev=v_prev,
+                k_track=8,
+                beta=1.0,
             )
             gad_vec = step_out["gad_vec"]
+            v_prev = step_out.get("v_next")
+            mode_overlap = float(step_out.get("mode_overlap", 1.0))
+            mode_index = int(step_out.get("mode_index", 0.0))
 
         disp_from_last = float((coords - prev_pos).norm(dim=1).mean().item()) if total_steps > 0 else 0.0
         disp_from_start = float((coords - start_pos).norm(dim=1).mean().item()) if total_steps > 0 else 0.0
@@ -718,6 +800,9 @@ def run_multi_mode_escape(
         trajectory["disp_from_start"].append(disp_from_start)
         trajectory["gad_norm"].append(gad_norm)
         trajectory["escape_cycle"].append(escape_cycle)
+
+        trajectory.setdefault("mode_overlap", []).append(float(mode_overlap))
+        trajectory.setdefault("mode_index", []).append(int(mode_index))
 
         # Check for TS (index = 1)
         if stop_at_ts and steps_to_ts is None and np.isfinite(eig_prod) and eig_prod < -abs(ts_eps):
@@ -763,6 +848,9 @@ def run_multi_mode_escape(
             no_improve = 0
             dt_eff_state = float(dt)
             prev_pos = coords.clone()
+
+            # Discontinuous jump: reset mode tracking.
+            v_prev = None
 
             escape_cycle += 1
             total_steps += 1
