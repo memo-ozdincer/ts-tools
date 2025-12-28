@@ -155,16 +155,18 @@ def _step_metrics_from_projected_hessian(
         hess_eigh = hess
 
     evals, evecs = torch.linalg.eigh(hess_eigh)
-    evals = evals.to(device=forces.device, dtype=torch.float32)
 
-    vib_mask = _vib_mask_from_evals(evals, tr_threshold=tr_threshold)
+    # IMPORTANT: keep indices on the same device as `evecs`.
+    # When `eigh_device == 'cpu'`, `evecs` is on CPU; GPU indices will error.
+    evals_local = evals.to(dtype=torch.float32)
+    vib_mask = _vib_mask_from_evals(evals_local, tr_threshold=tr_threshold)
     vib_indices = torch.where(vib_mask)[0]
 
     if int(vib_indices.numel()) == 0:
-        evals_vib = evals
+        evals_vib = evals_local
         candidate_indices = torch.arange(min(int(k_track), int(evecs.shape[1])), device=evecs.device)
     else:
-        evals_vib = evals[vib_mask]
+        evals_vib = evals_local[vib_mask]
         candidate_indices = vib_indices[: int(min(int(k_track), int(vib_indices.numel())))]
 
     V = evecs[:, candidate_indices].to(device=forces.device, dtype=forces.dtype)

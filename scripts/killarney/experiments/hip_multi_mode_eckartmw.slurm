@@ -42,7 +42,7 @@ NOISE_SEED=42
 
 # Experiment parameters
 N_STEPS=15000
-MAX_SAMPLES=15
+MAX_SAMPLES=100
 
 # Multi-mode escape parameters (displacement-based detection)
 # escape_disp_threshold: Mean displacement threshold (A) for plateau detection
