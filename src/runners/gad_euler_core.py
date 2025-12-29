@@ -255,7 +255,7 @@ def main() -> None:
     parser = add_common_args(parser)
     parser.add_argument("--n-steps", type=int, default=150)
     parser.add_argument("--dt", type=float, default=0.001)
-    parser.add_argument("--start-from", type=str, default="midpoint_rt")
+    parser.add_argument("--start-from", type=str, default="reactant")
     parser.add_argument("--stop-at-ts", action="store_true")
     parser.add_argument("--ts-eps", type=float, default=1e-5, help="Stop when eig_product < -eps")
 
