@@ -44,7 +44,7 @@ python -m src.runners.gad_euler_core \
     --h5-path "$H5_PATH" \
     --out-dir "$OUT_DIR" \
     --max-samples 100 \
-    --n-steps 300 \
+    --n-steps 2000 \
     --start-from reactant \
     --stop-at-ts \
     --dt 0.001 \
