@@ -2,7 +2,7 @@
 #SBATCH -A aip-aspuru
 #SBATCH -D /project/6101772/memoozd/ts-tools
 #SBATCH --time=4:00:00
-#SBATCH --gres=gpu:v100l:1
+#SBATCH --gres=gpu:l40s:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32GB
 #SBATCH --job-name=eigenvalue_classification
@@ -12,31 +12,27 @@
 # This script compares HIP and SCINE eigenvalue classification of starting geometries.
 # It counts negative eigenvalues for: midpoint_rt, reactant, product, noise1A, noise2A
 
-# Create logs directory if it doesn't exist
 mkdir -p logs
-
-# Activate virtual environment
 source .venv/bin/activate
 
-# Ensure CPU-side linear algebra can use allocated cores.
+# Ensure CPU-side ops can use the allocated cores.
 export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
 export OPENBLAS_NUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
 export MKL_NUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
 export NUMEXPR_NUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
 export VECLIB_MAXIMUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
 
+H5_PATH="/project/6101772/memoozd/data/transition1x.h5"
+CKPT_PATH="/project/6101772/memoozd/models/hip_v2.ckpt"
+OUT_DIR="$HOME/scratch/ts-tools-output/eigenvalue_classification"
+
 echo `date`: Job $SLURM_JOB_ID is allocated resources.
 echo ">>> Running Eigenvalue Classification (HIP vs SCINE)..."
-
-# Killarney paths
-H5_PATH="/project/6101772/memoozd/data/transition1x.h5"
-CHECKPOINT="/project/6101772/memoozd/ckpt/hip_v2.ckpt"
-OUT_DIR="$HOME/scratch/ts-tools-output/eigenvalue_classification"
 
 # Run the classification experiment
 python -m src.experiments.eigenvalue_classification \
     --h5-path "$H5_PATH" \
-    --checkpoint-path "$CHECKPOINT" \
+    --checkpoint-path "$CKPT_PATH" \
     --out-dir "$OUT_DIR" \
     --max-samples 100 \
     --scine-functional DFTB0 \
