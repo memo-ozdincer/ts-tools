@@ -247,16 +247,54 @@ def main() -> None:
             initial_neg = -1
 
         t0 = time.time()
-        out, aux = run_single(
-            predict_fn,
-            start_coords,
-            atomic_nums.to(device),
-            n_steps=args.n_steps,
-            dt=args.dt,
-            stop_at_ts=bool(args.stop_at_ts),
-            ts_eps=float(args.ts_eps),
-        )
-        wall = time.time() - t0
+        try:
+            out, aux = run_single(
+                predict_fn,
+                start_coords,
+                atomic_nums.to(device),
+                n_steps=args.n_steps,
+                dt=args.dt,
+                stop_at_ts=bool(args.stop_at_ts),
+                ts_eps=float(args.ts_eps),
+            )
+            wall = time.time() - t0
+        except Exception as e:
+            wall = time.time() - t0
+            stop_reason = f"{type(e).__name__}: {e}"
+            print(f"[WARN] Sample {i} failed during run: {stop_reason}")
+
+            result = RunResult(
+                sample_index=i,
+                formula=str(formula),
+                initial_neg_eigvals=int(initial_neg),
+                final_neg_eigvals=-1,
+                initial_neg_vibrational=None,
+                final_neg_vibrational=None,
+                steps_taken=0,
+                steps_to_ts=None,
+                final_time=float(wall),
+                final_eig0=None,
+                final_eig1=None,
+                final_eig_product=None,
+                final_loss=None,
+                rmsd_to_known_ts=None,
+                stop_reason=stop_reason,
+                plot_path=None,
+            )
+
+            logger.add_result(result)
+
+            if args.wandb:
+                log_sample(
+                    i,
+                    {
+                        "steps_taken": result.steps_taken,
+                        "wallclock_s": result.final_time,
+                        "stop_reason": result.stop_reason,
+                        "failed": 1,
+                    },
+                )
+            continue
 
         final_neg = out.get("final_neg_vibrational", -1)
 

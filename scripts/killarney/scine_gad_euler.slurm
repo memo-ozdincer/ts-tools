@@ -16,6 +16,13 @@ mkdir -p logs
 # Activate virtual environment
 source .venv/bin/activate
 
+# Ensure CPU-side linear algebra can use allocated cores.
+export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
+export OPENBLAS_NUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
+export MKL_NUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
+export NUMEXPR_NUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
+export VECLIB_MAXIMUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
+
 # W&B setup (online)
 export WANDB_MODE=online
 if [[ -z "${WANDB_API_KEY:-}" ]]; then
@@ -36,9 +43,9 @@ python -m src.runners.gad_euler_core \
     --scine-functional DFTB0 \
     --h5-path "$H5_PATH" \
     --out-dir "$OUT_DIR" \
-    --max-samples 30 \
-    --n-steps 150 \
-    --start-from midpoint_rt \
+    --max-samples 100 \
+    --n-steps 300 \
+    --start-from reactant \
     --stop-at-ts \
     --dt 0.001 \
     --wandb \

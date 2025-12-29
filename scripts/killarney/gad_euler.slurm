@@ -3,6 +3,7 @@
 #SBATCH -D /project/6101772/memoozd/ts-tools
 #SBATCH --time=10:00:00
 #SBATCH --gres=gpu:l40s:1
+#SBATCH --cpus-per-task=8
 #SBATCH --mem=32GB
 #SBATCH --job-name=gad_euler
 #SBATCH --output=logs/gad_euler_%j.out
@@ -13,6 +14,13 @@ mkdir -p logs
 
 # Activate virtual environment
 source .venv/bin/activate
+
+# Ensure CPU-side ops can use the allocated cores.
+export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
+export OPENBLAS_NUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
+export MKL_NUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
+export NUMEXPR_NUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
+export VECLIB_MAXIMUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
 
 # W&B setup (online)
 export WANDB_MODE=online
@@ -33,8 +41,8 @@ python -m src.runners.gad_euler_core \
     --h5-path "$H5_PATH" \
     --checkpoint-path "$CKPT_PATH" \
     --out-dir "$OUT_DIR" \
-    --max-samples 20 \
-    --n-steps 150 \
+    --max-samples 100 \
+    --n-steps 300 \
     --start-from midpoint_rt \
     --stop-at-ts \
     --dt 0.001 \
