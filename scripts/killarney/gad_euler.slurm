@@ -43,7 +43,7 @@ python -m src.runners.gad_euler_core \
     --out-dir "$OUT_DIR" \
     --max-samples 100 \
     --n-steps 2000 \
-    --start-from midpoint_rt \
+    --start-from reactant \
     --stop-at-ts \
     --dt 0.001 \
     --hip-vib-mode raw_tol \
