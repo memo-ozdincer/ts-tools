@@ -30,7 +30,7 @@ if [[ -z "${WANDB_API_KEY:-}" ]]; then
 fi
 
 echo `date`: Job $SLURM_JOB_ID is allocated resources.
-echo ">>> Running Euler RMSD script..."
+echo ">>> Running Euler GAD script..."
 
 # Killarney paths
 H5_PATH="/project/6101772/memoozd/data/transition1x.h5"
@@ -46,6 +46,9 @@ python -m src.runners.gad_euler_core \
     --start-from midpoint_rt \
     --stop-at-ts \
     --dt 0.001 \
+    --hip-vib-mode raw_tol \
+    --hip-rigid-tol 1e-6 \
+    --hip-eigh-device cpu \
     --wandb \
     --wandb-project "gad-ts-search"
 
