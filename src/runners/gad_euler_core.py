@@ -69,74 +69,6 @@ def _force_mean(forces: torch.Tensor) -> float:
     return float(f.norm(dim=1).mean().item())
 
 
-def _prepare_hessian(hess: torch.Tensor, num_atoms: int) -> torch.Tensor:
-    """Reshape hessian to (3*N, 3*N) matrix."""
-    if hess.dim() == 1:
-        side = int(hess.numel() ** 0.5)
-        return hess.view(side, side)
-    if hess.dim() == 3 and hess.shape[0] == 1:
-        hess = hess[0]
-    if hess.dim() > 2:
-        return hess.reshape(3 * num_atoms, 3 * num_atoms)
-    return hess
-
-
-def _hip_rigid_mode_mask(evals: torch.Tensor, *, rigid_tol: float) -> torch.Tensor:
-    """Mask out (near-)zero rigid modes in raw Hessian spectrum."""
-    if rigid_tol <= 0:
-        return torch.ones_like(evals, dtype=torch.bool)
-    return evals.abs() > float(rigid_tol)
-
-
-def _hip_step_metrics_from_raw_hessian(
-    *,
-    forces: torch.Tensor,
-    hessian: torch.Tensor,
-    rigid_tol: float,
-    eigh_device: str,
-) -> tuple[torch.Tensor, float, float, float]:
-    """Compute GAD vector + eigen metrics from a single raw-Hessian eigendecomp.
-
-    Returns:
-        gad_vec (N,3), eig0, eig1, eig_product
-    """
-    forces = forces[0] if forces.dim() == 3 and forces.shape[0] == 1 else forces
-    forces = forces.reshape(-1, 3)
-    num_atoms = int(forces.shape[0])
-
-    hess = _prepare_hessian(hessian, num_atoms)
-
-    # Optionally move eigendecomposition to CPU (often faster for small/medium matrices).
-    if str(eigh_device).lower() == "cpu":
-        hess_eigh = hess.detach().to(device=torch.device("cpu"))
-    else:
-        hess_eigh = hess
-
-    evals, evecs = torch.linalg.eigh(hess_eigh)
-
-    # GAD direction uses the lowest eigenvector of the *raw* Hessian.
-    v0 = evecs[:, 0].to(dtype=forces.dtype, device=forces.device)
-    v0 = v0 / (v0.norm() + 1e-12)
-
-    f_flat = forces.reshape(-1)
-    gad_flat = f_flat + 2.0 * torch.dot(-f_flat, v0) * v0
-    gad_vec = gad_flat.view(num_atoms, 3)
-
-    # "Vibrational" metrics from raw spectrum with a tolerance-based rigid-mode mask.
-    evals = evals.to(device=forces.device, dtype=torch.float32)
-    keep = _hip_rigid_mode_mask(evals, rigid_tol=rigid_tol)
-    evals_vib = evals[keep]
-
-    if int(evals_vib.numel()) >= 2:
-        eig0 = float(evals_vib[0].item())
-        eig1 = float(evals_vib[1].item())
-        eig_product = float((evals_vib[0] * evals_vib[1]).item())
-    else:
-        eig0, eig1, eig_product = float("nan"), float("nan"), float("inf")
-
-    return gad_vec, eig0, eig1, eig_product
-
-
 def run_single(
     predict_fn,
     coords0: torch.Tensor,
@@ -146,9 +78,6 @@ def run_single(
     dt: float,
     stop_at_ts: bool,
     ts_eps: float,
-    hip_vib_mode: str = "projected",
-    hip_rigid_tol: float = 1e-6,
-    hip_eigh_device: str = "auto",
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     coords = coords0.detach().clone().to(torch.float32)
 
@@ -178,22 +107,10 @@ def run_single(
 
         # Extract SCINE elements if using SCINE calculator
         scine_elements = get_scine_elements_from_predict_output(out)
-
-        # HIP fast path: single eigendecomp for both GAD vector and eigen metrics
-        if scine_elements is None and hip_vib_mode == "raw_tol":
-            gad_vec, eig0, eig1, eig_prod = _hip_step_metrics_from_raw_hessian(
-                forces=forces,
-                hessian=hessian,
-                rigid_tol=hip_rigid_tol,
-                eigh_device=hip_eigh_device,
-            )
-        else:
-            # Legacy path: separate vibrational analysis + GAD step
-            vib = vibrational_eigvals(hessian, coords, atomic_nums, scine_elements=scine_elements)
-            eig0 = float(vib[0].item()) if vib.numel() >= 1 else float("nan")
-            eig1 = float(vib[1].item()) if vib.numel() >= 2 else float("nan")
-            eig_prod = float((vib[0] * vib[1]).item()) if vib.numel() >= 2 else float("inf")
-            gad_vec = None  # Will compute via gad_euler_step below
+        vib = vibrational_eigvals(hessian, coords, atomic_nums, scine_elements=scine_elements)
+        eig0 = float(vib[0].item()) if vib.numel() >= 1 else float("nan")
+        eig1 = float(vib[1].item()) if vib.numel() >= 2 else float("nan")
+        eig_prod = float((vib[0] * vib[1]).item()) if vib.numel() >= 2 else float("inf")
 
         disp_from_last = float((coords - prev_pos).norm(dim=1).mean().item()) if step > 0 else 0.0
         disp_from_start = float((coords - start_pos).norm(dim=1).mean().item()) if step > 0 else 0.0
@@ -215,15 +132,8 @@ def run_single(
             break
 
         prev_pos = coords.clone()
-
-        # Take GAD step
-        if gad_vec is not None:
-            # Fast path: we already have gad_vec from single eigendecomp
-            coords = (coords + dt * gad_vec).detach()
-        else:
-            # Legacy path: use gad_euler_step which does another eigendecomp
-            step_out = gad_euler_step(predict_fn, coords, atomic_nums, dt=dt, out=out)
-            coords = step_out["new_coords"].detach()
+        step_out = gad_euler_step(predict_fn, coords, atomic_nums, dt=dt, out=out)
+        coords = step_out["new_coords"].detach()
 
     # Get final vibrational analysis (use SCINE elements if applicable)
     final_neg_vib = -1
@@ -255,34 +165,9 @@ def main() -> None:
     parser = add_common_args(parser)
     parser.add_argument("--n-steps", type=int, default=150)
     parser.add_argument("--dt", type=float, default=0.001)
-    parser.add_argument("--start-from", type=str, default="reactant")
+    parser.add_argument("--start-from", type=str, default="midpoint_rt")
     parser.add_argument("--stop-at-ts", action="store_true")
     parser.add_argument("--ts-eps", type=float, default=1e-5, help="Stop when eig_product < -eps")
-
-    # HIP performance knobs
-    parser.add_argument(
-        "--hip-vib-mode",
-        type=str,
-        default="projected",
-        choices=["projected", "raw_tol"],
-        help="How to compute eigenvalue-based metrics on HIP. "
-             "'projected' uses Eckart projection (more accurate, slower). "
-             "'raw_tol' uses a single raw-Hessian eigendecomp and filters near-zero modes (faster).",
-    )
-    parser.add_argument(
-        "--hip-rigid-tol",
-        type=float,
-        default=1e-6,
-        help="Tolerance for treating eigenvalues as rigid/zero modes when --hip-vib-mode=raw_tol.",
-    )
-    parser.add_argument(
-        "--hip-eigh-device",
-        type=str,
-        default="auto",
-        choices=["auto", "cpu"],
-        help="Where to run the raw-Hessian eigendecomposition for HIP fast mode. "
-             "'cpu' can be faster for small/medium Hessians when you request multiple CPUs.",
-    )
 
     parser.add_argument("--wandb", action="store_true")
     parser.add_argument("--wandb-project", type=str, default="gad-ts-search")
@@ -319,9 +204,6 @@ def main() -> None:
             "dt": args.dt,
             "stop_at_ts": bool(args.stop_at_ts),
             "calculator": getattr(args, "calculator", "hip"),
-            "hip_vib_mode": args.hip_vib_mode,
-            "hip_rigid_tol": args.hip_rigid_tol,
-            "hip_eigh_device": args.hip_eigh_device,
         }
 
         wandb_name = args.wandb_name
@@ -374,9 +256,6 @@ def main() -> None:
                 dt=args.dt,
                 stop_at_ts=bool(args.stop_at_ts),
                 ts_eps=float(args.ts_eps),
-                hip_vib_mode=str(args.hip_vib_mode),
-                hip_rigid_tol=float(args.hip_rigid_tol),
-                hip_eigh_device=str(args.hip_eigh_device),
             )
             wall = time.time() - t0
         except Exception as e:
