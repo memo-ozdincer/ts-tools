@@ -42,7 +42,7 @@ python -m src.runners.gad_euler_core \
     --checkpoint-path "$CKPT_PATH" \
     --out-dir "$OUT_DIR" \
     --max-samples 100 \
-    --n-steps 300 \
+    --n-steps 2000 \
     --start-from midpoint_rt \
     --stop-at-ts \
     --dt 0.001 \
