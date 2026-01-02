@@ -46,7 +46,8 @@ NOISE_SEED=42
 N_STEPS=1000
 MAX_SAMPLES=100
 DT=0.001
-NORM_THRESHOLD=0.01
+# Andreas-style force normalization: normalize when |f| < 1
+NORM_THRESHOLD=1.0
 WANDB_PROJECT="memo-ozdincer-university-of-toronto"
 
 # ============================================

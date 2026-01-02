@@ -404,7 +404,7 @@ def run_multi_mode_force_norm(
             predict_fn,
             coords,
             atomic_nums,
-            dt=0.0,
+            dt=dt,
             out=out,
             scine_elements=scine_elements,
             v_prev=v_prev,
@@ -414,6 +414,7 @@ def run_multi_mode_force_norm(
             normalize_target=normalize_target,
         )
         gad_vec = step_out["gad_vec"]
+        new_coords = step_out["new_coords"]
         v_prev = step_out.get("v_next")
         mode_overlap = float(step_out.get("mode_overlap", 1.0))
         mode_index = int(step_out.get("mode_index", 0.0))
@@ -464,7 +465,7 @@ def run_multi_mode_force_norm(
 
         # Take GAD step with FIXED dt
         prev_pos = coords.clone()
-        coords = (coords + dt * gad_vec).detach()
+        coords = new_coords.detach()
         total_steps += 1
 
     # Pad trajectories to same length

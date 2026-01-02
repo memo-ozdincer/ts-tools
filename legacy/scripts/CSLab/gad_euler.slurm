@@ -39,7 +39,8 @@ python -m src.gad_gad_euler_rmsd \
     --stop-at-ts \
     --dt 0.001 \
     --wandb \
-    --wandb-project "gad-ts-search"
+    --wandb-project "gad-ts-search" \
+    --wandb-entity "memo-ozdincer-university-of-toronto"
 
 # --- Example with kick mechanism enabled ---
 # Uncomment to enable kick mechanism to escape local minima:
