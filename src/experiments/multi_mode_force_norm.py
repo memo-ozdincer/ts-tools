@@ -1,20 +1,21 @@
 from __future__ import annotations
 
-"""Multi-mode escape for GAD using FORCE NORMALIZATION instead of v2 kicks.
+"""Multi-mode escape for GAD using GAD VECTOR NORMALIZATION instead of v2 kicks.
 
-Test of Andreas's suggestion: normalize forces when |f| < threshold to maintain
-deterministic step sizes while staying on the GAD manifold.
+Test of Andreas's suggestion: normalize the GAD vector when |gad| < threshold
+so we always step by a unit vector with FIXED dt.
 
 Key differences from v2 kick approach:
 1. No discrete jumps along eigenvectors
 2. Always uses GAD dynamics (stays on GAD manifold)
-3. When |f| is small: use f_norm = f/|f| → |GAD| = 1 → step = dt
-4. Condition: normalize when |f| < threshold AND λ₁*λ₂ > 0 (not at TS)
+3. When |gad| is small: step = dt * (gad / |gad|)  → always move distance dt
+4. When |gad| is large: step = dt * gad             → normal GAD
+5. FIXED dt only - NO adaptive dt control
 
 Algorithm:
-1. Run GAD using projected Hessian for eigenvector computation
-2. Detect plateau: mean displacement < threshold over window, stable neg_vib, index > 1
-3. If plateau at index > 1: normalize force and continue GAD (no jump)
+1. Compute GAD vector using Eckart-projected mass-weighted Hessian
+2. If |gad| < threshold: normalize gad → gad / |gad|
+3. Step: coords += dt * gad_normalized
 4. Repeat until index = 1 or max steps reached
 """
 
@@ -66,7 +67,8 @@ def _auto_wandb_name(*, script: str, loss_type_flags: str, args: argparse.Namesp
     calculator = getattr(args, "calculator", "hip")
     start_from = getattr(args, "start_from", "unknown")
     method = getattr(args, "method", "euler")
-    force_norm_threshold = getattr(args, "force_norm_threshold", None)
+    normalize_target = getattr(args, "normalize_target", "gad")
+    norm_threshold = getattr(args, "norm_threshold", None)
     n_steps = getattr(args, "n_steps", None)
     noise_seed = getattr(args, "noise_seed", None)
     job_id = os.environ.get("SLURM_JOB_ID")
@@ -76,7 +78,8 @@ def _auto_wandb_name(*, script: str, loss_type_flags: str, args: argparse.Namesp
         str(calculator),
         str(start_from),
         str(method),
-        f"fnorm{force_norm_threshold}" if force_norm_threshold is not None else None,
+        f"norm-{normalize_target}",
+        f"thresh{norm_threshold}" if norm_threshold is not None else None,
         f"steps{n_steps}" if n_steps is not None else None,
         f"seed{noise_seed}" if noise_seed is not None else None,
         f"job{job_id}" if job_id else None,
@@ -178,15 +181,19 @@ def compute_gad_vector_projected_tracked(
     k_track: int = 8,
     beta: float = 1.0,
     tr_threshold: float = 1e-6,
-    force_norm_threshold: float = 1.0,
-    eig_product: float = float("inf"),
+    norm_threshold: float = 0.01,
+    normalize_target: str = "gad",  # "gad" or "force"
 ) -> tuple[torch.Tensor, torch.Tensor, dict[str, float]]:
-    """GAD direction using projected Hessian with mode tracking and force normalization.
+    """GAD direction using projected Hessian with mode tracking and normalization.
     
-    When |f| < force_norm_threshold AND eig_product > 0 (not at TS):
-    - Normalize forces: f_norm = f / |f|
-    - Compute GAD with normalized forces → |GAD| = 1
-    - Step size becomes deterministic: dt
+    Args:
+        normalize_target: What to normalize when small.
+            - "gad": Normalize GAD vector when |gad| < threshold
+            - "force": Normalize force when |f| < threshold, then compute GAD
+    
+    When normalization triggers:
+    - gad mode: gad = gad / |gad| → step = dt * unit_gad
+    - force mode: f = f / |f| → gad = f_norm + 2*(-f_norm·v)*v
     """
     if forces.dim() == 3 and forces.shape[0] == 1:
         forces = forces[0]
@@ -215,25 +222,37 @@ def compute_gad_vector_projected_tracked(
     else:
         v = v_new
 
-    # Force normalization: if |f| < threshold AND not at TS, normalize
     f_flat = forces.reshape(-1)
     f_norm_val = f_flat.norm()
-    force_was_normalized = False
+    was_normalized = False
+    norm_val_before = 0.0
     
-    if f_norm_val < force_norm_threshold and eig_product > 0:
-        # Normalize force to unit length
-        f_flat = f_flat / (f_norm_val + 1e-12)
-        force_was_normalized = True
+    if normalize_target == "force":
+        # Force normalization: normalize f before computing GAD
+        norm_val_before = float(f_norm_val.item())
+        if f_norm_val < norm_threshold and f_norm_val > 1e-12:
+            f_flat = f_flat / f_norm_val
+            was_normalized = True
+        # Compute GAD with (possibly normalized) force
+        gad_flat = f_flat + 2.0 * torch.dot(-f_flat, v) * v
+    else:
+        # GAD normalization: compute GAD first, then normalize
+        gad_flat = f_flat + 2.0 * torch.dot(-f_flat, v) * v
+        gad_norm_val = gad_flat.norm()
+        norm_val_before = float(gad_norm_val.item())
+        if gad_norm_val < norm_threshold and gad_norm_val > 1e-12:
+            gad_flat = gad_flat / gad_norm_val
+            was_normalized = True
 
-    gad_flat = f_flat + 2.0 * torch.dot(-f_flat, v) * v
     gad_vec = gad_flat.view(num_atoms, 3)
     v_next = v.detach().clone().reshape(-1)
     
     return gad_vec, v_next, {
         "mode_overlap": float(overlap),
         "mode_index": float(j),
-        "force_was_normalized": force_was_normalized,
-        "force_norm_before": float(f_norm_val.item()),
+        "was_normalized": was_normalized,
+        "norm_val_before": norm_val_before,
+        "normalize_target": normalize_target,
     }
 
 
@@ -248,10 +267,10 @@ def gad_euler_step_projected(
     v_prev: torch.Tensor | None = None,
     k_track: int = 8,
     beta: float = 1.0,
-    force_norm_threshold: float = 1.0,
-    eig_product: float = float("inf"),
+    norm_threshold: float = 0.01,
+    normalize_target: str = "gad",
 ) -> Dict[str, Any]:
-    """GAD Euler step using PROJECTED Hessian with force normalization."""
+    """GAD Euler step using PROJECTED Hessian with normalization."""
     if coords.dim() == 3 and coords.shape[0] == 1:
         coords = coords[0]
     coords = coords.reshape(-1, 3)
@@ -270,8 +289,8 @@ def gad_euler_step_projected(
         v_prev,
         k_track=k_track,
         beta=beta,
-        force_norm_threshold=force_norm_threshold,
-        eig_product=eig_product,
+        norm_threshold=norm_threshold,
+        normalize_target=normalize_target,
     )
     new_coords = coords + dt * gad_vec
 
@@ -320,24 +339,16 @@ def run_multi_mode_force_norm(
     dt: float,
     stop_at_ts: bool,
     ts_eps: float,
-    dt_control: str,
-    dt_min: float,
-    dt_max: float,
-    max_atom_disp: Optional[float],
-    plateau_patience: int,
-    plateau_boost: float,
-    plateau_shrink: float,
-    # Force normalization parameters
-    force_norm_threshold: float,
-    escape_disp_threshold: float,
-    escape_window: int,
-    escape_neg_vib_std: float,
+    # Normalization parameters
+    norm_threshold: float,
+    normalize_target: str = "gad",  # "gad" or "force"
     profile_every: int = 0,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    """Run GAD with force normalization when forces are small.
+    """Run GAD with normalization when |gad| or |f| is small.
     
-    Instead of discrete v2 kicks, normalizes forces when |f| < threshold
-    to maintain unit GAD step size while staying on GAD manifold.
+    Uses FIXED dt only.
+    - normalize_target="gad": normalize GAD vector when |gad| < threshold
+    - normalize_target="force": normalize force when |f| < threshold
     """
     coords = coords0.detach().clone().to(torch.float32)
 
@@ -351,9 +362,9 @@ def run_multi_mode_force_norm(
         "neg_vib",
         "disp_from_last",
         "disp_from_start",
-        "dt_eff",
         "gad_norm",
-        "force_was_normalized",
+        "norm_val_before",
+        "was_normalized",
     ]}
 
     start_pos = coords.clone()
@@ -362,15 +373,6 @@ def run_multi_mode_force_norm(
     steps_to_ts: Optional[int] = None
     total_steps = 0
     normalization_events: list[Dict[str, Any]] = []
-
-    # Rolling history for plateau detection
-    disp_history: list[float] = []
-    neg_vib_history: list[int] = []
-
-    # Stateful dt controller variables
-    dt_eff_state = float(dt)
-    best_neg_vib: Optional[int] = None
-    no_improve = 0
 
     # Track the ascent eigenmode across steps
     v_prev: torch.Tensor | None = None
@@ -397,7 +399,7 @@ def run_multi_mode_force_norm(
         eig_prod = float((vib[0] * vib[1]).item()) if vib.numel() >= 2 else float("inf")
         neg_vib = int((vib < 0).sum().item()) if vib.numel() > 0 else -1
 
-        # Compute GAD vector with force normalization
+        # Compute GAD vector with normalization
         step_out = gad_euler_step_projected(
             predict_fn,
             coords,
@@ -408,14 +410,15 @@ def run_multi_mode_force_norm(
             v_prev=v_prev,
             k_track=8,
             beta=1.0,
-            force_norm_threshold=force_norm_threshold,
-            eig_product=eig_prod,
+            norm_threshold=norm_threshold,
+            normalize_target=normalize_target,
         )
         gad_vec = step_out["gad_vec"]
         v_prev = step_out.get("v_next")
         mode_overlap = float(step_out.get("mode_overlap", 1.0))
         mode_index = int(step_out.get("mode_index", 0.0))
-        force_was_normalized = step_out.get("force_was_normalized", False)
+        was_normalized = step_out.get("was_normalized", False)
+        norm_val_before = step_out.get("norm_val_before", 0.0)
 
         disp_from_last = float((coords - prev_pos).norm(dim=1).mean().item()) if total_steps > 0 else 0.0
         disp_from_start = float((coords - start_pos).norm(dim=1).mean().item()) if total_steps > 0 else 0.0
@@ -423,25 +426,20 @@ def run_multi_mode_force_norm(
         gad_norm = _mean_atom_norm(gad_vec)
 
         if t_predict0 is not None and t_predict1 is not None:
-            t_eigs1 = time.time()
             print(
                 f"[profile] step={total_steps} predict={t_predict1 - t_predict0:.4f}s "
-                f"force_norm={force_norm_val:.6f} normalized={force_was_normalized}"
+                f"norm_val_before={norm_val_before:.6f} normalized={was_normalized} target={normalize_target}"
             )
 
         # Track normalization events
-        if force_was_normalized:
+        if was_normalized:
             normalization_events.append({
                 "step": total_steps,
-                "force_norm": force_norm_val,
+                "norm_val_before": norm_val_before,
                 "neg_vib": neg_vib,
                 "eig_product": eig_prod,
+                "normalize_target": normalize_target,
             })
-
-        # Update rolling history
-        if total_steps > 0:
-            disp_history.append(disp_from_last)
-            neg_vib_history.append(neg_vib)
 
         trajectory["energy"].append(energy_value)
         trajectory["force_mean"].append(force_mean)
@@ -453,7 +451,8 @@ def run_multi_mode_force_norm(
         trajectory["disp_from_last"].append(disp_from_last)
         trajectory["disp_from_start"].append(disp_from_start)
         trajectory["gad_norm"].append(gad_norm)
-        trajectory["force_was_normalized"].append(int(force_was_normalized))
+        trajectory["norm_val_before"].append(norm_val_before)
+        trajectory["was_normalized"].append(int(was_normalized))
 
         trajectory.setdefault("mode_overlap", []).append(float(mode_overlap))
         trajectory.setdefault("mode_index", []).append(int(mode_index))
@@ -461,63 +460,14 @@ def run_multi_mode_force_norm(
         # Check for TS (index = 1)
         if stop_at_ts and steps_to_ts is None and np.isfinite(eig_prod) and eig_prod < -abs(ts_eps):
             steps_to_ts = total_steps
-            trajectory["dt_eff"].append(float("nan"))
             break
 
-        # Check for plateau (but just log it, don't escape)
-        is_plateau = _check_plateau_convergence(
-            disp_history,
-            neg_vib_history,
-            neg_vib,
-            window=escape_window,
-            disp_threshold=escape_disp_threshold,
-            neg_vib_std_threshold=escape_neg_vib_std,
-        )
-
-        if is_plateau:
-            print(f"[INFO] Step {total_steps}: Plateau detected at index {neg_vib}, continuing with force normalization")
-
-        # Compute dt_eff using plateau controller
-        if dt_control == "neg_eig_plateau":
-            if best_neg_vib is None:
-                best_neg_vib = int(neg_vib)
-                no_improve = 0
-            else:
-                if int(neg_vib) < int(best_neg_vib):
-                    best_neg_vib = int(neg_vib)
-                    no_improve = 0
-                    dt_eff_state = min(float(dt_eff_state), float(dt))
-                elif int(neg_vib) > int(best_neg_vib):
-                    dt_eff_state = max(float(dt_eff_state) * float(plateau_shrink), float(dt_min))
-                    no_improve = 0
-                else:
-                    no_improve += 1
-
-            if no_improve >= int(max(1, plateau_patience)):
-                dt_eff_state = min(float(dt_eff_state) * float(plateau_boost), float(dt_max))
-                no_improve = 0
-
-            dt_eff = float(np.clip(dt_eff_state, float(dt_min), float(dt_max)))
-        else:
-            dt_eff = float(dt)
-
-        # Apply max atom displacement cap
-        if max_atom_disp is not None and max_atom_disp > 0:
-            step = dt_eff * gad_vec
-            max_disp = _max_atom_norm(step)
-            if np.isfinite(max_disp) and max_disp > float(max_atom_disp) and max_disp > 0:
-                dt_eff = dt_eff * (float(max_atom_disp) / float(max_disp))
-
-        trajectory["dt_eff"].append(float(dt_eff))
-
-        # Take GAD step
+        # Take GAD step with FIXED dt
         prev_pos = coords.clone()
-        coords = (coords + dt_eff * gad_vec).detach()
+        coords = (coords + dt * gad_vec).detach()
         total_steps += 1
 
     # Pad trajectories to same length
-    while len(trajectory["dt_eff"]) < len(trajectory["energy"]):
-        trajectory["dt_eff"].append(float("nan"))
     while len(trajectory["gad_norm"]) < len(trajectory["energy"]):
         trajectory["gad_norm"].append(float("nan"))
 
@@ -572,10 +522,10 @@ def main(
     *,
     default_calculator: Optional[str] = None,
     enforce_calculator: bool = False,
-    script_name_prefix: str = "force-norm",
+    script_name_prefix: str = "norm",
 ) -> None:
     parser = argparse.ArgumentParser(
-        description="Force normalization runner: Multi-mode escape via force normalization (Andreas's suggestion)."
+        description="Normalization runner: Multi-mode escape via GAD or force normalization (Andreas's suggestion)."
     )
     parser = add_common_args(parser)
 
@@ -589,51 +539,24 @@ def main(
     parser.add_argument("--stop-at-ts", action="store_true")
     parser.add_argument("--ts-eps", type=float, default=1e-5)
 
-    # dt control
+    # Normalization parameters (FIXED dt only)
     parser.add_argument(
-        "--dt-control",
+        "--normalize-target",
         type=str,
-        default="neg_eig_plateau",
-        choices=["fixed", "neg_eig_plateau"],
+        default="gad",
+        choices=["gad", "force"],
+        help="What to normalize: 'gad' = normalize GAD vector, 'force' = normalize force before GAD.",
     )
-    parser.add_argument("--dt-min", type=float, default=1e-6)
-    parser.add_argument("--dt-max", type=float, default=0.05)
-    parser.add_argument("--max-atom-disp", type=float, default=0.25)
-
-    # Plateau controller
-    parser.add_argument("--plateau-patience", type=int, default=10)
-    parser.add_argument("--plateau-boost", type=float, default=1.5)
-    parser.add_argument("--plateau-shrink", type=float, default=0.5)
-
-    # Force normalization parameters
     parser.add_argument(
-        "--force-norm-threshold",
+        "--norm-threshold",
         type=float,
-        default=1.0,
-        help="Force magnitude threshold (eV/A). Normalize when |f| < this value AND λ₁*λ₂ > 0.",
-    )
-    parser.add_argument(
-        "--escape-disp-threshold",
-        type=float,
-        default=5e-4,
-        help="Mean displacement threshold (A) for plateau detection (for logging only).",
-    )
-    parser.add_argument(
-        "--escape-window",
-        type=int,
-        default=20,
-        help="Number of recent steps for plateau detection.",
-    )
-    parser.add_argument(
-        "--escape-neg-vib-std",
-        type=float,
-        default=0.5,
-        help="Max std(neg_vib) over window for plateau detection.",
+        default=0.01,
+        help="Norm threshold. Normalize to unit length when |target| < this value.",
     )
     parser.add_argument("--profile-every", type=int, default=0)
 
     parser.add_argument("--wandb", action="store_true")
-    parser.add_argument("--wandb-project", type=str, default="force-norm-multi-mode")
+    parser.add_argument("--wandb-project", type=str, default="norm-multi-mode")
     parser.add_argument("--wandb-entity", type=str, default=None)
     parser.add_argument("--wandb-name", type=str, default=None)
 
@@ -672,9 +595,8 @@ def main(
             "calculator": getattr(args, "calculator", "hip"),
             "dt": args.dt,
             "n_steps": args.n_steps,
-            "dt_control": args.dt_control,
-            "force_norm_threshold": args.force_norm_threshold,
-            "escape_disp_threshold": args.escape_disp_threshold,
+            "normalize_target": args.normalize_target,
+            "norm_threshold": args.norm_threshold,
         }
         wandb_name = args.wandb_name
         if not wandb_name:
@@ -685,7 +607,7 @@ def main(
             name=str(wandb_name),
             config=wandb_config,
             entity=args.wandb_entity,
-            tags=[args.start_from, args.method, "force-norm", str(args.dt_control), "noisy"],
+            tags=[args.start_from, args.method, f"norm-{args.normalize_target}", "fixed-dt", "noisy"],
             run_dir=out_dir,
         )
 
@@ -725,17 +647,8 @@ def main(
                 dt=float(args.dt),
                 stop_at_ts=bool(args.stop_at_ts),
                 ts_eps=float(args.ts_eps),
-                dt_control=str(args.dt_control),
-                dt_min=float(args.dt_min),
-                dt_max=float(args.dt_max),
-                max_atom_disp=float(args.max_atom_disp) if args.max_atom_disp is not None else None,
-                plateau_patience=int(args.plateau_patience),
-                plateau_boost=float(args.plateau_boost),
-                plateau_shrink=float(args.plateau_shrink),
-                force_norm_threshold=float(args.force_norm_threshold),
-                escape_disp_threshold=float(args.escape_disp_threshold),
-                escape_window=int(args.escape_window),
-                escape_neg_vib_std=float(args.escape_neg_vib_std),
+                norm_threshold=float(args.norm_threshold),
+                normalize_target=str(args.normalize_target),
                 profile_every=int(args.profile_every),
             )
             wall = time.time() - t0
@@ -762,8 +675,9 @@ def main(
                 stop_reason=stop_reason,
                 plot_path=None,
                 extra_data={
-                    "method": "force_norm",
-                    "force_norm_threshold": float(args.force_norm_threshold),
+                    "method": f"norm_{args.normalize_target}",
+                    "normalize_target": args.normalize_target,
+                    "norm_threshold": float(args.norm_threshold),
                 },
             )
             logger.add_result(result)
@@ -791,8 +705,9 @@ def main(
             stop_reason=None,
             plot_path=None,
             extra_data={
-                "method": "force_norm",
-                "force_norm_threshold": float(args.force_norm_threshold),
+                "method": f"norm_{args.normalize_target}",
+                "normalize_target": args.normalize_target,
+                "norm_threshold": float(args.norm_threshold),
                 "normalization_events": aux.get("normalization_events"),
             },
         )
@@ -847,4 +762,4 @@ def main(
 
 
 if __name__ == "__main__":
-    main(default_calculator="hip", enforce_calculator=False, script_name_prefix="force-norm")
+    main(default_calculator="hip", enforce_calculator=False, script_name_prefix="gad-norm")

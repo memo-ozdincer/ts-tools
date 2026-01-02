@@ -30,7 +30,7 @@ def plot_gad_trajectory_interactive(
         subplot_titles=(
             "Energy (eV)", "Force Mean (eV/Å)", 
             "Eigenvalue Product", "Eigenvalues (λ₀, λ₁)", 
-            "Disp. from Last (Å)", "Disp. from Start (Å)"
+            "Mean Atom Disp. from Last (Å)", "Mean Atom Disp. from Start (Å)"
         )
     )
 
@@ -55,9 +55,9 @@ def plot_gad_trajectory_interactive(
     fig.add_hline(y=0, line_dash="dot", line_color="gray", row=2, col=2)
 
     # --- ROW 3: Displacements ---
-    fig.add_trace(go.Scatter(x=steps, y=get_data("disp_from_last"), mode='lines+markers', name='Disp (Last)', 
+    fig.add_trace(go.Scatter(x=steps, y=get_data("disp_from_last"), mode='lines+markers', name='Mean Atom Disp (Last)', 
                             line=dict(color='crimson', width=1.5), marker=dict(size=3)), row=3, col=1)
-    fig.add_trace(go.Scatter(x=steps, y=get_data("disp_from_start"), mode='lines+markers', name='Disp (Start)', 
+    fig.add_trace(go.Scatter(x=steps, y=get_data("disp_from_start"), mode='lines+markers', name='Mean Atom Disp (Start)', 
                             line=dict(color='blue', width=1.5), marker=dict(size=3)), row=3, col=2)
 
     # 3. Add TS Marker (Vertical Line)

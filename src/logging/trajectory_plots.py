@@ -131,8 +131,8 @@ def plot_gad_trajectory_3x2(
     ax = axes[2, 0]
     disp_last = _nanify(trajectory.get("disp_from_last", []))
     ax.plot(timesteps, disp_last, marker=".", color="tab:red", lw=1.2, markersize=3)
-    ax.set_ylabel("Mean Disp (Å)")
-    ax.set_title("Displacement from Last Step")
+    ax.set_ylabel("Mean Atom Disp (Å)")
+    ax.set_title("Mean Atom Displacement from Last Step")
     ax.set_xlabel("Step")
     if len(disp_last) > 10:
         later_disp = disp_last[10:]
@@ -147,8 +147,8 @@ def plot_gad_trajectory_3x2(
     ax = axes[2, 1]
     disp_start = _nanify(trajectory.get("disp_from_start", []))
     ax.plot(timesteps, disp_start, marker=".", color="tab:blue", lw=1.2, markersize=3)
-    ax.set_ylabel("Mean Disp (Å)")
-    ax.set_title("Displacement from Start")
+    ax.set_ylabel("Mean Atom Disp (Å)")
+    ax.set_title("Mean Atom Displacement from Start")
     ax.set_xlabel("Step")
     if len(disp_start) > 10:
         later_disp_start = disp_start[10:]
