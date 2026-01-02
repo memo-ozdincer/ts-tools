@@ -117,6 +117,219 @@ def _mean_atom_norm(x: torch.Tensor) -> float:
     return float(x.reshape(-1, 3).norm(dim=1).mean().item())
 
 
+def compute_convergence_diagnostics(
+    trajectory: Dict[str, list],
+    steps_to_ts: Optional[int],
+    n_steps_max: int,
+) -> Dict[str, Any]:
+    """Compute diagnostics to understand convergence behavior.
+
+    Returns metrics useful for analyzing why some runs converge and others don't:
+    - steps_to_converge: steps if converged, else n_steps_max (e.g., 15000)
+    - converged: bool indicating if TS was found
+    - dt_initial: first effective timestep
+    - dt_mean: mean effective timestep
+    - dt_std: std of effective timestep
+    - dt_final: last effective timestep
+    - eig0_mean, eig0_std: stats of lowest eigenvalue
+    - eig1_mean, eig1_std: stats of second eigenvalue
+    - eig0_oscillation_count: number of sign changes in eig0
+    - neg_vib_oscillation_count: number of changes in neg_vib count
+    - neg_vib_mean, neg_vib_std: stats of negative vibrational count
+    - disp_mean, disp_std: stats of per-step displacement
+    - gad_norm_mean, gad_norm_std: stats of GAD norm
+    """
+    converged = steps_to_ts is not None
+    steps_to_converge = steps_to_ts if converged else n_steps_max
+
+    result: Dict[str, Any] = {
+        "converged": converged,
+        "steps_to_converge": steps_to_converge,
+    }
+
+    # dt_eff statistics (filter out NaN from escape steps)
+    dt_eff = trajectory.get("dt_eff", [])
+    dt_valid = [d for d in dt_eff if d is not None and np.isfinite(d)]
+    if dt_valid:
+        result["dt_initial"] = dt_valid[0]
+        result["dt_mean"] = float(np.mean(dt_valid))
+        result["dt_std"] = float(np.std(dt_valid))
+        result["dt_final"] = dt_valid[-1]
+        result["dt_min_used"] = float(np.min(dt_valid))
+        result["dt_max_used"] = float(np.max(dt_valid))
+    else:
+        result["dt_initial"] = None
+        result["dt_mean"] = None
+        result["dt_std"] = None
+        result["dt_final"] = None
+        result["dt_min_used"] = None
+        result["dt_max_used"] = None
+
+    # Eigenvalue statistics
+    eig0 = trajectory.get("eig0", [])
+    eig0_valid = [e for e in eig0 if e is not None and np.isfinite(e)]
+    if eig0_valid:
+        result["eig0_mean"] = float(np.mean(eig0_valid))
+        result["eig0_std"] = float(np.std(eig0_valid))
+        result["eig0_initial"] = eig0_valid[0]
+        result["eig0_final"] = eig0_valid[-1]
+        # Count sign changes (oscillations)
+        signs = np.sign(eig0_valid)
+        result["eig0_oscillation_count"] = int(np.sum(np.abs(np.diff(signs)) > 0))
+    else:
+        result["eig0_mean"] = None
+        result["eig0_std"] = None
+        result["eig0_initial"] = None
+        result["eig0_final"] = None
+        result["eig0_oscillation_count"] = None
+
+    eig1 = trajectory.get("eig1", [])
+    eig1_valid = [e for e in eig1 if e is not None and np.isfinite(e)]
+    if eig1_valid:
+        result["eig1_mean"] = float(np.mean(eig1_valid))
+        result["eig1_std"] = float(np.std(eig1_valid))
+        result["eig1_initial"] = eig1_valid[0]
+        result["eig1_final"] = eig1_valid[-1]
+        signs = np.sign(eig1_valid)
+        result["eig1_oscillation_count"] = int(np.sum(np.abs(np.diff(signs)) > 0))
+    else:
+        result["eig1_mean"] = None
+        result["eig1_std"] = None
+        result["eig1_initial"] = None
+        result["eig1_final"] = None
+        result["eig1_oscillation_count"] = None
+
+    # neg_vib statistics (saddle index)
+    neg_vib = trajectory.get("neg_vib", [])
+    neg_vib_valid = [n for n in neg_vib if n is not None and n >= 0]
+    if neg_vib_valid:
+        result["neg_vib_mean"] = float(np.mean(neg_vib_valid))
+        result["neg_vib_std"] = float(np.std(neg_vib_valid))
+        result["neg_vib_initial"] = neg_vib_valid[0]
+        result["neg_vib_final"] = neg_vib_valid[-1]
+        result["neg_vib_max"] = int(np.max(neg_vib_valid))
+        result["neg_vib_min"] = int(np.min(neg_vib_valid))
+        # Count changes in neg_vib
+        result["neg_vib_oscillation_count"] = int(np.sum(np.abs(np.diff(neg_vib_valid)) > 0))
+    else:
+        result["neg_vib_mean"] = None
+        result["neg_vib_std"] = None
+        result["neg_vib_initial"] = None
+        result["neg_vib_final"] = None
+        result["neg_vib_max"] = None
+        result["neg_vib_min"] = None
+        result["neg_vib_oscillation_count"] = None
+
+    # Displacement statistics
+    disp = trajectory.get("disp_from_last", [])
+    disp_valid = [d for d in disp if d is not None and np.isfinite(d) and d > 0]
+    if disp_valid:
+        result["disp_mean"] = float(np.mean(disp_valid))
+        result["disp_std"] = float(np.std(disp_valid))
+        result["disp_initial"] = disp_valid[0] if disp_valid else None
+        result["disp_final"] = disp_valid[-1] if disp_valid else None
+    else:
+        result["disp_mean"] = None
+        result["disp_std"] = None
+        result["disp_initial"] = None
+        result["disp_final"] = None
+
+    # GAD norm statistics
+    gad_norm = trajectory.get("gad_norm", [])
+    gad_valid = [g for g in gad_norm if g is not None and np.isfinite(g)]
+    if gad_valid:
+        result["gad_norm_mean"] = float(np.mean(gad_valid))
+        result["gad_norm_std"] = float(np.std(gad_valid))
+        result["gad_norm_initial"] = gad_valid[0]
+        result["gad_norm_final"] = gad_valid[-1]
+    else:
+        result["gad_norm_mean"] = None
+        result["gad_norm_std"] = None
+        result["gad_norm_initial"] = None
+        result["gad_norm_final"] = None
+
+    # Mode overlap statistics (tracking stability)
+    mode_overlap = trajectory.get("mode_overlap", [])
+    overlap_valid = [o for o in mode_overlap if o is not None and np.isfinite(o)]
+    if overlap_valid:
+        result["mode_overlap_mean"] = float(np.mean(overlap_valid))
+        result["mode_overlap_min"] = float(np.min(overlap_valid))
+        # Low overlap indicates mode switching
+        result["low_overlap_count"] = int(np.sum(np.array(overlap_valid) < 0.9))
+    else:
+        result["mode_overlap_mean"] = None
+        result["mode_overlap_min"] = None
+        result["low_overlap_count"] = None
+
+    return result
+
+
+def compute_convergence_summary(all_metrics: Dict[str, list], n_steps_max: int) -> Dict[str, Any]:
+    """Compute summary statistics for convergence analysis across all samples.
+
+    This provides aggregate statistics useful for understanding convergence patterns:
+    - Total converged/not converged counts and rates
+    - Distribution statistics for steps_to_converge
+    - Comparison of metrics between converged and non-converged samples
+    """
+    steps_to_converge = all_metrics.get("steps_to_converge", [])
+    converged_flags = all_metrics.get("converged", [])
+
+    if not steps_to_converge:
+        return {}
+
+    n_total = len(steps_to_converge)
+    n_converged = sum(1 for c in converged_flags if c)
+    n_not_converged = n_total - n_converged
+
+    summary: Dict[str, Any] = {
+        "n_total_samples": n_total,
+        "n_converged": n_converged,
+        "n_not_converged": n_not_converged,
+        "convergence_rate": n_converged / n_total if n_total > 0 else 0.0,
+    }
+
+    # Steps to converge distribution (including non-converged as n_steps_max)
+    steps_arr = np.array(steps_to_converge)
+    summary["steps_to_converge_mean"] = float(np.mean(steps_arr))
+    summary["steps_to_converge_std"] = float(np.std(steps_arr))
+    summary["steps_to_converge_median"] = float(np.median(steps_arr))
+    summary["steps_to_converge_min"] = float(np.min(steps_arr))
+    summary["steps_to_converge_max"] = float(np.max(steps_arr))
+
+    # Percentiles
+    for p in [25, 50, 75, 90, 95, 99]:
+        summary[f"steps_to_converge_p{p}"] = float(np.percentile(steps_arr, p))
+
+    # Compare characteristics between converged and non-converged
+    # Helper to get mean for converged/non-converged
+    def compare_metric(key: str) -> tuple:
+        vals = all_metrics.get(key, [])
+        if len(vals) != len(converged_flags):
+            return None, None
+        conv_vals = [v for v, c in zip(vals, converged_flags) if c and v is not None]
+        nonconv_vals = [v for v, c in zip(vals, converged_flags) if not c and v is not None]
+        conv_mean = float(np.mean(conv_vals)) if conv_vals else None
+        nonconv_mean = float(np.mean(nonconv_vals)) if nonconv_vals else None
+        return conv_mean, nonconv_mean
+
+    # Key metrics to compare
+    for key in [
+        "dt_initial", "dt_mean", "dt_std",
+        "eig0_oscillation_count", "eig1_oscillation_count",
+        "neg_vib_oscillation_count", "neg_vib_initial", "neg_vib_mean", "neg_vib_max",
+        "disp_mean", "gad_norm_mean",
+        "mode_overlap_mean", "mode_overlap_min", "low_overlap_count",
+    ]:
+        conv_mean, nonconv_mean = compare_metric(key)
+        if conv_mean is not None:
+            summary[f"{key}_converged_mean"] = conv_mean
+        if nonconv_mean is not None:
+            summary[f"{key}_nonconverged_mean"] = nonconv_mean
+
+    return summary
+
+
 def _max_atom_norm(x: torch.Tensor) -> float:
     if x.dim() == 3 and x.shape[0] == 1:
         x = x[0]
@@ -1316,6 +1529,13 @@ def main(
         # Save trajectory JSON with escape events
         _save_trajectory_json(logger, result, out_dict["trajectory"], aux.get("escape_events", []))
 
+        # Compute convergence diagnostics for this sample
+        conv_diag = compute_convergence_diagnostics(
+            out_dict["trajectory"],
+            aux.get("steps_to_ts"),
+            int(args.n_steps),
+        )
+
         metrics = {
             "steps_taken": result.steps_taken,
             "steps_to_ts": result.steps_to_ts,
@@ -1325,6 +1545,28 @@ def main(
             "final_neg_vibrational": result.final_neg_vibrational,
             "wallclock_s": result.final_time,
             "escape_cycles_used": aux.get("escape_cycles_used"),
+            # Convergence diagnostics
+            "converged": conv_diag["converged"],
+            "steps_to_converge": conv_diag["steps_to_converge"],
+            "dt_initial": conv_diag.get("dt_initial"),
+            "dt_mean": conv_diag.get("dt_mean"),
+            "dt_std": conv_diag.get("dt_std"),
+            "dt_min_used": conv_diag.get("dt_min_used"),
+            "dt_max_used": conv_diag.get("dt_max_used"),
+            "eig0_mean": conv_diag.get("eig0_mean"),
+            "eig0_std": conv_diag.get("eig0_std"),
+            "eig0_oscillation_count": conv_diag.get("eig0_oscillation_count"),
+            "eig1_oscillation_count": conv_diag.get("eig1_oscillation_count"),
+            "neg_vib_mean": conv_diag.get("neg_vib_mean"),
+            "neg_vib_std": conv_diag.get("neg_vib_std"),
+            "neg_vib_oscillation_count": conv_diag.get("neg_vib_oscillation_count"),
+            "neg_vib_initial": conv_diag.get("neg_vib_initial"),
+            "neg_vib_max": conv_diag.get("neg_vib_max"),
+            "disp_mean": conv_diag.get("disp_mean"),
+            "gad_norm_mean": conv_diag.get("gad_norm_mean"),
+            "mode_overlap_mean": conv_diag.get("mode_overlap_mean"),
+            "mode_overlap_min": conv_diag.get("mode_overlap_min"),
+            "low_overlap_count": conv_diag.get("low_overlap_count"),
         }
 
         for k, v in metrics.items():
@@ -1338,8 +1580,88 @@ def main(
     summary = logger.compute_aggregate_stats()
     logger.print_summary()
 
+    # Compute convergence summary statistics
+    conv_summary = compute_convergence_summary(all_metrics, int(args.n_steps))
+
+    # Print convergence summary
+    if conv_summary:
+        print("\n" + "=" * 80)
+        print("CONVERGENCE STATISTICS")
+        print("=" * 80)
+        print(f"Total samples: {conv_summary.get('n_total_samples', 0)}")
+        print(f"Converged: {conv_summary.get('n_converged', 0)} ({conv_summary.get('convergence_rate', 0) * 100:.1f}%)")
+        print(f"Not converged: {conv_summary.get('n_not_converged', 0)}")
+        print(f"\nSteps to converge distribution:")
+        print(f"  Mean: {conv_summary.get('steps_to_converge_mean', 0):.1f}")
+        print(f"  Std: {conv_summary.get('steps_to_converge_std', 0):.1f}")
+        print(f"  Median: {conv_summary.get('steps_to_converge_median', 0):.1f}")
+        print(f"  P25: {conv_summary.get('steps_to_converge_p25', 0):.1f}")
+        print(f"  P75: {conv_summary.get('steps_to_converge_p75', 0):.1f}")
+        print(f"  P90: {conv_summary.get('steps_to_converge_p90', 0):.1f}")
+        print(f"  P95: {conv_summary.get('steps_to_converge_p95', 0):.1f}")
+        print(f"  Min: {conv_summary.get('steps_to_converge_min', 0):.1f}")
+        print(f"  Max: {conv_summary.get('steps_to_converge_max', 0):.1f}")
+
+        # Print comparison between converged and non-converged
+        print("\nConverged vs Non-converged comparison (mean values):")
+        compare_keys = [
+            ("dt_initial", "Initial dt"),
+            ("dt_mean", "Mean dt"),
+            ("eig0_oscillation_count", "Eig0 oscillations"),
+            ("neg_vib_oscillation_count", "Neg vib oscillations"),
+            ("neg_vib_initial", "Initial neg vib"),
+            ("neg_vib_max", "Max neg vib"),
+            ("mode_overlap_mean", "Mode overlap (mean)"),
+            ("low_overlap_count", "Low overlap count"),
+        ]
+        for key, label in compare_keys:
+            conv_val = conv_summary.get(f"{key}_converged_mean")
+            nonconv_val = conv_summary.get(f"{key}_nonconverged_mean")
+            if conv_val is not None or nonconv_val is not None:
+                conv_str = f"{conv_val:.4f}" if conv_val is not None else "N/A"
+                nonconv_str = f"{nonconv_val:.4f}" if nonconv_val is not None else "N/A"
+                print(f"  {label}: converged={conv_str}, non-converged={nonconv_str}")
+
+        print("=" * 80)
+
     if args.wandb:
+        # Merge convergence summary into main summary
+        summary.update(conv_summary)
         log_summary(summary)
+
+        # Log histogram of steps to converge
+        try:
+            import wandb as wb
+            steps_data = all_metrics.get("steps_to_converge", [])
+            if steps_data:
+                # Log as histogram
+                wb.log({"convergence/steps_to_converge_histogram": wb.Histogram(steps_data)})
+
+                # Also log a table with all convergence diagnostics for detailed analysis
+                table_data = []
+                n_samples = len(steps_data)
+                for idx in range(n_samples):
+                    row = {
+                        "sample_index": idx,
+                        "converged": all_metrics.get("converged", [False] * n_samples)[idx] if idx < len(all_metrics.get("converged", [])) else None,
+                        "steps_to_converge": steps_data[idx],
+                        "dt_initial": all_metrics.get("dt_initial", [None] * n_samples)[idx] if idx < len(all_metrics.get("dt_initial", [])) else None,
+                        "dt_mean": all_metrics.get("dt_mean", [None] * n_samples)[idx] if idx < len(all_metrics.get("dt_mean", [])) else None,
+                        "eig0_oscillation_count": all_metrics.get("eig0_oscillation_count", [None] * n_samples)[idx] if idx < len(all_metrics.get("eig0_oscillation_count", [])) else None,
+                        "neg_vib_oscillation_count": all_metrics.get("neg_vib_oscillation_count", [None] * n_samples)[idx] if idx < len(all_metrics.get("neg_vib_oscillation_count", [])) else None,
+                        "neg_vib_initial": all_metrics.get("neg_vib_initial", [None] * n_samples)[idx] if idx < len(all_metrics.get("neg_vib_initial", [])) else None,
+                        "neg_vib_max": all_metrics.get("neg_vib_max", [None] * n_samples)[idx] if idx < len(all_metrics.get("neg_vib_max", [])) else None,
+                        "mode_overlap_mean": all_metrics.get("mode_overlap_mean", [None] * n_samples)[idx] if idx < len(all_metrics.get("mode_overlap_mean", [])) else None,
+                        "low_overlap_count": all_metrics.get("low_overlap_count", [None] * n_samples)[idx] if idx < len(all_metrics.get("low_overlap_count", [])) else None,
+                    }
+                    table_data.append(row)
+
+                columns = list(table_data[0].keys()) if table_data else []
+                table = wb.Table(columns=columns, data=[[row.get(c) for c in columns] for row in table_data])
+                wb.log({"convergence/diagnostics_table": table})
+        except Exception as e:
+            print(f"[WARN] Failed to log convergence histogram/table: {e}")
+
         finish_wandb()
 
     print(f"Saved results: {all_runs_path}")
