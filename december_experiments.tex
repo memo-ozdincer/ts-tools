@@ -1,0 +1,827 @@
+\documentclass[12pt]{article}
+
+% ============================================
+% FONTS: Helvetica
+% ============================================
+\usepackage[scaled]{helvet}
+\renewcommand{\familydefault}{\sfdefault}
+\usepackage[T1]{fontenc}
+
+% ============================================
+% PAGE LAYOUT: Big margins for slides
+% ============================================
+\usepackage[margin=1in]{geometry}
+\usepackage{parskip}
+\setlength{\parindent}{0pt}
+
+% ============================================
+% PACKAGES
+% ============================================
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{multicol}
+\usepackage{paracol}
+\usepackage{tcolorbox}
+\usepackage{enumitem}
+\usepackage{fancyhdr}
+\usepackage{sectsty}
+
+% ============================================
+% COLORS
+% ============================================
+\definecolor{scineblue}{RGB}{30, 90, 180}
+\definecolor{hiporange}{RGB}{220, 120, 30}
+\definecolor{codebg}{RGB}{245, 245, 245}
+\definecolor{successgreen}{RGB}{40, 160, 80}
+\definecolor{darkgray}{RGB}{60, 60, 60}
+
+% ============================================
+% BIGGER TEXT FOR SLIDES
+% ============================================
+\sectionfont{\LARGE\bfseries}
+\subsectionfont{\Large\bfseries}
+\subsubsectionfont{\large\bfseries}
+
+% ============================================
+% CODE LISTINGS
+% ============================================
+\lstset{
+    language=Python,
+    basicstyle=\small\ttfamily,
+    backgroundcolor=\color{codebg},
+    frame=single,
+    framerule=0pt,
+    breaklines=true,
+    breakatwhitespace=true,
+    columns=flexible,
+    keepspaces=true,
+    showstringspaces=false,
+    keywordstyle=\color{blue}\bfseries,
+    commentstyle=\color{gray}\itshape,
+    stringstyle=\color{red!70!black},
+    numbers=left,
+    numberstyle=\tiny\color{gray},
+    numbersep=8pt,
+    xleftmargin=15pt,
+    tabsize=4
+}
+
+% ============================================
+% CUSTOM BOXES
+% ============================================
+\newtcolorbox{resultbox}[1][]{
+    colback=codebg,
+    colframe=darkgray,
+    fonttitle=\bfseries\large,
+    boxrule=1pt,
+    arc=3pt,
+    left=10pt,
+    right=10pt,
+    top=8pt,
+    bottom=8pt,
+    #1
+}
+
+\newtcolorbox{scinebox}[1][]{
+    colback=scineblue!8,
+    colframe=scineblue,
+    fonttitle=\bfseries\large,
+    title=SCINE Results,
+    boxrule=1.5pt,
+    arc=4pt,
+    #1
+}
+
+\newtcolorbox{hipbox}[1][]{
+    colback=hiporange!8,
+    colframe=hiporange,
+    fonttitle=\bfseries\large,
+    title=HIP Results,
+    boxrule=1.5pt,
+    arc=4pt,
+    #1
+}
+
+\newtcolorbox{keyinsight}[1][]{
+    colback=successgreen!10,
+    colframe=successgreen,
+    fonttitle=\bfseries,
+    title=Key Insight,
+    boxrule=1.5pt,
+    arc=4pt,
+    #1
+}
+
+% ============================================
+% DOCUMENT
+% ============================================
+\begin{document}
+
+% ============================================
+% TITLE
+% ============================================
+\begin{center}
+{\fontsize{28}{34}\selectfont\bfseries December Experiments}
+
+\vspace{0.5cm}
+{\Large GAD Algorithm Improvements for Transition State Search}
+
+\vspace{0.3cm}
+{\large From Noisy Geometries to Reliable Convergence}
+\end{center}
+
+\vspace{1cm}
+
+% ============================================
+% TABLE OF CONTENTS (visual)
+% ============================================
+\begin{tcolorbox}[colback=gray!5, colframe=gray!50, title=\textbf{\Large Overview}]
+\large
+\begin{enumerate}[leftmargin=*, itemsep=6pt]
+    \item \textbf{New Forcefield Calculator} (SCINE DFB0)
+    \item \textbf{L-BFGS Energy Minimizer} --- Reduce saddle order first
+    \item \textbf{Plateau Detection (Kicking)} --- Adaptive step sizes
+    \item \textbf{Higher-Order GAD} --- Multi-mode escape
+    \item \textbf{Mode Tracking + Trust Radius} --- Final solution (92\% / 71\%)
+\end{enumerate}
+\end{tcolorbox}
+
+\newpage
+
+% ============================================
+% SECTION 1: NEW FORCEFIELD
+% ============================================
+\section{New Forcefield Calculator (SCINE DFB0)}
+
+\subsection{HIP vs SCINE: Eigenvalue Disagreement}
+
+\begin{keyinsight}
+HIP and SCINE forcefields disagree significantly on the number of negative eigenvalues, especially for reactant geometries.
+\end{keyinsight}
+
+\vspace{0.5cm}
+
+\begin{table}[h]
+\centering
+\Large
+\renewcommand{\arraystretch}{1.4}
+\begin{tabular}{@{}lccc@{}}
+\toprule
+\textbf{Geometry} & \textbf{HIP Mean} & \textbf{SCINE Mean} & \textbf{Agreement} \\
+\midrule
+midpoint\_rt & 3.55 & 4.84 & 23 (23.0\%) \\
+reactant & 0.00 & 1.80 & 5 (5.0\%) \\
+product & 0.10 & 2.18 & 10 (10.0\%) \\
+midpoint\_rt\_noise1A & 9.55 & 11.36 & 11 (11.0\%) \\
+midpoint\_rt\_noise2A & 13.42 & 10.07 & 10 (10.0\%) \\
+\bottomrule
+\end{tabular}
+\caption{Mean negative eigenvalues by geometry and calculator ($n = 100$)}
+\end{table}
+
+\vspace{0.5cm}
+
+\textbf{\large Key Observations:}
+\begin{itemize}[itemsep=8pt, leftmargin=*]
+    \item \textbf{95\% disagreement} on reactant geometries
+    \item SCINE only sees 5\% of reactants that HIP sees
+    \item \textbf{Fix:} Apply climbing algorithm when minima detected
+\end{itemize}
+
+\newpage
+
+% ============================================
+% SECTION 2: PURE GAD BASELINE
+% ============================================
+\section{Pure GAD: The Baseline}
+
+\begin{keyinsight}
+Pure GAD achieves \textbf{100\% convergence on non-minima} samples. The challenge is making it work on noisy geometries with many negative eigenvalues.
+\end{keyinsight}
+
+\vspace{0.5cm}
+
+\begin{resultbox}[title=\textbf{Overall Statistics (Pure GAD on TS geometries)}]
+\ttfamily\large
+\begin{tabular}{@{}ll@{}}
+$\lambda_0$: & $-0.074139 \pm 0.079542$ eV/\AA$^2$ \\
+$\lambda_1$: & $0.044880 \pm 0.062035$ eV/\AA$^2$ \\
+$\lambda_0 \cdot \lambda_1$: & $-5.443389\text{e-}03 \pm 7.901079\text{e-}03$ \\
+Steps taken: & $18.2 \pm 28.8$ \\
+Steps to TS: & $18.2 \pm 28.8$ \\
+Final time: & $0.132 \pm 0.182$ s \\
+\end{tabular}
+\end{resultbox}
+
+\vspace{0.5cm}
+
+\begin{resultbox}[title=\textbf{Transition Distribution}]
+\ttfamily\large
+\begin{tabular}{@{}ll@{}}
+0neg-to-1neg: & 5 samples \\
+1neg-to-1neg: & 11 samples \\
+2neg-to-1neg: & 14 samples \\
+\end{tabular}
+\end{resultbox}
+
+\vspace{0.5cm}
+
+\textbf{\large Limitations:}
+\begin{itemize}[itemsep=6pt]
+    \item Doesn't converge on minima (easy fix: just kick)
+    \item Struggles with high-index saddle points (many negative eigenvalues)
+\end{itemize}
+
+\newpage
+
+% ============================================
+% SECTION 3: L-BFGS
+% ============================================
+\section{L-BFGS Energy Minimizer}
+
+\begin{keyinsight}
+\textbf{Idea:} Since GAD converges 100\% from non-minima, first reduce the saddle order using L-BFGS energy minimization, then apply GAD.
+\end{keyinsight}
+
+\subsection{The Algorithm}
+
+\begin{enumerate}[itemsep=8pt, leftmargin=*]
+    \item Project forces into vibrational subspace (mass-weighted Eckart projection)
+    \item Use projected forces as gradients for L-BFGS
+    \item Check eigenvalue count periodically
+    \item Stop when target saddle order reached (e.g., 1 negative eigenvalue)
+\end{enumerate}
+
+\vspace{0.5cm}
+
+% Side by side results
+\begin{paracol}{2}
+\begin{scinebox}
+\textbf{\large 10/100 Convergence}
+
+\vspace{0.3cm}
+\begin{itemize}[itemsep=4pt, leftmargin=*]
+    \item Pretty good reduction of order
+    \item 2.5s--10s per sample
+    \item Good reduction if starting above 10 eigenvalues
+    \item Many plateau at $\sim$8 negative eigenvalues
+\end{itemize}
+\end{scinebox}
+
+\switchcolumn
+
+\begin{hipbox}
+\textbf{\large 0/100 Convergence}
+
+\vspace{0.3cm}
+\begin{itemize}[itemsep=4pt, leftmargin=*]
+    \item Number of neg-eigs plateau
+    \item Energy changes become negligible
+    \item Really good reduction of order
+    \item 0.8s--4.5s per sample
+\end{itemize}
+\end{hipbox}
+\end{paracol}
+
+\vspace{0.5cm}
+
+\textbf{\large Conclusion:} L-BFGS alone is insufficient. Need a more elegant approach.
+
+\newpage
+
+% ============================================
+% L-BFGS CODE
+% ============================================
+\subsection{Code: L-BFGS Energy Minimizer}
+
+\begin{lstlisting}
+class LBFGSEnergyMinimizer:
+    """Energy minimizer using SciPy L-BFGS-B with vibrational projection."""
+
+    def __init__(self, predict_fn, atomic_nums, *,
+                 target_neg_eig_count=1, max_iterations=200):
+        self.predict_fn = predict_fn
+        self.atomic_nums = atomic_nums
+        self.target_neg_eig_count = target_neg_eig_count
+        self.max_iterations = max_iterations
+
+    def _project_forces(self, coords, forces_raw):
+        """Project forces into vibrational subspace (remove TR modes)."""
+        P_mw = self._build_vibrational_projector(coords)
+        f_mw = forces_raw / sqrt(masses)
+        f_mw_proj = P_mw @ f_mw
+        f_proj = f_mw_proj * sqrt(masses)
+        return f_proj
+
+    def _objective_and_grad(self, x_flat):
+        """Return (energy, projected_gradient) for L-BFGS."""
+        coords = x_flat.reshape(-1, 3)
+        out = self.predict_fn(coords, do_hessian=False)
+        forces_proj = self._project_forces(coords, out["forces"])
+        grad = -forces_proj.flatten()  # gradient = -force
+        return float(out["energy"]), grad
+
+    def _callback(self, xk):
+        """Check eigenvalues after each iteration."""
+        coords = xk.reshape(-1, 3)
+        out = self.predict_fn(coords, do_hessian=True)
+        vib_eigvals = vibrational_eigvals(out["hessian"], coords)
+        neg_count = (vib_eigvals < 0).sum()
+        if neg_count <= self.target_neg_eig_count:
+            raise EarlyStop()  # Target reached!
+
+    def minimize(self, initial_coords):
+        """Run L-BFGS minimization."""
+        result = scipy.optimize.minimize(
+            self._objective_and_grad,
+            x0=initial_coords.flatten(),
+            method="L-BFGS-B", jac=True,
+            callback=self._callback,
+            options={"maxiter": self.max_iterations}
+        )
+        return result.x.reshape(-1, 3)
+\end{lstlisting}
+
+\newpage
+
+% ============================================
+% SECTION 4: PLATEAU DETECTION
+% ============================================
+\section{Experiment 1: Plateau Detection (Kicking)}
+
+\begin{keyinsight}
+During GAD optimization, the algorithm can get ``stuck'' at high-index saddle points. \textbf{Solution:} Monitor negative eigenvalue count and adaptively adjust step size.
+\end{keyinsight}
+
+\subsection{The Algorithm}
+
+\begin{enumerate}[itemsep=8pt, leftmargin=*]
+    \item Track \texttt{best\_neg\_vib} (lowest saddle order seen)
+    \item \textbf{If improved:} Reset step size to base \texttt{dt}
+    \item \textbf{If worsened:} Shrink step size (more careful steps)
+    \item \textbf{If unchanged for \texttt{patience} steps:} Boost step size (kick!)
+    \item Enforce minimum step size floor (500 $\mu$\AA)
+\end{enumerate}
+
+\vspace{0.5cm}
+
+\textbf{\large Typical Failure Modes:}
+\begin{itemize}[itemsep=6pt]
+    \item Start at floor displacement, good movement until $\sim$600 steps, then oscillates ($\sim$7 neg)
+    \item Some graphs with ranges 12neg--4neg: Explodes at $\sim$1300 steps
+\end{itemize}
+
+\vspace{0.5cm}
+
+% Side by side results
+\begin{paracol}{2}
+\begin{scinebox}
+\textbf{\Huge 40\%} Convergence
+
+\vspace{0.3cm}
+\ttfamily
+\begin{tabular}{@{}ll@{}}
+$\lambda_0$: & $-3.49 \pm 3.19$ eV/\AA$^2$ \\
+$\lambda_1$: & $-0.21 \pm 0.38$ eV/\AA$^2$ \\
+Steps: & $1134.5 \pm 471.4$ \\
+Time: & $9.92 \pm 4.29$ s \\
+\end{tabular}
+\end{scinebox}
+
+\switchcolumn
+
+\begin{hipbox}
+\textbf{\Huge 40\%} Convergence
+
+\vspace{0.3cm}
+\ttfamily
+\begin{tabular}{@{}ll@{}}
+$\lambda_0$: & $-10.85 \pm 4.49$ eV/\AA$^2$ \\
+$\lambda_1$: & $-0.43 \pm 1.01$ eV/\AA$^2$ \\
+Steps: & $1092.0 \pm 516.8$ \\
+Time: & $75.70 \pm 35.91$ s \\
+\end{tabular}
+\end{hipbox}
+\end{paracol}
+
+\newpage
+
+% ============================================
+% PLATEAU CODE
+% ============================================
+\subsection{Code: Plateau Detection}
+
+\begin{lstlisting}
+def run_gad_with_plateau_detection(
+    predict_fn, coords, atomic_nums, *,
+    n_steps, dt, dt_min, dt_max,
+    plateau_patience=20,    # Steps before boosting
+    plateau_boost=1.5,      # Multiply dt when stuck
+    plateau_shrink=0.5,     # Multiply dt when regressing
+):
+    best_neg_vib = None
+    no_improve = 0
+    dt_eff = dt
+
+    for step in range(n_steps):
+        out = predict_fn(coords, do_hessian=True)
+        vib_eigvals = vibrational_eigvals(out["hessian"], coords)
+        neg_vib = (vib_eigvals < 0).sum()
+
+        # === PLATEAU DETECTION ===
+        if best_neg_vib is None:
+            best_neg_vib = neg_vib
+            no_improve = 0
+        else:
+            if neg_vib < best_neg_vib:
+                # Improvement! Reset to base step size
+                best_neg_vib = neg_vib
+                no_improve = 0
+                dt_eff = min(dt_eff, dt)
+            elif neg_vib > best_neg_vib:
+                # Regression - shrink step size
+                dt_eff = max(dt_eff * plateau_shrink, dt_min)
+                no_improve = 0
+            else:
+                no_improve += 1
+
+        # If stuck for too long, KICK (boost step size)
+        if no_improve >= plateau_patience:
+            dt_eff = min(dt_eff * plateau_boost, dt_max)
+            no_improve = 0
+
+        dt_eff = np.clip(dt_eff, dt_min, dt_max)
+
+        # Take GAD step
+        gad_vec = compute_gad_vector(out["forces"], out["hessian"])
+        coords = coords + dt_eff * gad_vec
+
+    return coords
+\end{lstlisting}
+
+\newpage
+
+% ============================================
+% SECTION 5: HIGHER-ORDER GAD
+% ============================================
+\section{Higher-Order GAD (Multi-Mode Escape)}
+
+\begin{keyinsight}
+The ``plateaus'' didn't make sense because the geometry was still unstable. \textbf{Discovery:} The eigenvalue being minimized was converging (force norm becoming tiny), but other negative modes remained.
+
+\textbf{Solution:} When stuck at a high-index saddle, perturb along $\mathbf{v}_2$ (second eigenvector) to escape, then resume GAD.
+\end{keyinsight}
+
+\subsection{The Algorithm}
+
+\begin{enumerate}[itemsep=8pt, leftmargin=*]
+    \item Run GAD until displacement becomes tiny (plateau detected)
+    \item \textbf{If converged to order-1 saddle:} SUCCESS!
+    \item \textbf{If stuck at order $> 1$:} Perturb along $\mathbf{v}_2$ (escape perturbation)
+    \item Resume GAD from perturbed geometry
+    \item Repeat until order-1 or max cycles reached
+\end{enumerate}
+
+\vspace{0.5cm}
+
+% Side by side results
+\begin{paracol}{2}
+\begin{scinebox}
+\textbf{\Huge 40\%} Convergence
+
+\vspace{0.3cm}
+Same as kicking---but \textbf{different failure mode}!
+
+\vspace{0.2cm}
+\textbf{Before:} Moving in wrong directions (naive)
+
+\textbf{Now:} 2--3 smallest eigenvalues oscillating with each other
+
+\vspace{0.3cm}
+\ttfamily
+\begin{tabular}{@{}ll@{}}
+$\lambda_0$: & $-5.60 \pm 9.81$ eV/\AA$^2$ \\
+$\lambda_1$: & $-0.25 \pm 0.52$ eV/\AA$^2$ \\
+Steps: & $365.7 \pm 82.3$ \\
+Time: & $2.84 \pm 0.55$ s \\
+\end{tabular}
+\end{scinebox}
+
+\switchcolumn
+
+\begin{hipbox}
+\textbf{\Huge 40\%} Convergence
+
+\vspace{0.3cm}
+Same comments as SCINE.
+
+\vspace{0.5cm}
+\textbf{HIP Errors observed:}
+\texttt{edge\_vec\_0\_distance} errors ($\sim 10^{-5}$)
+
+\vspace{0.3cm}
+\ttfamily
+\begin{tabular}{@{}ll@{}}
+$\lambda_0$: & $-4.02 \pm 4.18$ eV/\AA$^2$ \\
+$\lambda_1$: & $-0.71 \pm 1.20$ eV/\AA$^2$ \\
+Steps: & $344.1 \pm 175.6$ \\
+Time: & $24.19 \pm 12.30$ s \\
+\end{tabular}
+\end{hipbox}
+\end{paracol}
+
+\newpage
+
+% ============================================
+% HIGHER-ORDER GAD CODE
+% ============================================
+\subsection{Code: Multi-Mode Escape Perturbation}
+
+\begin{lstlisting}
+def perform_escape_perturbation(predict_fn, coords, hessian, *,
+                                 escape_delta=0.1):
+    """Perturb geometry along v2 to escape high-index saddle."""
+
+    # Get projected Hessian (Eckart + mass-weighted)
+    hess_proj = get_projected_hessian(hessian, coords)
+    evals, evecs = torch.linalg.eigh(hess_proj)
+
+    # Skip translation/rotation modes (near-zero eigenvalues)
+    vib_mask = torch.abs(evals) > 1e-6
+    vib_indices = torch.where(vib_mask)[0]
+
+    # Get second vibrational eigenvector (v2)
+    v2 = evecs[:, vib_indices[1]]
+    v2 = v2 / v2.norm()
+    lambda2 = evals[vib_indices[1]]
+
+    # Adaptive delta based on curvature
+    delta = escape_delta
+    if lambda2 < -0.01:
+        delta = escape_delta / sqrt(abs(lambda2))
+        delta = min(delta, 1.0)  # Cap at 1 Angstrom
+
+    # Try both directions, pick lower energy
+    coords_plus = coords + delta * v2.reshape(-1, 3)
+    coords_minus = coords - delta * v2.reshape(-1, 3)
+
+    E_plus = predict_fn(coords_plus)["energy"]
+    E_minus = predict_fn(coords_minus)["energy"]
+
+    return coords_plus if E_plus < E_minus else coords_minus
+\end{lstlisting}
+
+\newpage
+
+% ============================================
+% SECTION 6: MODE TRACKING + TRUST RADIUS
+% ============================================
+\section{Mode Tracking + Trust Radius}
+
+\begin{keyinsight}
+Two critical improvements that enable robust convergence:
+
+\textbf{1. Mode Tracking:} When eigenvalues are close or degenerate, eigenvector ordering can swap between steps, causing oscillations. Track the eigenvector with maximum overlap to previous step.
+
+\textbf{2. Trust Radius:} Limit maximum displacement per step to prevent ``explosions'' into unphysical regions.
+\end{keyinsight}
+
+\vspace{0.5cm}
+
+\textbf{\Large Combined Effect:}
+\begin{itemize}[itemsep=8pt]
+    \item \textbf{Mode tracking} eliminates oscillations from eigenvector reordering
+    \item \textbf{Trust radius} prevents geometry explosions after escape perturbations
+    \item Together: stable traversal through high-dimensional saddle landscape
+\end{itemize}
+
+\vspace{1cm}
+
+% Side by side results - THE BIG WIN
+\begin{paracol}{2}
+\begin{scinebox}
+{\fontsize{48}{52}\selectfont\bfseries\color{successgreen} 92\%}
+
+\vspace{0.3cm}
+\ttfamily\large
+\begin{tabular}{@{}ll@{}}
+$\lambda_0$: & $-4.02 \pm 5.77$ eV/\AA$^2$ \\
+$\lambda_1$: & $-0.006 \pm 0.07$ eV/\AA$^2$ \\
+Steps: & $3934.9 \pm 5032.0$ \\
+Time: & $35.67 \pm 45.53$ s \\
+\end{tabular}
+\end{scinebox}
+
+\switchcolumn
+
+\begin{hipbox}
+{\fontsize{48}{52}\selectfont\bfseries\color{successgreen} 71\%}
+
+\vspace{0.3cm}
+\ttfamily\large
+\begin{tabular}{@{}ll@{}}
+$\lambda_0$: & $-5.22 \pm 5.43$ eV/\AA$^2$ \\
+$\lambda_1$: & $-0.30 \pm 0.84$ eV/\AA$^2$ \\
+Steps: & $3858.8 \pm 5636.1$ \\
+Time: & $305.75 \pm 390.02$ s \\
+\end{tabular}
+\end{hipbox}
+\end{paracol}
+
+\newpage
+
+% ============================================
+% TRANSITION DISTRIBUTIONS
+% ============================================
+\subsection{Transition Distributions}
+
+\begin{paracol}{2}
+\begin{scinebox}[title=SCINE Transitions (92\%)]
+\ttfamily
+\begin{tabular}{@{}ll@{}}
+10neg-to-1neg: & 13 samples \\
+11neg-to-1neg: & 14 samples \\
+11neg-to-3neg: & 2 samples \\
+12neg-to-1neg: & 13 samples \\
+13neg-to-1neg: & 19 samples \\
+14neg-to-1neg: & 9 samples \\
+15neg-to-1neg: & 7 samples \\
+16neg-to-1neg: & 1 sample \\
+3neg-to-1neg: & 1 sample \\
+4neg-to-1neg: & 3 samples \\
+\end{tabular}
+\end{scinebox}
+
+\switchcolumn
+
+\begin{hipbox}[title=HIP Transitions (71\%)]
+\ttfamily
+\begin{tabular}{@{}ll@{}}
+10neg-to-1neg: & 17 samples \\
+11neg-to-1neg: & 12 samples \\
+12neg-to-1neg: & 12 samples \\
+13neg-to-1neg: & 2 samples \\
+9neg-to-1neg: & 10 samples \\
+8neg-to-1neg: & 5 samples \\
+7neg-to-1neg: & 2 samples \\
+6neg-to-1neg: & 2 samples \\
+5neg-to-1neg: & 2 samples \\
+4neg-to-1neg: & 2 samples \\
+\end{tabular}
+\end{hipbox}
+\end{paracol}
+
+\newpage
+
+% ============================================
+% MODE TRACKING CODE
+% ============================================
+\subsection{Code: Mode Tracking}
+
+\begin{lstlisting}
+def pick_tracked_mode(evecs, v_prev, *, k=8):
+    """Pick eigenmode with maximum overlap to previous direction.
+
+    Args:
+        evecs: Eigenvectors from eigh, shape (3N, 3N)
+        v_prev: Previous tracked mode (3N,) or None
+        k: Search among lowest k eigenvectors
+
+    Returns:
+        v: Selected eigenvector (3N,)
+        j: Index of selected mode (0 to k-1)
+        overlap: |dot(v_prev, v)| (1.0 if v_prev is None)
+    """
+    if v_prev is None:
+        v = evecs[:, 0]
+        return v / v.norm(), 0, 1.0
+
+    # Consider lowest k eigenvectors
+    V = evecs[:, :k]  # Shape: (3N, k)
+
+    # Compute overlaps with previous direction
+    overlaps = torch.abs(V.T @ v_prev)  # Shape: (k,)
+
+    # Pick mode with maximum overlap
+    j = torch.argmax(overlaps)
+    v = V[:, j]
+    overlap = overlaps[j]
+
+    # Sign continuity: ensure dot(v, v_prev) >= 0
+    if torch.dot(v, v_prev) < 0:
+        v = -v
+
+    return v / v.norm(), int(j), float(overlap)
+\end{lstlisting}
+
+\newpage
+
+% ============================================
+% TRUST RADIUS CODE
+% ============================================
+\subsection{Code: Trust Radius}
+
+\begin{lstlisting}
+def apply_trust_radius(gad_vec, dt, *, max_atom_disp=0.25):
+    """Limit step size so no atom moves more than max_atom_disp.
+
+    Args:
+        gad_vec: GAD direction (N, 3)
+        dt: Proposed step size
+        max_atom_disp: Maximum allowed displacement per atom (Angstrom)
+
+    Returns:
+        dt_safe: Adjusted step size that respects trust radius
+    """
+    step = dt * gad_vec
+    atom_displacements = step.norm(dim=1)  # Shape: (N,)
+    max_disp = atom_displacements.max()
+
+    if max_disp > max_atom_disp:
+        dt_safe = dt * (max_atom_disp / max_disp)
+    else:
+        dt_safe = dt
+
+    return dt_safe
+\end{lstlisting}
+
+\vspace{0.5cm}
+
+\subsection{Code: Full Robust GAD Step}
+
+\begin{lstlisting}
+def gad_step_robust(predict_fn, coords, atomic_nums, dt, v_prev, *,
+                    max_atom_disp=0.25, k_track=8):
+    """Single GAD step with mode tracking + trust radius."""
+
+    out = predict_fn(coords, do_hessian=True)
+
+    # 1. Compute GAD with mode tracking
+    gad_vec, v_next, info = compute_gad_vector_tracked(
+        out["forces"], out["hessian"], v_prev, k_track=k_track
+    )
+
+    # 2. Apply trust radius
+    dt_safe = apply_trust_radius(gad_vec, dt, max_atom_disp=max_atom_disp)
+
+    # 3. Take step
+    new_coords = coords + dt_safe * gad_vec
+
+    return new_coords, v_next, dt_safe, info
+\end{lstlisting}
+
+\newpage
+
+% ============================================
+% SUMMARY
+% ============================================
+\section{Summary: Method Comparison}
+
+\vspace{0.5cm}
+
+\begin{table}[h]
+\centering
+\Large
+\renewcommand{\arraystretch}{1.6}
+\begin{tabular}{@{}p{5.5cm}cc@{}}
+\toprule
+\textbf{Method} & \textbf{SCINE} & \textbf{HIP} \\
+\midrule
+Pure GAD (from TS geometry) & 100\% & $\sim$90\% \\
+\midrule
+L-BFGS Energy Minimizer & 10\% & 0\% \\
+\midrule
+Plateau Detection (Kicking) & 40\% & 40\% \\
+\midrule
+Higher-Order GAD ($\mathbf{v}_2$ escape) & 40\% & 40\% \\
+\midrule
+\textbf{+ Mode Tracking + Trust Radius} & \textbf{\color{successgreen}92\%} & \textbf{\color{successgreen}71\%} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\vspace{1cm}
+
+\begin{keyinsight}[title=\textbf{Key Takeaways}]
+\Large
+\begin{enumerate}[itemsep=12pt]
+    \item \textbf{Mode tracking} eliminates oscillations from eigenvector reordering
+    \item \textbf{Trust radius} prevents geometry explosions
+    \item The combination transforms 40\% $\rightarrow$ 92\% (SCINE) / 71\% (HIP)
+    \item Enables stable traversal through high-dimensional saddle landscape
+\end{enumerate}
+\end{keyinsight}
+
+\vspace{1cm}
+
+% Placeholder for graphs
+\begin{tcolorbox}[colback=gray!10, colframe=gray!50, title=\textbf{Graphs}]
+\centering
+\Large\itshape
+[Insert convergence plots, eigenvalue trajectories, and failure analysis graphs here]
+\end{tcolorbox}
+
+\end{document}

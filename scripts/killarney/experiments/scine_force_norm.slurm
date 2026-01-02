@@ -2,16 +2,16 @@
 #SBATCH -A aip-aspuru
 #SBATCH -D /project/6101772/memoozd/ts-tools
 #SBATCH --time=10:00:00
-#SBATCH --gres=gpu:l40s:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32GB
-#SBATCH --job-name=hip_multi_mode_1A
-#SBATCH --output=logs/hip_multi_mode_1A_%j.out
-#SBATCH --error=logs/hip_multi_mode_1A_%j.err
+#SBATCH --job-name=scine_force_norm_1A
+#SBATCH --output=logs/scine_force_norm_1A_%j.out
+#SBATCH --error=logs/scine_force_norm_1A_%j.err
+
 mkdir -p logs
 source .venv/bin/activate
 
-# Ensure CPU-side ops (PyG batch building, linear algebra on CPU, etc.) can actually use the allocated cores.
+# Ensure CPU-side ops can use the allocated cores.
 export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
 export OPENBLAS_NUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
 export MKL_NUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
@@ -19,7 +19,6 @@ export NUMEXPR_NUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
 export VECLIB_MAXIMUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
 
 H5_PATH="/project/6101772/memoozd/data/transition1x.h5"
-CKPT_PATH="/project/6101772/memoozd/models/hip_v2.ckpt"
 OUT_DIR="$HOME/scratch/ts-tools-output"
 
 # W&B setup
@@ -31,36 +30,33 @@ if [[ -z "${WANDB_API_KEY:-}" ]]; then
     exit 2
 fi
 
-export WANDB_RUN_GROUP="Experiment-multi-mode-hip-scine"
+export WANDB_RUN_GROUP="Experiment-force-norm-scine"
 
 echo `date`: Job $SLURM_JOB_ID is allocated resources.
-echo ">>> Running HIP multi-mode escape experiment..."
+echo ">>> Running SCINE force normalization experiment..."
 
 START_FROM="midpoint_rt_noise1.0A"
 NOISE_SEED=42
 
 # Experiment parameters
 N_STEPS=15000
-MAX_SAMPLES=15
+MAX_SAMPLES=100
 
-# Multi-mode escape parameters (displacement-based detection)
-# escape_disp_threshold: Mean displacement threshold (A) for plateau detection
-# escape_window: Number of recent steps to average for plateau detection
+# Force normalization parameters
+# force_norm_threshold: Force magnitude threshold (eV/A). Normalize when |f| < this AND λ₁*λ₂ > 0
+# escape_disp_threshold: Mean displacement threshold (A) for plateau detection (logging only)
+# escape_window: Number of recent steps for plateau detection
 # escape_neg_vib_std: Max std(neg_vib) over window (stable saddle index)
-# escape_delta: Base perturbation magnitude (Angstrom) along v2
-# adaptive_delta: Scale delta by 1/sqrt(|lambda2|) for stronger curvature
-# max_escape_cycles: Max attempts to escape high-index saddles
+FORCE_NORM_THRESHOLD=${FORCE_NORM_THRESHOLD:-1.0}
 ESCAPE_DISP_THRESHOLD=${ESCAPE_DISP_THRESHOLD:-5e-4}
 ESCAPE_WINDOW=${ESCAPE_WINDOW:-20}
 ESCAPE_NEG_VIB_STD=${ESCAPE_NEG_VIB_STD:-0.5}
-ESCAPE_DELTA=${ESCAPE_DELTA:-0.1}
-MIN_INTERATOMIC_DIST=${MIN_INTERATOMIC_DIST:-0.5}
-MAX_ESCAPE_CYCLES=${MAX_ESCAPE_CYCLES:-1000}
 
-WANDB_NAME="experiment | multi-mode | HIP | ${START_FROM} | seed${NOISE_SEED} | job${SLURM_JOB_ID}"
+WANDB_NAME="experiment | force-norm | SCINE | ${START_FROM} | fnorm${FORCE_NORM_THRESHOLD} | seed${NOISE_SEED} | job${SLURM_JOB_ID}"
 
-echo ">>> HIP Euler + multi-mode escape, start-from=$START_FROM, noise-seed=$NOISE_SEED"
-python -m src.experiments.hip_multi_mode \
+echo ">>> SCINE Euler + force normalization, start-from=$START_FROM, noise-seed=$NOISE_SEED"
+python -m src.experiments.multi_mode_force_norm \
+    --calculator scine \
     --method euler \
     --dt-control neg_eig_plateau \
     --plateau-patience 5 \
@@ -69,18 +65,11 @@ python -m src.experiments.hip_multi_mode \
     --dt-min 1e-6 \
     --dt-max 0.05 \
     --max-atom-disp 0.25 \
+    --force-norm-threshold "$FORCE_NORM_THRESHOLD" \
     --escape-disp-threshold "$ESCAPE_DISP_THRESHOLD" \
     --escape-window "$ESCAPE_WINDOW" \
-    --hip-vib-mode raw_tol \
-    --hip-rigid-tol 1e-6 \
-    --hip-eigh-device cpu \
     --escape-neg-vib-std "$ESCAPE_NEG_VIB_STD" \
-    --escape-delta "$ESCAPE_DELTA" \
-    --adaptive-delta \
-    --min-interatomic-dist "$MIN_INTERATOMIC_DIST" \
-    --max-escape-cycles "$MAX_ESCAPE_CYCLES" \
     --h5-path "$H5_PATH" \
-    --checkpoint-path "$CKPT_PATH" \
     --out-dir "$OUT_DIR" \
     --max-samples "$MAX_SAMPLES" \
     --n-steps "$N_STEPS" \
@@ -89,7 +78,7 @@ python -m src.experiments.hip_multi_mode \
     --stop-at-ts \
     --dt 0.001 \
     --wandb \
-    --wandb-project "experiment-multi-mode" \
+    --wandb-project "experiment-force-norm" \
     --wandb-name "$WANDB_NAME"
 
 echo "Job completed successfully."
