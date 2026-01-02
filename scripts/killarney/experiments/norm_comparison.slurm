@@ -71,6 +71,7 @@ python -m src.experiments.multi_mode_force_norm \
     --dt "$DT" \
     --wandb \
     --wandb-project "$WANDB_PROJECT" \
+    --wandb-entity "memo-ozdincer-university-of-toronto" \
     --wandb-name "HIP_norm-force_thresh${NORM_THRESHOLD}_dt${DT}"
 
 echo ">>> [1/2] Complete"
@@ -96,6 +97,7 @@ python -m src.experiments.multi_mode_force_norm \
     --dt "$DT" \
     --wandb \
     --wandb-project "$WANDB_PROJECT" \
+    --wandb-entity "memo-ozdincer-university-of-toronto" \
     --wandb-name "SCINE_norm-force_thresh${NORM_THRESHOLD}_dt${DT}"
 
 echo ">>> [2/2] Complete"
