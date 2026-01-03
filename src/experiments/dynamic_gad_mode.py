@@ -536,6 +536,7 @@ def main(
     parser.add_argument("--method", type=str, default="euler", choices=["euler"])
     parser.add_argument("--n-steps", type=int, default=15000)
     parser.add_argument("--dt", type=float, default=0.001)
+    parser.add_argument("--start-from", type=str, default="midpoint_rt")
     parser.add_argument("--stop-at-ts", action="store_true", default=True)
     parser.add_argument("--ts-eps", type=float, default=1e-5)
 
