@@ -684,10 +684,11 @@ def perform_escape_perturbation(
     delta_shrink_factor: float = 0.5,
     max_shrink_attempts: int = 5,
     scine_elements: Optional[list] = None,
+    escape_mode: int = 2,
 ) -> Tuple[torch.Tensor, Dict[str, Any]]:
-    """Perturb geometry along v2 (second-lowest VIBRATIONAL eigenvector) to escape high-index saddle.
+    """Perturb geometry along v_N (Nth-lowest VIBRATIONAL eigenvector) to escape high-index saddle.
 
-    Uses PROJECTED Hessian to find v2, skipping translation/rotation modes.
+    Uses PROJECTED Hessian to find the escape mode, skipping translation/rotation modes.
     Tries both +delta and -delta directions, picks the one with lower energy.
     Validates that new geometry doesn't have atoms too close together.
     If both directions create invalid geometries, tries progressively smaller deltas.
@@ -698,11 +699,12 @@ def perform_escape_perturbation(
         atomic_nums: Atomic numbers
         hessian: Raw Hessian matrix (will be projected internally)
         escape_delta: Base displacement magnitude in Angstrom
-        adaptive_delta: If True, scale delta by 1/sqrt(|lambda2|)
+        adaptive_delta: If True, scale delta by 1/sqrt(|lambda_escape|)
         min_interatomic_dist: Minimum allowed distance between atoms (A)
         delta_shrink_factor: Factor to reduce delta when geometry is invalid
         max_shrink_attempts: Max number of times to try smaller delta
         scine_elements: SCINE element types (if using SCINE calculator)
+        escape_mode: Which vibrational mode to use for escape (2=v2, 3=v3, etc.)
 
     Returns:
         new_coords: Perturbed coordinates (or original if all attempts fail)
@@ -719,32 +721,42 @@ def perform_escape_perturbation(
     # Get eigenvalues and eigenvectors from PROJECTED Hessian
     evals, evecs = torch.linalg.eigh(hess_proj)
 
-    # Skip near-zero TR modes and get second vibrational mode (v2)
+    # Skip near-zero TR modes and get the requested vibrational mode
     tr_threshold = 1e-6
     vib_mask = torch.abs(evals) > tr_threshold
     vib_indices = torch.where(vib_mask)[0]
 
-    if len(vib_indices) < 2:
-        # Not enough vibrational modes, fall back to second eigenvector
-        v2 = evecs[:, 1]
-        lambda2 = float(evals[1].item())
-    else:
-        # Second vibrational mode (skip TR modes)
-        second_vib_idx = vib_indices[1]
-        v2 = evecs[:, second_vib_idx]
-        lambda2 = float(evals[second_vib_idx].item())
+    # Mode index (0-indexed): escape_mode=2 -> index 1, escape_mode=3 -> index 2, etc.
+    mode_idx = escape_mode - 1
 
-    v2 = v2 / (v2.norm() + 1e-12)  # Normalize
+    if len(vib_indices) < escape_mode:
+        # Not enough vibrational modes, fall back to highest available
+        if len(vib_indices) > 0:
+            mode_idx = len(vib_indices) - 1
+            selected_vib_idx = vib_indices[mode_idx]
+            v_escape = evecs[:, selected_vib_idx]
+            lambda_escape = float(evals[selected_vib_idx].item())
+        else:
+            # No vibrational modes, use raw eigenvector
+            v_escape = evecs[:, min(escape_mode - 1, evecs.shape[1] - 1)]
+            lambda_escape = float(evals[min(escape_mode - 1, len(evals) - 1)].item())
+    else:
+        # Use the requested vibrational mode
+        selected_vib_idx = vib_indices[mode_idx]
+        v_escape = evecs[:, selected_vib_idx]
+        lambda_escape = float(evals[selected_vib_idx].item())
+
+    v_escape = v_escape / (v_escape.norm() + 1e-12)  # Normalize
 
     # Adaptive delta scaling based on curvature
     base_delta = float(escape_delta)
-    if adaptive_delta and lambda2 < -0.01:
+    if adaptive_delta and lambda_escape < -0.01:
         # Scale larger for strong negative curvature
-        base_delta = float(escape_delta) / np.sqrt(abs(lambda2))
+        base_delta = float(escape_delta) / np.sqrt(abs(lambda_escape))
         base_delta = min(base_delta, 1.0)  # Cap at 1 Angstrom
 
-    # Reshape v2 to (N, 3)
-    v2_3d = v2.reshape(num_atoms, 3)
+    # Reshape to (N, 3)
+    v_escape_3d = v_escape.reshape(num_atoms, 3)
 
     # Get current energy once
     E_current = _to_float(predict_fn(coords, atomic_nums, do_hessian=False, require_grad=False)["energy"])
@@ -753,8 +765,8 @@ def perform_escape_perturbation(
     delta = base_delta
     for shrink_attempt in range(max_shrink_attempts + 1):
         # Try both directions
-        coords_plus = coords + delta * v2_3d
-        coords_minus = coords - delta * v2_3d
+        coords_plus = coords + delta * v_escape_3d
+        coords_minus = coords - delta * v_escape_3d
 
         plus_valid = _geometry_is_valid(coords_plus, min_interatomic_dist)
         minus_valid = _geometry_is_valid(coords_minus, min_interatomic_dist)
@@ -790,7 +802,7 @@ def perform_escape_perturbation(
             candidates.sort(key=lambda x: x[2])
             new_coords, direction, energy_after = candidates[0]
 
-            disp_per_atom = float(v2_3d.norm(dim=1).mean().item()) * delta
+            disp_per_atom = float(v_escape_3d.norm(dim=1).mean().item()) * delta
             min_dist_after = _min_interatomic_distance(new_coords)
 
             info = {
@@ -798,7 +810,8 @@ def perform_escape_perturbation(
                 "delta_base": base_delta,
                 "shrink_attempts": shrink_attempt,
                 "direction": direction,
-                "lambda2": lambda2,
+                "lambda_escape": lambda_escape,
+                "escape_mode": escape_mode,
                 "energy_before": E_current,
                 "energy_after": energy_after,
                 "energy_change": energy_after - E_current,
@@ -818,7 +831,8 @@ def perform_escape_perturbation(
         "delta_base": base_delta,
         "shrink_attempts": max_shrink_attempts + 1,
         "direction": 0,
-        "lambda2": lambda2,
+        "lambda_escape": lambda_escape,
+        "escape_mode": escape_mode,
         "energy_before": E_current,
         "energy_after": E_current,
         "energy_change": 0.0,
@@ -862,6 +876,35 @@ def _check_plateau_convergence(
     )
 
 
+def _check_mode_exhausted(
+    post_kick_disp_history: list[float],
+    post_kick_neg_vib_history: list[int],
+    *,
+    window: int,
+    disp_threshold: float,
+    neg_vib_std_threshold: float,
+) -> bool:
+    """Check if current escape mode is exhausted (kicks no longer effective).
+
+    Uses same criteria as v1 plateau detection:
+    1. Recent post-kick displacements are tiny (mean < threshold)
+    2. neg_vib is stable/not changing (std <= threshold)
+
+    NOTE: Progress check (neg_vib still decreasing) is done BEFORE calling this function.
+    This function only checks the plateau conditions.
+    """
+    if len(post_kick_disp_history) < window:
+        return False
+
+    recent_disp = post_kick_disp_history[-window:]
+    recent_neg_vib = post_kick_neg_vib_history[-window:]
+
+    mean_disp = float(np.mean(recent_disp))
+    std_neg_vib = float(np.std(recent_neg_vib))
+
+    return mean_disp < disp_threshold and std_neg_vib <= neg_vib_std_threshold
+
+
 def run_multi_mode_escape(
     predict_fn,
     coords0: torch.Tensor,
@@ -889,6 +932,7 @@ def run_multi_mode_escape(
     adaptive_delta: bool,
     min_interatomic_dist: float,
     max_escape_cycles: int,
+    max_escape_mode: int = 6,
     profile_every: int = 0,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """Run GAD with multi-mode escape mechanism.
@@ -900,8 +944,9 @@ def run_multi_mode_escape(
     The algorithm:
     1. Run GAD, accumulating displacement history
     2. Check for plateau: tiny displacements + stable neg_vib + index > 1
-    3. If plateau at index > 1: perturb along v2 and restart GAD
-    4. Repeat until index = 1 or max_escape_cycles reached
+    3. If plateau at index > 1: perturb along current escape mode (v2, v3, etc.) and restart GAD
+    4. If escape mode becomes ineffective (no progress), escalate to next mode
+    5. Repeat until index = 1 or max_escape_cycles reached
     """
     coords = coords0.detach().clone().to(torch.float32)
 
@@ -930,6 +975,13 @@ def run_multi_mode_escape(
     # Rolling history for displacement-based plateau detection
     disp_history: list[float] = []
     neg_vib_history: list[int] = []
+
+    # Mode escalation state for v3+ fallback kicks
+    current_escape_mode = 2  # Start with v2
+    post_kick_disp_history: list[float] = []  # Displacement AFTER kicks
+    post_kick_neg_vib_history: list[int] = []  # neg_vib AFTER kicks
+    best_neg_vib_since_kick: Optional[int] = None  # Track best neg_vib since last kick
+    mode_escalation_count = 0  # How many times we've escalated modes
 
     # Stateful dt controller variables
     dt_eff_state = float(dt)
@@ -1018,6 +1070,37 @@ def run_multi_mode_escape(
 
         trajectory.setdefault("mode_overlap", []).append(float(mode_overlap))
         trajectory.setdefault("mode_index", []).append(int(mode_index))
+        trajectory.setdefault("escape_mode", []).append(current_escape_mode)
+
+        # Track post-kick state for mode exhaustion detection
+        post_kick_disp_history.append(disp_from_last)
+        post_kick_neg_vib_history.append(neg_vib)
+
+        # Track if we're still making progress (neg_vib decreasing since last kick)
+        if best_neg_vib_since_kick is None:
+            best_neg_vib_since_kick = neg_vib
+        elif neg_vib < best_neg_vib_since_kick:
+            best_neg_vib_since_kick = neg_vib  # Progress! Current mode is working
+
+        # Check if current escape mode is exhausted (ONLY if we're NOT making progress)
+        still_making_progress = (neg_vib < best_neg_vib_since_kick) if best_neg_vib_since_kick is not None else False
+
+        if len(post_kick_disp_history) >= escape_window and not still_making_progress:
+            mode_exhausted = _check_mode_exhausted(
+                post_kick_disp_history,
+                post_kick_neg_vib_history,
+                window=escape_window,
+                disp_threshold=escape_disp_threshold,
+                neg_vib_std_threshold=escape_neg_vib_std,
+            )
+
+            if mode_exhausted and current_escape_mode < max_escape_mode:
+                # Escalate to next mode
+                current_escape_mode += 1
+                post_kick_disp_history.clear()
+                post_kick_neg_vib_history.clear()
+                best_neg_vib_since_kick = None  # Reset progress tracking for new mode
+                mode_escalation_count += 1
 
         # Check for TS (index = 1)
         if stop_at_ts and steps_to_ts is None and np.isfinite(eig_prod) and eig_prod < -abs(ts_eps):
@@ -1036,7 +1119,7 @@ def run_multi_mode_escape(
         )
 
         if is_plateau:
-            # Converged to high-index saddle, perform escape
+            # Converged to high-index saddle, perform escape using current mode
             trajectory["dt_eff"].append(float("nan"))
 
             new_coords, escape_info = perform_escape_perturbation(
@@ -1048,6 +1131,7 @@ def run_multi_mode_escape(
                 adaptive_delta=adaptive_delta,
                 min_interatomic_dist=min_interatomic_dist,
                 scine_elements=scine_elements,
+                escape_mode=current_escape_mode,
             )
             coords = new_coords
             escape_info["step"] = total_steps
@@ -1066,6 +1150,11 @@ def run_multi_mode_escape(
 
             # Discontinuous jump: reset mode tracking.
             v_prev = None
+
+            # Reset mode exhaustion tracking after kick (start fresh monitoring)
+            best_neg_vib_since_kick = None
+            post_kick_disp_history.clear()
+            post_kick_neg_vib_history.clear()
 
             escape_cycle += 1
             total_steps += 1
@@ -1132,6 +1221,8 @@ def run_multi_mode_escape(
         "escape_cycles_used": escape_cycle,
         "escape_events": escape_events,
         "total_steps": total_steps,
+        "mode_escalations": mode_escalation_count,
+        "final_escape_mode": current_escape_mode,
     }
 
     final_out_dict = {
@@ -1290,6 +1381,12 @@ def main(
         default=1000,
         help="Maximum number of escape attempts. Set high to let n_steps be the limiting factor.",
     )
+    parser.add_argument(
+        "--max-escape-mode",
+        type=int,
+        default=6,
+        help="Maximum vibrational mode to try for escapes (2=v2, 3=v3, etc.). When a mode becomes exhausted, escalates to next mode up to this limit.",
+    )
 
     parser.add_argument("--wandb", action="store_true")
     parser.add_argument("--wandb-project", type=str, default="gad-ts-search")
@@ -1421,6 +1518,7 @@ def main(
                 adaptive_delta=bool(args.adaptive_delta),
                 min_interatomic_dist=float(args.min_interatomic_dist),
                 max_escape_cycles=int(args.max_escape_cycles),
+                max_escape_mode=int(args.max_escape_mode),
                 profile_every=int(args.profile_every),
             )
             wall = time.time() - t0
