@@ -43,10 +43,9 @@ echo "=============================================="
 
 START_FROM="midpoint_rt_noise1.0A"
 NOISE_SEED=42
-N_STEPS=1000
-MAX_SAMPLES=100
+N_STEPS=15000
+MAX_SAMPLES=30
 DT=0.001
-# Andreas-style force normalization: normalize when |f| < 1
 NORM_THRESHOLD=1.0
 WANDB_PROJECT="memo-ozdincer-university-of-toronto"
 
