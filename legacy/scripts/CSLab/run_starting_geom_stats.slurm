@@ -18,7 +18,7 @@ module load python/${PYTHON_VERSION}
 source ${VENV_DIR}/bin/activate
 
 # Set up W&B API key for logging
-export WANDB_API_KEY="ed8d3e45635321a86859f77337bdb4dfb5ceb113"
+
 
 echo ">>> Running Starting Geometry Statistics script..."
 

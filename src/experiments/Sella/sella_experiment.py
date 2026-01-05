@@ -436,8 +436,8 @@ def main(
 
         if args.verbose:
             ts_status = "TS found!" if is_ts else f"neg_vib={final_neg}"
-            print(f"[{i}] {formula}: {result.steps_taken} steps, {ts_status}, "
-                  f"eig_product={final_eig_product:.2e if final_eig_product else 'N/A'}")
+            eig_str = f"{final_eig_product:.2e}" if final_eig_product is not None else "N/A"
+            print(f"[{i}] {formula}: {result.steps_taken} steps, {ts_status}, eig_product={eig_str}")
 
     # Save results and compute summary
     all_runs_path, aggregate_stats_path = logger.save_all_results()
