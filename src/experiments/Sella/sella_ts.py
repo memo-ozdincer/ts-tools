@@ -19,6 +19,17 @@ import torch
 from ase import Atoms
 from ase.io import read as ase_read
 
+# On headless HPC nodes, ASE's visualization helper can try to spawn `ase gui`
+# (which requires tkinter). Some versions of Sella import this helper for
+# debugging. Make it a no-op unless explicitly enabled.
+try:
+    import ase.visualize as _ase_visualize
+
+    if os.environ.get("SELLA_ENABLE_ASE_VIEW", "0") != "1" and not os.environ.get("DISPLAY"):
+        _ase_visualize.view = lambda *args, **kwargs: None  # type: ignore[assignment]
+except Exception:
+    pass
+
 # Sella import (will be pip installed on cluster)
 try:
     from sella import Sella

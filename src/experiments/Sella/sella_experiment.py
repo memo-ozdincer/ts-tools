@@ -43,6 +43,60 @@ from ...runners._predict import make_predict_fn_from_calculator
 from .sella_ts import run_sella_ts, validate_ts_eigenvalues
 
 
+def _make_sella_trajectory_fig(trajectory: Dict[str, Any], *, title: str):
+    """Create a headless-safe matplotlib figure from Sella trajectory metrics."""
+    if not isinstance(trajectory, dict) or not trajectory:
+        return None
+
+    energy = trajectory.get("energy") or []
+    force_max = trajectory.get("force_max") or []
+    force_mean = trajectory.get("force_mean") or []
+
+    n = max(len(energy), len(force_max), len(force_mean))
+    if n <= 1:
+        return None
+
+    try:
+        import matplotlib
+
+        # Ensure headless backend even if DISPLAY is unset on HPC.
+        matplotlib.use("Agg", force=True)
+        import matplotlib.pyplot as plt
+
+        steps = np.arange(n)
+        fig, axes = plt.subplots(3, 1, figsize=(7, 7), sharex=True)
+        fig.suptitle(title)
+
+        if len(energy) > 0:
+            axes[0].plot(np.arange(len(energy)), energy, lw=1.5)
+        axes[0].set_ylabel("Energy")
+        axes[0].grid(True, alpha=0.3)
+
+        if len(force_max) > 0:
+            axes[1].plot(np.arange(len(force_max)), force_max, lw=1.5)
+        axes[1].set_ylabel("Max |F|")
+        axes[1].grid(True, alpha=0.3)
+
+        if len(force_mean) > 0:
+            axes[2].plot(np.arange(len(force_mean)), force_mean, lw=1.5)
+        axes[2].set_ylabel("Mean |F|")
+        axes[2].set_xlabel("Step")
+        axes[2].grid(True, alpha=0.3)
+
+        return fig
+    except Exception:
+        return None
+
+
+def _close_fig(fig) -> None:
+    try:
+        import matplotlib.pyplot as plt
+
+        plt.close(fig)
+    except Exception:
+        return
+
+
 def _sanitize_wandb_name(s: str) -> str:
     """Sanitize string for W&B run names."""
     s = str(s)
@@ -432,7 +486,15 @@ def main(
                 all_metrics[k].append(v)
 
         if args.wandb:
-            log_sample(i, metrics)
+            fig = _make_sella_trajectory_fig(
+                out_dict.get("trajectory", {}) if isinstance(out_dict, dict) else {},
+                title=f"Sella trajectory | {calculator_type.upper()} | sample {i} | {formula}",
+            )
+            try:
+                log_sample(i, metrics, fig=fig, plot_name="sella_trajectory")
+            finally:
+                if fig is not None:
+                    _close_fig(fig)
 
         if args.verbose:
             ts_status = "TS found!" if is_ts else f"neg_vib={final_neg}"
