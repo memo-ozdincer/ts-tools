@@ -19,6 +19,9 @@ export MKL_NUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
 export NUMEXPR_NUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
 export VECLIB_MAXIMUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
 
+# Use non-interactive matplotlib backend to avoid tkinter dependency
+export MPLBACKEND=Agg
+
 H5_PATH="/project/6101772/memoozd/data/transition1x.h5"
 CKPT_PATH="/project/6101772/memoozd/models/hip_v2.ckpt"
 OUT_DIR="$HOME/scratch/ts-tools-output"
@@ -70,6 +73,7 @@ python -m src.experiments.Sella.hip_sella \
     --verbose \
     --wandb \
     --wandb-project "experiment-sella" \
+    --wandb-entity "memo-ozdincer-university-of-toronto" \
     --wandb-name "$WANDB_NAME"
 
 echo "Job completed successfully."
