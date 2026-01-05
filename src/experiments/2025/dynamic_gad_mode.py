@@ -603,53 +603,96 @@ def main(
 
     args = parser.parse_args(argv)
 
+    # Handle calculator enforcement for SCINE/HIP specific entrypoints
     if enforce_calculator and default_calculator is not None:
-        args.calculator = default_calculator
+        if str(getattr(args, "calculator", "")).lower() != str(default_calculator).lower():
+            raise ValueError(
+                f"This entrypoint enforces --calculator={default_calculator}. "
+                f"Got --calculator={getattr(args, 'calculator', None)}."
+            )
 
-    # Setup
-    device = torch.device(args.device if hasattr(args, "device") and args.device else "cpu")
-    predict_fn, samples, logger = setup_experiment(args)
+    # Setup experiment (returns calculator, dataloader, device, out_dir)
+    calculator, dataloader, device, out_dir = setup_experiment(args, shuffle=False)
+    calculator_type = getattr(args, "calculator", "hip").lower()
+    if calculator_type == "scine":
+        device = "cpu"
+
+    predict_fn = make_predict_fn_from_calculator(calculator, calculator_type)
 
     loss_type_flags = build_loss_type_flags(args)
-    script_name = "dynamic_gad_mode"
+    script_name = f"{script_name_prefix}-{args.method}"
+    logger = ExperimentLogger(
+        base_dir=out_dir,
+        script_name=script_name,
+        loss_type_flags=loss_type_flags,
+        max_graphs_per_transition=10,
+        random_seed=42,
+    )
 
     # W&B init
     if args.wandb:
-        wandb_name = args.wandb_name or _auto_wandb_name(
-            script=script_name, loss_type_flags=loss_type_flags, args=args
-        )
+        wandb_config = {
+            "script": script_name,
+            "method": args.method,
+            "start_from": args.start_from,
+            "stop_at_ts": bool(args.stop_at_ts),
+            "calculator": getattr(args, "calculator", "hip"),
+            "dt": args.dt,
+            "n_steps": args.n_steps,
+            "dt_control": args.dt_control,
+            "dt_min": args.dt_min,
+            "dt_max": args.dt_max,
+            "max_atom_disp": args.max_atom_disp,
+            "plateau_patience": args.plateau_patience,
+            "plateau_boost": args.plateau_boost,
+            "plateau_shrink": args.plateau_shrink,
+            "mode_switch_window": args.mode_switch_window,
+            "mode_switch_disp_threshold": args.mode_switch_disp_threshold,
+            "mode_switch_neg_vib_std": args.mode_switch_neg_vib_std,
+            "max_gad_mode": args.max_gad_mode,
+            "deescalate_factor": args.deescalate_factor,
+            "min_steps_per_mode": args.min_steps_per_mode,
+            "hip_vib_mode": args.hip_vib_mode,
+            "hip_rigid_tol": args.hip_rigid_tol,
+            "hip_eigh_device": args.hip_eigh_device,
+            "profile_every": args.profile_every,
+        }
+        wandb_name = args.wandb_name
+        if not wandb_name:
+            wandb_name = _auto_wandb_name(script=script_name, loss_type_flags=loss_type_flags, args=args)
+
         init_wandb_run(
             project=args.wandb_project,
+            name=str(wandb_name),
+            config=wandb_config,
             entity=args.wandb_entity,
-            name=wandb_name,
-            config=vars(args),
+            tags=[args.start_from, args.method, "dynamic-gad-mode", str(args.dt_control)],
+            run_dir=out_dir,
         )
 
-    # Run samples
-    results = []
-    summary = defaultdict(list)
+    all_metrics = defaultdict(list)
 
-    for i, sample in enumerate(samples):
-        if hasattr(args, "start_idx") and i < args.start_idx:
-            continue
-        if hasattr(args, "end_idx") and args.end_idx is not None and i >= args.end_idx:
+    for i, batch in enumerate(dataloader):
+        if i >= args.max_samples:
             break
 
-        formula = sample.get("formula", f"sample_{i}")
-        transition_key = sample.get("transition_key", formula)
+        batch = batch.to(device)
+        atomic_nums = batch.z.detach().cpu().to(device)
+        formula = getattr(batch, "formula", "sample")
 
-        start_coords, start_from_label = parse_starting_geometry(sample, args)
-        start_coords = start_coords.to(device).to(torch.float32)
-        atomic_nums = torch.tensor(sample["atomic_nums"], device=device, dtype=torch.long)
+        start_coords = parse_starting_geometry(
+            args.start_from,
+            batch,
+            noise_seed=getattr(args, "noise_seed", None),
+            sample_index=i,
+        ).detach().to(device)
 
-        # Get initial neg_vib
+        # Initial vibrational order
         try:
             init_out = predict_fn(start_coords, atomic_nums, do_hessian=True, require_grad=False)
-            scine_elements = get_scine_elements_from_predict_output(init_out)
-            init_vib_eigvals = vibrational_eigvals(
-                init_out["hessian"], start_coords, atomic_nums, scine_elements=scine_elements
-            )
-            initial_neg = int((init_vib_eigvals < 0).sum().item())
+            init_scine_elements = get_scine_elements_from_predict_output(init_out)
+            init_vib = vibrational_eigvals(init_out["hessian"], start_coords, atomic_nums, scine_elements=init_scine_elements)
+            initial_neg = int((init_vib < 0).sum().item())
         except Exception:
             initial_neg = -1
 
@@ -690,93 +733,149 @@ def main(
             result = RunResult(
                 sample_index=i,
                 formula=str(formula),
-                transition_key=str(transition_key),
-                initial_neg_vibrational=initial_neg,
-                final_neg_vibrational=-1,
+                initial_neg_eigvals=int(initial_neg),
+                final_neg_eigvals=-1,
+                initial_neg_vibrational=None,
+                final_neg_vibrational=None,
                 steps_taken=0,
                 steps_to_ts=None,
-                stop_reason=stop_reason,
+                final_time=float(wall),
                 final_eig0=None,
                 final_eig1=None,
                 final_eig_product=None,
-                wall_time=wall,
+                final_loss=None,
+                rmsd_to_known_ts=None,
+                stop_reason=stop_reason,
+                plot_path=None,
+                extra_data={
+                    "method": str(args.method),
+                    "dt_control": str(args.dt_control),
+                    "start_from": str(args.start_from),
+                    "mode_switch_window": int(args.mode_switch_window),
+                    "mode_switch_disp_threshold": float(args.mode_switch_disp_threshold),
+                    "mode_switch_neg_vib_std": float(args.mode_switch_neg_vib_std),
+                    "max_gad_mode": int(args.max_gad_mode),
+                    "deescalate_factor": float(args.deescalate_factor),
+                    "min_steps_per_mode": int(args.min_steps_per_mode),
+                },
             )
-            results.append(result)
+
+            logger.add_result(result)
+
+            if args.wandb:
+                log_sample(
+                    i,
+                    {
+                        "steps_taken": result.steps_taken,
+                        "wallclock_s": result.final_time,
+                        "stop_reason": result.stop_reason,
+                        "failed": 1,
+                    },
+                )
             continue
 
-        # Process results
-        steps_to_ts = out_dict.get("steps_to_ts")
         final_neg = out_dict.get("final_neg_vibrational", -1)
-        final_eig0 = out_dict.get("final_eig0")
-        final_eig1 = out_dict.get("final_eig1")
-        final_eig_prod = out_dict.get("final_eig_product")
-
-        if steps_to_ts is not None:
-            stop_reason = "TS_FOUND"
-        elif out_dict.get("steps_taken", 0) >= args.n_steps:
-            stop_reason = "MAX_STEPS"
-        else:
-            stop_reason = "COMPLETED"
 
         result = RunResult(
             sample_index=i,
             formula=str(formula),
-            transition_key=str(transition_key),
-            initial_neg_vibrational=initial_neg,
-            final_neg_vibrational=final_neg,
-            steps_taken=out_dict.get("steps_taken", 0),
-            steps_to_ts=steps_to_ts,
-            stop_reason=stop_reason,
-            final_eig0=final_eig0,
-            final_eig1=final_eig1,
-            final_eig_product=final_eig_prod,
-            wall_time=wall,
+            initial_neg_eigvals=initial_neg,
+            final_neg_eigvals=int(final_neg) if final_neg is not None else -1,
+            initial_neg_vibrational=None,
+            final_neg_vibrational=int(final_neg) if final_neg is not None else None,
+            steps_taken=int(out_dict["steps_taken"]),
+            steps_to_ts=aux.get("steps_to_ts"),
+            final_time=float(wall),
+            final_eig0=out_dict.get("final_eig0"),
+            final_eig1=out_dict.get("final_eig1"),
+            final_eig_product=out_dict.get("final_eig_product"),
+            final_loss=None,
+            rmsd_to_known_ts=None,
+            stop_reason=None,
+            plot_path=None,
+            extra_data={
+                "method": str(args.method),
+                "dt_control": str(args.dt_control),
+                "start_from": str(args.start_from),
+                "escalation_count": aux.get("escalation_count"),
+                "deescalation_count": aux.get("deescalation_count"),
+                "final_gad_mode": aux.get("final_gad_mode"),
+                "mode_switch_window": int(args.mode_switch_window),
+                "mode_switch_disp_threshold": float(args.mode_switch_disp_threshold),
+                "mode_switch_neg_vib_std": float(args.mode_switch_neg_vib_std),
+                "max_gad_mode": int(args.max_gad_mode),
+                "deescalate_factor": float(args.deescalate_factor),
+                "min_steps_per_mode": int(args.min_steps_per_mode),
+            },
         )
-        results.append(result)
 
-        # Log
-        logger.log_run(result)
+        logger.add_result(result)
 
-        # Save trajectory
-        trajectory = out_dict.get("trajectory", {})
-        _save_trajectory_json(logger, result, trajectory, [])
+        # Generate interactive figure
+        fig_interactive = plot_gad_trajectory_interactive(
+            out_dict["trajectory"],
+            sample_index=i,
+            formula=str(formula),
+            start_from=args.start_from,
+            initial_neg_num=initial_neg,
+            final_neg_num=int(final_neg) if final_neg is not None else -1,
+            steps_to_ts=aux.get("steps_to_ts"),
+        )
 
-        # Update summary
-        summary["steps_to_ts"].append(steps_to_ts if steps_to_ts else float("nan"))
-        summary["final_neg_vib"].append(final_neg)
-        summary["escalations"].append(aux.get("escalation_count", 0))
-        summary["deescalations"].append(aux.get("deescalation_count", 0))
-        summary["final_mode"].append(aux.get("final_gad_mode", 1))
+        # Save HTML plot
+        html_path = Path(out_dir) / f"traj_{i:03d}.html"
+        fig_interactive.write_html(str(html_path))
+        result.plot_path = str(html_path)
 
-        # W&B logging
+        # Save trajectory JSON
+        _save_trajectory_json(logger, result, out_dict["trajectory"], [])
+
+        metrics = {
+            "steps_taken": result.steps_taken,
+            "steps_to_ts": result.steps_to_ts,
+            "final_eig0": result.final_eig0,
+            "final_eig1": result.final_eig1,
+            "final_eig_product": result.final_eig_product,
+            "final_neg_vibrational": result.final_neg_vibrational,
+            "wallclock_s": result.final_time,
+            "escalation_count": aux.get("escalation_count", 0),
+            "deescalation_count": aux.get("deescalation_count", 0),
+            "final_gad_mode": aux.get("final_gad_mode", 1),
+        }
+
+        for k, v in metrics.items():
+            if v is not None:
+                all_metrics[k].append(v)
+
         if args.wandb:
-            log_sample(
-                sample_index=i,
-                formula=str(formula),
-                result=result,
-                trajectory=trajectory,
-            )
+            log_sample(i, metrics, fig=fig_interactive, plot_name="trajectory_interactive")
 
         print(
             f"[{i}] {formula}: steps={result.steps_taken}, "
-            f"TS@{steps_to_ts}, neg_vib={initial_neg}->{final_neg}, "
+            f"TS@{aux.get('steps_to_ts')}, neg_vib={initial_neg}->{final_neg}, "
             f"escalations={aux.get('escalation_count', 0)}, "
+            f"deescalations={aux.get('deescalation_count', 0)}, "
             f"final_mode=v{aux.get('final_gad_mode', 1)}"
         )
 
     # Final summary
-    n_samples = len(results)
-    n_converged = sum(1 for r in results if r.steps_to_ts is not None)
-    print(f"\n=== Summary ===")
-    print(f"Samples: {n_samples}")
-    print(f"Converged to TS: {n_converged} ({100*n_converged/n_samples:.1f}%)")
+    all_runs_path, aggregate_stats_path = logger.save_all_results()
+    summary = logger.compute_aggregate_stats()
+    logger.print_summary()
 
-    if summary["escalations"]:
-        print(f"Avg escalations: {np.mean(summary['escalations']):.1f}")
-        print(f"Avg de-escalations: {np.mean(summary['deescalations']):.1f}")
+    n_samples = len(all_metrics.get("steps_taken", []))
+    n_converged = sum(1 for s in all_metrics.get("steps_to_ts", []) if s is not None)
+    print(f"\n=== Dynamic GAD Mode Summary ===")
+    print(f"Samples: {n_samples}")
+    if n_samples > 0:
+        print(f"Converged to TS: {n_converged} ({100*n_converged/n_samples:.1f}%)")
+        if all_metrics.get("escalation_count"):
+            print(f"Avg escalations: {np.mean(all_metrics['escalation_count']):.1f}")
+            print(f"Avg de-escalations: {np.mean(all_metrics['deescalation_count']):.1f}")
+            print(f"Avg final mode: v{np.mean(all_metrics['final_gad_mode']):.1f}")
 
     if args.wandb:
-        log_summary(summary)
+        log_summary(all_metrics)
         finish_wandb()
 
 
