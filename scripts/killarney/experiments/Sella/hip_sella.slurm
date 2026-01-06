@@ -44,7 +44,7 @@ START_FROM="midpoint_rt_noise1.0A"
 NOISE_SEED=42
 
 # Experiment parameters
-MAX_STEPS=200
+MAX_STEPS=20
 MAX_SAMPLES=100
 FMAX=0.03
 
