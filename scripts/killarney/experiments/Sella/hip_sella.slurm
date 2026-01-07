@@ -9,6 +9,19 @@
 #SBATCH --output=logs/hip_sella_1A_%j.out
 #SBATCH --error=logs/hip_sella_1A_%j.err
 
+# =============================================================================
+# HIP Sella TS Refinement Experiment
+# =============================================================================
+#
+# Based on: Wander et al. (2024) "Accessing Numerical Energy Hessians with 
+# Graph Neural Network Potentials" (arXiv:2410.01650v2)
+#
+# Key paper findings applied here:
+# - Exact Hessians improved TS convergence from ~65% to 93%
+# - Trust radius params: delta0=0.048, rho_inc=1.035, rho_dec=5.0,
+#                        sigma_inc=1.15, sigma_dec=0.65
+# =============================================================================
+
 mkdir -p logs
 source .venv/bin/activate
 
@@ -49,16 +62,27 @@ MAX_SAMPLES=20
 FMAX=0.03
 
 # Sella-specific parameters
+# Based on Wander et al. (2024) arXiv:2410.01650v2
 # fmax: Force convergence threshold (eV/A)
-# delta0: Initial trust radius
+# delta0: Initial trust radius (paper value: 4.8E-2 = 0.048)
 # order: Saddle point order (1 for TS)
 FMAX=${FMAX:-0.03}
-DELTA0=${DELTA0:-0.1}
+DELTA0=${DELTA0:-0.048}
 ORDER=${ORDER:-1}
+
+# Trust radius management parameters from paper (Wander et al. 2024)
+# rho_inc: Threshold above which to increase trust radius
+# rho_dec: Threshold below which to decrease trust radius
+# sigma_inc: Factor by which to increase trust radius
+# sigma_dec: Factor by which to decrease trust radius
+RHO_INC=${RHO_INC:-1.035}
+RHO_DEC=${RHO_DEC:-5.0}
+SIGMA_INC=${SIGMA_INC:-1.15}
+SIGMA_DEC=${SIGMA_DEC:-0.65}
 
 # Hessian computation parameters
 # use_exact_hessian: Use exact Hessian from HIP at every step (default: true)
-#   This is crucial for ML potentials - avoids iterative approximation
+#   Paper showed 65% -> 93% improvement with exact Hessians
 # diag_every_n: How often to recompute Hessian (default: 1 = every step)
 # gamma: Tolerance for iterative eigensolver when NOT using exact Hessian (default: 0.0)
 USE_EXACT_HESSIAN=${USE_EXACT_HESSIAN:-true}
@@ -68,7 +92,8 @@ GAMMA=${GAMMA:-0.0}
 WANDB_NAME="experiment | sella | HIP | ${START_FROM} | seed${NOISE_SEED} | job${SLURM_JOB_ID}"
 
 echo ">>> HIP Sella TS refinement, start-from=$START_FROM, noise-seed=$NOISE_SEED"
-echo ">>> Hessian mode: exact=$USE_EXACT_HESSIAN, diag_every_n=$DIAG_EVERY_N, gamma=$GAMMA"
+echo ">>> Hessian mode: exact=$USE_EXACT_HESSIAN, diag_every_n=$DIAG_EVERY_N"
+echo ">>> Trust radius: delta0=$DELTA0, rho_inc=$RHO_INC, rho_dec=$RHO_DEC, sigma_inc=$SIGMA_INC, sigma_dec=$SIGMA_DEC"
 
 # Build Hessian arguments
 HESSIAN_ARGS=""
@@ -84,6 +109,10 @@ python -m src.experiments.Sella.hip_sella \
     --max-steps "$MAX_STEPS" \
     --delta0 "$DELTA0" \
     --order "$ORDER" \
+    --rho-inc "$RHO_INC" \
+    --rho-dec "$RHO_DEC" \
+    --sigma-inc "$SIGMA_INC" \
+    --sigma-dec "$SIGMA_DEC" \
     --eig-interval 10 \
     --h5-path "$H5_PATH" \
     --checkpoint-path "$CKPT_PATH" \

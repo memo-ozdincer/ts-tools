@@ -88,9 +88,10 @@ class HipASECalculator(Calculator):
         # Create PyG batch for HIP
         batch = self._coords_to_pyg_batch(coords, z, device=self.device)
 
-        # Run HIP prediction (no Hessian needed for Sella - it does iterative diag)
+        # Run HIP prediction with do_hessian=True to ensure otf_graph=True is used.
+        # This keeps energy/forces consistent with the Hessian (same graph construction).
         with torch.no_grad():
-            result = self.hip_calculator.predict(batch, do_hessian=False)
+            result = self.hip_calculator.predict(batch, do_hessian=True)
 
         # Extract energy and forces
         energy = result["energy"]
