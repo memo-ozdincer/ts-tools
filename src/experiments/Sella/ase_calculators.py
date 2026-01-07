@@ -296,63 +296,66 @@ def create_hessian_function(
     else:  # HIP calculator
         torch_device = torch.device(device)
 
-        # Import Eckart projection if needed
-        if apply_eckart:
-            from ...dependencies.differentiable_projection import (
-                differentiable_massweigh_and_eckartprojection_torch,
-            )
-            from hip.ff_lmdb import Z_TO_ATOM_SYMBOL
+        # Import Hessian computation via autograd
+        from hip.hessian_utils import compute_hessian
 
         def hip_hessian_function(atoms: Atoms) -> np.ndarray:
-            """Compute Cartesian Hessian using HIP calculator.
+            """Compute Cartesian Hessian using HIP calculator via AUTOGRAD.
 
-            Note: HIP returns the Hessian directly without needing
-            any gradient computation - it's a direct model output.
+            CRITICAL: For Sella to work correctly, the Hessian MUST be consistent
+            with the forces. This means H = -∂F/∂x exactly.
 
-            If apply_eckart=True, applies mass-weighting + Eckart projection
-            to remove translational/rotational modes, then un-mass-weights.
+            The HIP model predicts energy, forces, and Hessian as separate neural
+            network outputs. While they're trained to match DFT data, they're NOT
+            mathematically constrained to be consistent (H_predicted ≠ -∂F_predicted/∂x).
+
+            This inconsistency causes Sella's trust radius mechanism to fail:
+            - Sella predicts: ΔE ≈ F·Δx + ½Δx·H·Δx
+            - If H ≠ -∂F/∂x, the predicted ΔE doesn't match actual ΔE
+            - The trust ratio (rho = ΔE_actual/ΔE_pred) becomes erratic or negative
+            - Trust radius collapses, optimization stalls
+
+            SCINE works because it computes Hessian analytically as -∂F/∂x.
+
+            SOLUTION: Compute Hessian via autograd to ensure H = -∂F/∂x exactly.
+            This is slower than using the predicted Hessian, but gives correct
+            trust radius updates.
             """
             positions = atoms.get_positions()  # (N, 3) in Angstrom
             atomic_numbers = atoms.get_atomic_numbers()  # (N,)
 
-            # Convert to torch tensors
-            coords = torch.tensor(positions, dtype=torch.float32, device=torch_device)
+            # Convert to torch tensors WITH gradients enabled for autograd Hessian
+            coords = torch.tensor(
+                positions, dtype=torch.float32, device=torch_device, requires_grad=True
+            )
             z = torch.tensor(atomic_numbers, dtype=torch.long, device=torch_device)
 
             # Create PyG batch for HIP
             batch = coords_to_pyg_batch(coords, z, device=torch_device)
+            batch.pos = coords  # Ensure batch uses our coords with requires_grad=True
 
-            # Run HIP prediction WITH Hessian
-            # HIP directly outputs Hessians - no autograd needed
-            with torch.no_grad():
-                result = calculator.predict(batch, do_hessian=True)
+            # Compute Hessian via AUTOGRAD (not the predicted Hessian)
+            # This ensures H = -∂F/∂x exactly, which is critical for Sella
+            with torch.enable_grad():
+                # Forward pass to get energy and forces
+                energy, forces, _ = calculator.potential.forward(
+                    batch,
+                    otf_graph=True,  # Use same graph construction as energy/forces
+                )
 
-            # Extract raw Cartesian Hessian
-            hessian = result["hessian"]
-            if isinstance(hessian, torch.Tensor):
-                hessian_t = hessian.detach()
-            else:
-                hessian_t = torch.tensor(hessian, device=torch_device)
+                # Compute Hessian as gradient of energy / negative gradient of forces
+                # This ensures mathematical consistency: H = ∂²E/∂x² = -∂F/∂x
+                hessian_t = compute_hessian(
+                    coords=batch.pos,
+                    energy=energy,
+                    forces=forces,
+                )
 
             # Ensure shape is (3N, 3N)
             n_atoms = len(atomic_numbers)
-            hessian_t = hessian_t.reshape(3 * n_atoms, 3 * n_atoms)
+            hessian_t = hessian_t.detach().reshape(3 * n_atoms, 3 * n_atoms)
 
-            if apply_eckart:
-                # Apply mass-weighting + Eckart projection to remove trans/rot modes
-                # Keep in mass-weighted space - the 6 trans/rot eigenvalues are zero
-                # only in this space, which is what P-RFO needs for correct mode analysis
-                atomsymbols = [Z_TO_ATOM_SYMBOL[int(z_i)] for z_i in atomic_numbers]
-                coords_3d = coords.reshape(-1, 3)
-
-                # Get mass-weighted, Eckart-projected Hessian
-                H_mw_proj = differentiable_massweigh_and_eckartprojection_torch(
-                    hessian_t, coords_3d, atomsymbols
-                )
-                hessian = H_mw_proj.cpu().numpy()
-            else:
-                hessian = hessian_t.cpu().numpy()
-
-            return hessian
+            # Return raw Cartesian Hessian - let Sella handle trans/rot via constraints
+            return hessian_t.cpu().numpy()
 
         return hip_hessian_function
