@@ -44,8 +44,8 @@ START_FROM="midpoint_rt_noise1.0A"
 NOISE_SEED=42
 
 # Experiment parameters
-MAX_STEPS=20
-MAX_SAMPLES=100
+MAX_STEPS=100
+MAX_SAMPLES=20
 
 # Sella-specific parameters
 # fmax: Force convergence threshold (eV/A)
