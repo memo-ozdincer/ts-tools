@@ -1,1 +1,3 @@
-sella/
+# Ignore only the top-level sella/ directory (Sella library)
+# Not src/experiments/Sella/ (case-insensitive on macOS)
+/sella/
