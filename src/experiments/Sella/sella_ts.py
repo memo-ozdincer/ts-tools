@@ -150,7 +150,7 @@ def run_sella_ts(
     fmax: float = 0.03,
     max_steps: int = 200,
     internal: bool = True,
-    delta0: float = 0.1,
+    delta0: float = 0.048,
     order: int = 1,
     device: str = "cuda",
     save_trajectory: bool = True,
@@ -161,6 +161,11 @@ def run_sella_ts(
     use_exact_hessian: bool = True,
     diag_every_n: int = 1,
     gamma: float = 0.0,
+    # Trust radius parameters from Wander et al. (2024) arXiv:2410.01650v2
+    rho_inc: float = 1.035,
+    rho_dec: float = 5.0,
+    sigma_inc: float = 1.15,
+    sigma_dec: float = 0.65,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """Run Sella TS refinement on a starting geometry.
 
@@ -168,8 +173,11 @@ def run_sella_ts(
     1. Creates ASE Atoms from the starting coordinates
     2. Attaches the appropriate ASE calculator wrapper
     3. Optionally creates a hessian_function for exact Hessian computation
-    4. Runs Sella optimizer with RS-P-RFO
+    4. Runs Sella optimizer with P-RFO (Partitioned Rational Function Optimization)
     5. Returns final coordinates and optimization trajectory
+
+    Trust radius parameters are from Wander et al. (2024) "Accessing Numerical
+    Energy Hessians with Graph Neural Network Potentials" (arXiv:2410.01650v2).
 
     Args:
         calculator: HIP or SCINE calculator instance
@@ -179,7 +187,7 @@ def run_sella_ts(
         fmax: Force convergence threshold (eV/A)
         max_steps: Maximum optimization steps
         internal: Use internal coordinates (recommended for TS searches)
-        delta0: Initial trust radius
+        delta0: Initial trust radius. Paper value: 4.8E-2 (0.048). Default: 0.048.
         order: Saddle order (1 for transition states)
         device: Device for HIP calculations
         save_trajectory: Whether to save the optimization trajectory
@@ -197,6 +205,10 @@ def run_sella_ts(
         gamma: Tolerance for iterative eigensolver (only used when
             use_exact_hessian=False). Set to 0 for tightest convergence.
             Default: 0.0.
+        rho_inc: Threshold above which to increase trust radius. Paper value: 1.035.
+        rho_dec: Threshold below which to decrease trust radius. Paper value: 5.0.
+        sigma_inc: Factor by which to increase trust radius. Paper value: 1.15.
+        sigma_dec: Factor by which to decrease trust radius. Paper value: 0.65.
 
     Returns:
         out_dict: Dictionary containing:
@@ -249,7 +261,7 @@ def run_sella_ts(
         if verbose:
             print(f"[Sella] Using exact Hessian from {calculator_type.upper()} at every step (diag_every_n={diag_every_n})")
 
-    # Create Sella optimizer
+    # Create Sella optimizer with P-RFO method
     # order=1 for TS (first-order saddle point)
     # internal=True uses internal coordinates (bonds/angles/dihedrals)
     # which helps with robustness
@@ -259,6 +271,8 @@ def run_sella_ts(
     # diag_every_n: how often to recompute Hessian (1 = every step)
     # gamma: tolerance for iterative eigensolver (0 = tightest, only matters
     #   when hessian_function is not provided)
+    # Trust radius params from Wander et al. (2024) arXiv:2410.01650v2:
+    #   delta0=0.048, rho_inc=1.035, rho_dec=5.0, sigma_inc=1.15, sigma_dec=0.65
     opt = Sella(
         atoms,
         order=order,
@@ -269,6 +283,11 @@ def run_sella_ts(
         hessian_function=hessian_fn,
         diag_every_n=diag_every_n,
         gamma=gamma,
+        # Trust radius management (paper-recommended values)
+        rho_inc=rho_inc,
+        rho_dec=rho_dec,
+        sigma_inc=sigma_inc,
+        sigma_dec=sigma_dec,
     )
 
     if verbose:

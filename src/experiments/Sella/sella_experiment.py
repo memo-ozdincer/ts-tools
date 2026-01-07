@@ -236,14 +236,40 @@ def main(
     parser.add_argument(
         "--delta0",
         type=float,
-        default=0.1,
-        help="Initial trust radius for Sella. Default: 0.1",
+        default=0.048,
+        help="Initial trust radius for Sella. Paper value: 4.8E-2 (0.048). Default: 0.048",
     )
     parser.add_argument(
         "--order",
         type=int,
         default=1,
         help="Saddle point order (1 for transition states). Default: 1",
+    )
+
+    # Trust radius management parameters from Wander et al. (2024) arXiv:2410.01650v2
+    parser.add_argument(
+        "--rho-inc",
+        type=float,
+        default=1.035,
+        help="Threshold above which to increase trust radius. Paper value: 1.035. Default: 1.035",
+    )
+    parser.add_argument(
+        "--rho-dec",
+        type=float,
+        default=5.0,
+        help="Threshold below which to decrease trust radius. Paper value: 5.0. Default: 5.0",
+    )
+    parser.add_argument(
+        "--sigma-inc",
+        type=float,
+        default=1.15,
+        help="Factor by which to increase trust radius. Paper value: 1.15. Default: 1.15",
+    )
+    parser.add_argument(
+        "--sigma-dec",
+        type=float,
+        default=0.65,
+        help="Factor by which to decrease trust radius. Paper value: 0.65. Default: 0.65",
     )
 
     # Hessian-related parameters (key for HIP)
@@ -370,6 +396,11 @@ def main(
             "use_exact_hessian": args.use_exact_hessian,
             "diag_every_n": args.diag_every_n,
             "gamma": args.gamma,
+            # Trust radius params from paper (Wander et al. 2024)
+            "rho_inc": args.rho_inc,
+            "rho_dec": args.rho_dec,
+            "sigma_inc": args.sigma_inc,
+            "sigma_dec": args.sigma_dec,
         }
         wandb_name = args.wandb_name
         if not wandb_name:
@@ -446,6 +477,11 @@ def main(
                 use_exact_hessian=args.use_exact_hessian,
                 diag_every_n=args.diag_every_n,
                 gamma=args.gamma,
+                # Trust radius params from paper (Wander et al. 2024)
+                rho_inc=float(args.rho_inc),
+                rho_dec=float(args.rho_dec),
+                sigma_inc=float(args.sigma_inc),
+                sigma_dec=float(args.sigma_dec),
             )
             wall_time = time.time() - t0
 
