@@ -33,9 +33,6 @@ inference_utils.fix_dataset_path = _lenient_fix_dataset_path
 # --- Shared Dataset Class ---
 # src/common_utils.py
 
-# ... (imports and other functions remain the same) ...
-
-# --- MODIFIED Shared Dataset Class ---
 class Transition1xDataset(Dataset):
     """Loads transition state data from the Transition1x HDF5 file."""
     def __init__(

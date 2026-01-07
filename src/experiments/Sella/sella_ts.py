@@ -87,6 +87,8 @@ def parse_sella_trajectory(
         - positions: Positions at each step (N, 3) arrays
         - disp_from_last: Mean atom displacement from previous step
         - disp_from_start: Mean atom displacement from starting geometry
+        - rho: Trust ratio at each step (if available)
+        - delta: Trust radius at each step (if available)
     """
     trajectory: Dict[str, List[Any]] = {
         "energy": [],
@@ -95,6 +97,8 @@ def parse_sella_trajectory(
         "positions": [],
         "disp_from_last": [],
         "disp_from_start": [],
+        "rho": [],
+        "delta": [],
     }
 
     if not os.path.exists(traj_path):
