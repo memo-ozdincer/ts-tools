@@ -56,9 +56,29 @@ FMAX=${FMAX:-0.03}
 DELTA0=${DELTA0:-0.1}
 ORDER=${ORDER:-1}
 
+# Hessian computation parameters
+# use_exact_hessian: Use exact Hessian from HIP at every step (default: true)
+#   This is crucial for ML potentials - avoids iterative approximation
+# diag_every_n: How often to recompute Hessian (default: 1 = every step)
+# gamma: Tolerance for iterative eigensolver when NOT using exact Hessian (default: 0.0)
+USE_EXACT_HESSIAN=${USE_EXACT_HESSIAN:-true}
+DIAG_EVERY_N=${DIAG_EVERY_N:-1}
+GAMMA=${GAMMA:-0.0}
+
 WANDB_NAME="experiment | sella | HIP | ${START_FROM} | seed${NOISE_SEED} | job${SLURM_JOB_ID}"
 
 echo ">>> HIP Sella TS refinement, start-from=$START_FROM, noise-seed=$NOISE_SEED"
+echo ">>> Hessian mode: exact=$USE_EXACT_HESSIAN, diag_every_n=$DIAG_EVERY_N, gamma=$GAMMA"
+
+# Build Hessian arguments
+HESSIAN_ARGS=""
+if [ "$USE_EXACT_HESSIAN" = "true" ]; then
+    HESSIAN_ARGS="--use-exact-hessian"
+else
+    HESSIAN_ARGS="--no-exact-hessian"
+fi
+HESSIAN_ARGS="$HESSIAN_ARGS --diag-every-n $DIAG_EVERY_N --gamma $GAMMA"
+
 python -m src.experiments.Sella.hip_sella \
     --fmax "$FMAX" \
     --max-steps "$MAX_STEPS" \
@@ -71,6 +91,7 @@ python -m src.experiments.Sella.hip_sella \
     --max-samples "$MAX_SAMPLES" \
     --start-from "$START_FROM" \
     --noise-seed "$NOISE_SEED" \
+    $HESSIAN_ARGS \
     --verbose \
     --wandb \
     --wandb-project "experiment-sella" \
