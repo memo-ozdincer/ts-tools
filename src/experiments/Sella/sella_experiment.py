@@ -592,13 +592,76 @@ def main(
     if all_metrics.get("final_fmax"):
         sella_summary["avg_final_fmax"] = float(np.mean(all_metrics["final_fmax"]))
 
+    # Detailed convergence analysis: Sella vs Eigenvalue criteria
+    converged_list = all_metrics.get("converged", [])
+    is_ts_list = all_metrics.get("is_ts", [])
+    final_neg_vib_list = all_metrics.get("final_neg_vibrational", [])
+
+    n_total = len(converged_list)
+
+    # Count different categories
+    n_sella_converged = sum(converged_list)
+    n_eigenvalue_ts = sum(is_ts_list)
+
+    # Both criteria
+    n_both = sum(c and t for c, t in zip(converged_list, is_ts_list))
+
+    # Sella converged but NOT eigenvalue TS
+    n_sella_only = sum(c and not t for c, t in zip(converged_list, is_ts_list))
+
+    # Eigenvalue TS but NOT Sella converged
+    n_ts_only = sum(not c and t for c, t in zip(converged_list, is_ts_list))
+
+    # Neither
+    n_neither = sum(not c and not t for c, t in zip(converged_list, is_ts_list))
+
+    # For Sella-converged non-TS samples, count negative eigenvalue distribution
+    sella_converged_neg_vib_counts = defaultdict(int)
+    for converged, is_ts, neg_vib in zip(converged_list, is_ts_list, final_neg_vib_list):
+        if converged and not is_ts:
+            if neg_vib is not None and neg_vib >= 0:
+                sella_converged_neg_vib_counts[neg_vib] += 1
+
+    # Add to summary dict for W&B
+    sella_summary.update({
+        "n_total_samples": n_total,
+        "n_sella_converged": n_sella_converged,
+        "n_eigenvalue_ts": n_eigenvalue_ts,
+        "n_both_criteria": n_both,
+        "n_sella_only": n_sella_only,
+        "n_ts_only": n_ts_only,
+        "n_neither": n_neither,
+    })
+
+    # Add neg_vib distribution for Sella-converged non-TS samples
+    for neg_vib, count in sella_converged_neg_vib_counts.items():
+        sella_summary[f"sella_converged_non_ts_neg{neg_vib}"] = count
+
     # Print Sella-specific summary
     print("\n" + "=" * 80)
-    print("SELLA SUMMARY")
+    print("SELLA CONVERGENCE ANALYSIS")
     print("=" * 80)
-    print(f"Force convergence rate: {sella_summary.get('convergence_rate', 0) * 100:.1f}%")
-    print(f"TS success rate (neg_vib=1): {sella_summary.get('ts_rate', 0) * 100:.1f}%")
-    print(f"Average final fmax: {sella_summary.get('avg_final_fmax', 0):.4f} eV/A")
+    print(f"Total samples: {n_total}")
+    print()
+    print("Convergence by criteria:")
+    print(f"  Sella converged (fmax reached):     {n_sella_converged:3d} ({n_sella_converged/n_total*100:5.1f}%)")
+    print(f"  Eigenvalue TS (1 neg eigenvalue):   {n_eigenvalue_ts:3d} ({n_eigenvalue_ts/n_total*100:5.1f}%)")
+    print()
+    print("Overlap analysis:")
+    print(f"  Both criteria satisfied:            {n_both:3d} ({n_both/n_total*100:5.1f}%)")
+    print(f"  Sella only (NOT eigenvalue TS):     {n_sella_only:3d} ({n_sella_only/n_total*100:5.1f}%)")
+    print(f"  Eigenvalue TS only (NOT Sella):     {n_ts_only:3d} ({n_ts_only/n_total*100:5.1f}%)")
+    print(f"  Neither criterion satisfied:        {n_neither:3d} ({n_neither/n_total*100:5.1f}%)")
+    print()
+
+    if n_sella_only > 0:
+        print("Negative eigenvalue distribution for Sella-converged non-TS samples:")
+        sorted_counts = sorted(sella_converged_neg_vib_counts.items())
+        for neg_vib, count in sorted_counts:
+            print(f"  {neg_vib} negative eigenvalues: {count:3d} samples ({count/n_sella_only*100:5.1f}% of Sella-only)")
+
+    print()
+    print(f"Average final fmax: {sella_summary.get('avg_final_fmax', 0):.4f} eV/Å")
     print("=" * 80)
 
     if args.wandb:
