@@ -1,12 +1,14 @@
 #!/bin/bash
+#SBATCH --job-name=scine_sella_hpo
 #SBATCH -A aip-aspuru
 #SBATCH -D /project/6101772/memoozd/ts-tools
-#SBATCH --time=24:00:00
+#SBATCH --time=5:00:00
+#SBATCH --gres=gpu:l40s:1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=48GB
-#SBATCH --job-name=scine_sella_hpo
-#SBATCH --output=logs/scine_sella_hpo_%j.out
-#SBATCH --error=logs/scine_sella_hpo_%j.err
+#SBATCH --mem=32GB
+#SBATCH --job-name=hip_sella_1A
+#SBATCH --output=logs/hip_sella_1A_%j.out
+#SBATCH --error=logs/hip_sella_1A_%j.err
 
 # =============================================================================
 # SCINE Sella Hyperparameter Optimization
