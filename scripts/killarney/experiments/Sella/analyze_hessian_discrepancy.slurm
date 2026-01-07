@@ -2,7 +2,7 @@
 #SBATCH --job-name=hess-discrepancy
 #SBATCH -A aip-aspuru
 #SBATCH -D /project/6101772/memoozd/ts-tools
-#SBATCH --time=10:00:00
+#SBATCH --time=1:00:00
 #SBATCH --gres=gpu:l40s:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32GB
