@@ -100,6 +100,19 @@ def _save_trajectory_json(
         return None
 
 
+def _to_json_serializable(value: Any) -> Any:
+    """Convert numpy types to JSON-serializable Python types."""
+    if value is None:
+        return None
+    if isinstance(value, (np.bool_, bool)):
+        return bool(value)
+    if isinstance(value, (np.integer, int)):
+        return int(value)
+    if isinstance(value, (np.floating, float)):
+        return float(value)
+    return value
+
+
 def _compute_eigenvalues_at_intervals(
     predict_fn,
     trajectory: Dict[str, Any],
@@ -507,10 +520,10 @@ def main(
                 "start_from": args.start_from,
                 "fmax": args.fmax,
                 "max_steps": args.max_steps,
-                "converged": out_dict.get("converged", False),
-                "final_energy": out_dict.get("final_energy"),
-                "final_fmax": out_dict.get("final_fmax"),
-                "final_force_mean": out_dict.get("final_force_mean"),
+                "converged": _to_json_serializable(out_dict.get("converged", False)),
+                "final_energy": _to_json_serializable(out_dict.get("final_energy")),
+                "final_fmax": _to_json_serializable(out_dict.get("final_fmax")),
+                "final_force_mean": _to_json_serializable(out_dict.get("final_force_mean")),
             },
         )
 
