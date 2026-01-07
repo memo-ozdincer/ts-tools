@@ -38,7 +38,7 @@ except ImportError:
     SELLA_AVAILABLE = False
     Sella = None
 
-from .ase_calculators import create_ase_calculator
+from .ase_calculators import create_ase_calculator, create_hessian_function
 
 
 def coords_to_ase_atoms(
@@ -158,14 +158,18 @@ def run_sella_ts(
     sample_index: int = 0,
     logfile: Optional[str] = None,
     verbose: bool = True,
+    use_exact_hessian: bool = True,
+    diag_every_n: int = 1,
+    gamma: float = 0.0,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """Run Sella TS refinement on a starting geometry.
 
     This function:
     1. Creates ASE Atoms from the starting coordinates
     2. Attaches the appropriate ASE calculator wrapper
-    3. Runs Sella optimizer with RS-P-RFO
-    4. Returns final coordinates and optimization trajectory
+    3. Optionally creates a hessian_function for exact Hessian computation
+    4. Runs Sella optimizer with RS-P-RFO
+    5. Returns final coordinates and optimization trajectory
 
     Args:
         calculator: HIP or SCINE calculator instance
@@ -183,6 +187,16 @@ def run_sella_ts(
         sample_index: Sample index for naming trajectory files
         logfile: Path to log file (None for no logging, "-" for stdout)
         verbose: Print progress messages
+        use_exact_hessian: If True, use exact Hessian from calculator at each step
+            instead of Sella's iterative approximation. This is crucial for ML
+            potentials like HIP which can provide exact Hessians directly.
+            Default: True.
+        diag_every_n: Recompute/update Hessian every N steps. Set to 1 to use
+            fresh Hessian at every step (recommended when use_exact_hessian=True).
+            Default: 1.
+        gamma: Tolerance for iterative eigensolver (only used when
+            use_exact_hessian=False). Set to 0 for tightest convergence.
+            Default: 0.0.
 
     Returns:
         out_dict: Dictionary containing:
@@ -224,10 +238,27 @@ def run_sella_ts(
             # Use temp directory
             traj_path = tempfile.mktemp(suffix=".traj")
 
+    # Create hessian_function if using exact Hessians
+    hessian_fn = None
+    if use_exact_hessian:
+        hessian_fn = create_hessian_function(
+            calculator,
+            calculator_type,
+            device=device,
+        )
+        if verbose:
+            print(f"[Sella] Using exact Hessian from {calculator_type.upper()} at every step (diag_every_n={diag_every_n})")
+
     # Create Sella optimizer
     # order=1 for TS (first-order saddle point)
     # internal=True uses internal coordinates (bonds/angles/dihedrals)
     # which helps with robustness
+    # hessian_function: when provided, Sella uses exact Hessian instead of
+    #   iterative approximation. For internal coords, Sella automatically
+    #   converts Cartesian Hessian to internal coordinates.
+    # diag_every_n: how often to recompute Hessian (1 = every step)
+    # gamma: tolerance for iterative eigensolver (0 = tightest, only matters
+    #   when hessian_function is not provided)
     opt = Sella(
         atoms,
         order=order,
@@ -235,10 +266,14 @@ def run_sella_ts(
         trajectory=traj_path,
         logfile=logfile,
         delta0=delta0,
+        hessian_function=hessian_fn,
+        diag_every_n=diag_every_n,
+        gamma=gamma,
     )
 
     if verbose:
-        print(f"[Sella] Starting TS refinement (fmax={fmax}, max_steps={max_steps}, internal={internal})")
+        hess_mode = "exact" if use_exact_hessian else "iterative"
+        print(f"[Sella] Starting TS refinement (fmax={fmax}, max_steps={max_steps}, internal={internal}, hessian={hess_mode})")
 
     # Run optimization
     try:

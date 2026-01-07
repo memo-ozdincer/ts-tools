@@ -246,6 +246,35 @@ def main(
         help="Saddle point order (1 for transition states). Default: 1",
     )
 
+    # Hessian-related parameters (key for HIP)
+    parser.add_argument(
+        "--use-exact-hessian",
+        action="store_true",
+        default=True,
+        help="Use exact Hessian from calculator at each step instead of iterative "
+             "approximation. Crucial for ML potentials like HIP. Default: True.",
+    )
+    parser.add_argument(
+        "--no-exact-hessian",
+        action="store_false",
+        dest="use_exact_hessian",
+        help="Disable exact Hessian (use Sella's iterative approximation).",
+    )
+    parser.add_argument(
+        "--diag-every-n",
+        type=int,
+        default=1,
+        help="Recompute Hessian every N steps. Set to 1 for every step (recommended "
+             "with exact Hessian). Default: 1.",
+    )
+    parser.add_argument(
+        "--gamma",
+        type=float,
+        default=0.0,
+        help="Tolerance for iterative eigensolver (only used without exact Hessian). "
+             "Set to 0 for tightest convergence. Default: 0.0.",
+    )
+
     # Starting geometry arguments
     parser.add_argument(
         "--start-from",
@@ -338,6 +367,9 @@ def main(
             "order": args.order,
             "noise_seed": args.noise_seed,
             "eig_interval": args.eig_interval,
+            "use_exact_hessian": args.use_exact_hessian,
+            "diag_every_n": args.diag_every_n,
+            "gamma": args.gamma,
         }
         wandb_name = args.wandb_name
         if not wandb_name:
@@ -411,6 +443,9 @@ def main(
                 sample_index=i,
                 logfile=args.sella_logfile,
                 verbose=args.verbose,
+                use_exact_hessian=args.use_exact_hessian,
+                diag_every_n=args.diag_every_n,
+                gamma=args.gamma,
             )
             wall_time = time.time() - t0
 
