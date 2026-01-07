@@ -1,10 +1,11 @@
 #!/bin/bash
 #SBATCH --job-name=hess-discrepancy
-#SBATCH --partition=gpu
-#SBATCH --gres=gpu:1
-#SBATCH --time=00:30:00
-#SBATCH --mem=32G
-#SBATCH --cpus-per-task=4
+#SBATCH -A aip-aspuru
+#SBATCH -D /project/6101772/memoozd/ts-tools
+#SBATCH --time=10:00:00
+#SBATCH --gres=gpu:l40s:1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=32GB
 #SBATCH --output=logs/hess_discrepancy_%j.out
 #SBATCH --error=logs/hess_discrepancy_%j.err
 
