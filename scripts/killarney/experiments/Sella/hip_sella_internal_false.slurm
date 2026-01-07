@@ -44,8 +44,8 @@ echo ">>> Running HIP Sella with CARTESIAN coordinates (internal=False)..."
 
 START_FROM="midpoint_rt_noise1.0A"
 NOISE_SEED=42
-MAX_STEPS=300
-MAX_SAMPLES=20
+MAX_STEPS=100    # Reduced for diagnostic run
+MAX_SAMPLES=3    # Just a few samples for diagnosis
 FMAX=0.03
 
 WANDB_NAME="sella | HIP | CARTESIAN | ${START_FROM} | seed${NOISE_SEED} | job${SLURM_JOB_ID}"
@@ -70,6 +70,7 @@ python -m src.experiments.Sella.hip_sella \
     --diag-every-n 1 \
     --gamma 0.0 \
     --no-internal \
+    --diagnostic \
     --verbose \
     --wandb \
     --wandb-project "experiment-sella" \

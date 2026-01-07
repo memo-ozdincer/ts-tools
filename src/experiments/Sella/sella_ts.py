@@ -170,6 +170,8 @@ def run_sella_ts(
     rho_dec: float = 5.0,
     sigma_inc: float = 1.15,
     sigma_dec: float = 0.65,
+    # Diagnostic mode for debugging
+    diagnostic: bool = False,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """Run Sella TS refinement on a starting geometry.
 
@@ -303,9 +305,89 @@ def run_sella_ts(
         hess_mode = "exact" if use_exact_hessian else "iterative"
         print(f"[Sella] Starting TS refinement (fmax={fmax}, max_steps={max_steps}, internal={internal}, hessian={hess_mode})")
 
+    # Diagnostic data collection
+    diag_data = [] if diagnostic else None
+
     # Run optimization
     try:
-        converged = opt.run(fmax=fmax, steps=max_steps)
+        if diagnostic:
+            # Step-by-step with diagnostic logging
+            converged = False
+            for step_i in range(max_steps):
+                # Get state BEFORE step
+                energy_before = atoms.get_potential_energy()
+                forces_before = atoms.get_forces()
+                fmax_before = np.abs(forces_before).max()
+                pos_before = atoms.get_positions().copy()
+
+                # Get Hessian eigenvalues if available
+                hess_eigvals = None
+                if hasattr(opt, 'pes') and hasattr(opt.pes, 'H'):
+                    try:
+                        H = opt.pes.H.asarray()
+                        hess_eigvals = np.linalg.eigvalsh(H)
+                    except Exception:
+                        pass
+
+                # Take one step
+                step_converged = opt.run(fmax=fmax, steps=1)
+
+                # Get state AFTER step
+                energy_after = atoms.get_potential_energy()
+                forces_after = atoms.get_forces()
+                fmax_after = np.abs(forces_after).max()
+                pos_after = atoms.get_positions()
+
+                # Compute step metrics
+                step_displacement = np.linalg.norm(pos_after - pos_before, axis=1)
+                mean_disp = step_displacement.mean()
+                max_disp = step_displacement.max()
+                delta_energy = energy_after - energy_before
+
+                # Get Sella internal state
+                rho = getattr(opt, 'rho', None)
+                delta = getattr(opt, 'delta', None)
+
+                # Log diagnostic info
+                diag_entry = {
+                    "step": step_i,
+                    "energy_before": float(energy_before),
+                    "energy_after": float(energy_after),
+                    "delta_energy": float(delta_energy),
+                    "fmax_before": float(fmax_before),
+                    "fmax_after": float(fmax_after),
+                    "mean_disp": float(mean_disp),
+                    "max_disp": float(max_disp),
+                    "rho": float(rho) if rho is not None else None,
+                    "delta": float(delta) if delta is not None else None,
+                    "hess_eigvals": hess_eigvals.tolist() if hess_eigvals is not None else None,
+                }
+                diag_data.append(diag_entry)
+
+                # Print diagnostic summary
+                n_neg = np.sum(hess_eigvals < -1e-6) if hess_eigvals is not None else "?"
+                eig_str = ""
+                if hess_eigvals is not None:
+                    eig_str = f"eig[0:3]=[{hess_eigvals[0]:.3f},{hess_eigvals[1]:.3f},{hess_eigvals[2]:.3f}]"
+                rho_str = f"{rho:.4f}" if rho is not None else "N/A"
+                delta_str = f"{delta:.6f}" if delta is not None else "N/A"
+
+                print(f"[DIAG {step_i:3d}] E={energy_after:.4f} dE={delta_energy:+.6f} fmax={fmax_after:.4f} "
+                      f"disp={mean_disp:.6f} rho={rho_str} delta={delta_str} n_neg={n_neg} {eig_str}")
+
+                # Check for plateau (very small displacement)
+                if mean_disp < 1e-6 and step_i > 5:
+                    print(f"[DIAG] WARNING: Plateau detected! mean_disp={mean_disp:.2e}")
+                    print(f"[DIAG]   rho={rho}, delta={delta}")
+                    print(f"[DIAG]   fmax={fmax_after}, gradient_norm={np.linalg.norm(forces_after):.6f}")
+                    if hess_eigvals is not None:
+                        print(f"[DIAG]   Hessian eigenvalues (first 10): {hess_eigvals[:10]}")
+
+                if step_converged:
+                    converged = True
+                    break
+        else:
+            converged = opt.run(fmax=fmax, steps=max_steps)
     except Exception as e:
         if verbose:
             print(f"[Sella] Optimization failed: {e}")

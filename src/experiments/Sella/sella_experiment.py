@@ -234,6 +234,11 @@ def main(
         help="Disable internal coordinates (not recommended for TS searches).",
     )
     parser.add_argument(
+        "--diagnostic",
+        action="store_true",
+        help="Enable detailed diagnostic logging (rho, delta, eigenvalues, etc.) at each step.",
+    )
+    parser.add_argument(
         "--delta0",
         type=float,
         default=0.048,
@@ -482,6 +487,7 @@ def main(
                 rho_dec=float(args.rho_dec),
                 sigma_inc=float(args.sigma_inc),
                 sigma_dec=float(args.sigma_dec),
+                diagnostic=args.diagnostic,
             )
             wall_time = time.time() - t0
 
