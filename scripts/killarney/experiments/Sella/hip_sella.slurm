@@ -64,6 +64,7 @@ python -m src.experiments.Sella.hip_sella \
     --max-steps "$MAX_STEPS" \
     --delta0 "$DELTA0" \
     --order "$ORDER" \
+    --eig-interval 10 \
     --h5-path "$H5_PATH" \
     --checkpoint-path "$CKPT_PATH" \
     --out-dir "$OUT_DIR" \

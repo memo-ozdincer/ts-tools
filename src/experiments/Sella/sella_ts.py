@@ -73,7 +73,7 @@ def ase_atoms_to_coords(atoms: Atoms) -> torch.Tensor:
 
 def parse_sella_trajectory(
     traj_path: str,
-) -> Dict[str, List[float]]:
+) -> Dict[str, List[Any]]:
     """Parse a Sella trajectory file and extract per-step metrics.
 
     Args:
@@ -84,11 +84,17 @@ def parse_sella_trajectory(
         - energy: Energy at each step
         - force_max: Maximum force at each step
         - force_mean: Mean force at each step
+        - positions: Positions at each step (N, 3) arrays
+        - disp_from_last: Mean atom displacement from previous step
+        - disp_from_start: Mean atom displacement from starting geometry
     """
-    trajectory = {
+    trajectory: Dict[str, List[Any]] = {
         "energy": [],
         "force_max": [],
         "force_mean": [],
+        "positions": [],
+        "disp_from_last": [],
+        "disp_from_start": [],
     }
 
     if not os.path.exists(traj_path):
@@ -96,9 +102,13 @@ def parse_sella_trajectory(
 
     try:
         frames = ase_read(traj_path, index=":")
-        for frame in frames:
+        start_pos = None
+        prev_pos = None
+
+        for i, frame in enumerate(frames):
             energy = frame.get_potential_energy() if frame.calc is not None else None
             forces = frame.get_forces() if frame.calc is not None else None
+            positions = frame.get_positions()
 
             if energy is not None:
                 trajectory["energy"].append(float(energy))
@@ -106,6 +116,25 @@ def parse_sella_trajectory(
                 force_norms = np.linalg.norm(forces, axis=1)
                 trajectory["force_max"].append(float(np.max(force_norms)))
                 trajectory["force_mean"].append(float(np.mean(force_norms)))
+
+            # Store positions
+            trajectory["positions"].append(positions.copy())
+
+            # Compute displacements
+            if start_pos is None:
+                start_pos = positions.copy()
+                trajectory["disp_from_start"].append(0.0)
+            else:
+                disp = np.linalg.norm(positions - start_pos, axis=1).mean()
+                trajectory["disp_from_start"].append(float(disp))
+
+            if prev_pos is None:
+                trajectory["disp_from_last"].append(0.0)
+            else:
+                disp = np.linalg.norm(positions - prev_pos, axis=1).mean()
+                trajectory["disp_from_last"].append(float(disp))
+
+            prev_pos = positions.copy()
     except Exception:
         pass
 

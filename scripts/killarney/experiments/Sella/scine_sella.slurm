@@ -63,6 +63,7 @@ python -m src.experiments.Sella.scine_sella \
     --max-steps "$MAX_STEPS" \
     --delta0 "$DELTA0" \
     --order "$ORDER" \
+    --eig-interval 10 \
     --scine-functional DFTB0 \
     --h5-path "$H5_PATH" \
     --out-dir "$OUT_DIR" \

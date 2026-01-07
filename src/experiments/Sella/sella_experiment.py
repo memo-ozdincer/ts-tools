@@ -19,7 +19,7 @@ import re
 import time
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -87,8 +87,10 @@ def _save_trajectory_json(
     transition_dir.mkdir(parents=True, exist_ok=True)
     path = transition_dir / f"trajectory_{result.sample_index:03d}.json"
     try:
+        # Filter out positions (numpy arrays) for JSON serialization
+        traj_for_json = {k: v for k, v in trajectory.items() if k != "positions"}
         data = {
-            "trajectory": trajectory,
+            "trajectory": traj_for_json,
             "aux": {k: v for k, v in aux.items() if k != "trajectory_path"},
         }
         with open(path, "w") as f:
@@ -96,6 +98,84 @@ def _save_trajectory_json(
         return str(path)
     except Exception:
         return None
+
+
+def _compute_eigenvalues_at_intervals(
+    predict_fn,
+    trajectory: Dict[str, Any],
+    atomic_nums: torch.Tensor,
+    device: str,
+    eig_interval: int,
+    verbose: bool = False,
+) -> Dict[str, List[Optional[float]]]:
+    """Compute eigenvalues at specified intervals from trajectory positions.
+
+    Args:
+        predict_fn: Prediction function that returns {energy, forces, hessian}
+        trajectory: Trajectory dict containing 'positions' list
+        atomic_nums: Atomic numbers tensor
+        device: Device for computation
+        eig_interval: Interval for eigenvalue computation:
+            - positive int (1,2,5,10,...): compute every N steps
+            - 0 or -1: only compute at first and last step
+        verbose: Print progress
+
+    Returns:
+        Dictionary with eigenvalue data at each step (None for skipped steps):
+        - eig0: Lowest eigenvalue
+        - eig1: Second eigenvalue
+        - eig_product: Product of eig0 * eig1
+        - neg_vib: Number of negative eigenvalues
+    """
+    positions_list = trajectory.get("positions", [])
+    n_steps = len(positions_list)
+
+    eig_data: Dict[str, List[Optional[float]]] = {
+        "eig0": [None] * n_steps,
+        "eig1": [None] * n_steps,
+        "eig_product": [None] * n_steps,
+        "neg_vib": [None] * n_steps,
+    }
+
+    if n_steps == 0:
+        return eig_data
+
+    # Determine which steps to compute eigenvalues for
+    if eig_interval <= 0:
+        # Only first and last
+        steps_to_compute = [0]
+        if n_steps > 1:
+            steps_to_compute.append(n_steps - 1)
+    else:
+        # Every eig_interval steps, always including first and last
+        steps_to_compute = list(range(0, n_steps, eig_interval))
+        if (n_steps - 1) not in steps_to_compute:
+            steps_to_compute.append(n_steps - 1)
+
+    if verbose:
+        print(f"[Eigenvalues] Computing for {len(steps_to_compute)}/{n_steps} steps (interval={eig_interval})")
+
+    for step_idx in steps_to_compute:
+        try:
+            pos = positions_list[step_idx]
+            coords = torch.tensor(pos, dtype=torch.float32, device=device).reshape(-1, 3)
+
+            out = predict_fn(coords, atomic_nums, do_hessian=True, require_grad=False)
+            scine_elements = get_scine_elements_from_predict_output(out)
+            vib = vibrational_eigvals(
+                out["hessian"], coords, atomic_nums, scine_elements=scine_elements
+            )
+
+            eig_data["eig0"][step_idx] = float(vib[0].item()) if vib.numel() >= 1 else None
+            eig_data["eig1"][step_idx] = float(vib[1].item()) if vib.numel() >= 2 else None
+            eig_data["eig_product"][step_idx] = float((vib[0] * vib[1]).item()) if vib.numel() >= 2 else None
+            eig_data["neg_vib"][step_idx] = int((vib < 0).sum().item())
+
+        except Exception as e:
+            if verbose:
+                print(f"[WARN] Eigenvalue computation failed at step {step_idx}: {e}")
+
+    return eig_data
 
 
 def main(
@@ -172,6 +252,16 @@ def main(
         help="Optional W&B run name. If omitted, an informative name is auto-generated.",
     )
 
+    # Eigenvalue tracking
+    parser.add_argument(
+        "--eig-interval",
+        type=int,
+        default=0,
+        help="Interval for computing eigenvalues during optimization. "
+             "Positive int (1,2,5,10,...): compute every N steps. "
+             "0 or -1: only compute at first and last step (default: 0).",
+    )
+
     # Logging
     parser.add_argument(
         "--sella-logfile",
@@ -234,6 +324,7 @@ def main(
             "delta0": args.delta0,
             "order": args.order,
             "noise_seed": args.noise_seed,
+            "eig_interval": args.eig_interval,
         }
         wandb_name = args.wandb_name
         if not wandb_name:
@@ -309,6 +400,21 @@ def main(
                 verbose=args.verbose,
             )
             wall_time = time.time() - t0
+
+            # Compute eigenvalues at intervals from trajectory
+            trajectory = out_dict.get("trajectory", {})
+            if trajectory.get("positions"):
+                eig_data = _compute_eigenvalues_at_intervals(
+                    predict_fn,
+                    trajectory,
+                    atomic_nums,
+                    device,
+                    eig_interval=args.eig_interval,
+                    verbose=args.verbose,
+                )
+                # Merge eigenvalue data into trajectory
+                trajectory.update(eig_data)
+                out_dict["trajectory"] = trajectory
 
         except Exception as e:
             wall_time = time.time() - t0
