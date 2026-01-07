@@ -44,8 +44,8 @@ START_FROM="midpoint_rt_noise1.0A"
 NOISE_SEED=42
 
 # Experiment parameters
-MAX_STEPS=300
-MAX_SAMPLES=20
+MAX_STEPS=200
+MAX_SAMPLES=150
 
 # Sella-specific parameters
 # Based on Wander et al. (2024) arXiv:2410.01650v2
