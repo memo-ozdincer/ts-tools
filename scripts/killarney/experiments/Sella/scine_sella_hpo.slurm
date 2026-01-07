@@ -73,20 +73,18 @@ echo ">>> Running SCINE Sella HPO experiment..."
 # Based on paper recommendations (Wander et al. 2024):
 #
 # FMAX values (force convergence threshold in eV/Å):
-#   Non-uniform spacing from very tight (0.001) to loose (0.05)
-#   - 0.001: Extremely tight, most expensive
-#   - 0.003, 0.005: Very tight
-#   - 0.01: Tight, good balance
-#   - 0.02, 0.03: Moderate
-#   - 0.05: Loose, fastest convergence
+#   Very tight values for precise saddle point convergence
+#   - 0.00005: Extremely tight (5e-5)
+#   - 0.0001: Very tight (1e-4)
+#   - 0.0003: Tight (3e-4)
+#   - 0.0005: Moderate (5e-4)
 #
 # NOTE: eta (finite difference step size, paper=7.0E-4) is NOT used since
 # we use exact analytical Hessians from SCINE (not finite differences).
 # =============================================================================
 
 # Configurable HPO parameters (can override via environment variables)
-# FMAX: Non-uniform spacing from 0.001 to 0.05
-FMAX_VALUES="${FMAX_VALUES:-0.001 0.003 0.005 0.01 0.02 0.03 0.05}"
+FMAX_VALUES="${FMAX_VALUES:-0.00005 0.0001 0.0003 0.0005}"
 # DELTA0 is FIXED at paper value 0.048 (not grid-searched)
 
 # Experiment parameters

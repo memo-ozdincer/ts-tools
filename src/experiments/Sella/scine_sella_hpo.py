@@ -305,15 +305,14 @@ def main(argv: Optional[List[str]] = None) -> None:
     
     # HPO grid parameters
     # FMAX: Force convergence threshold (eV/Å)
-    # Range from very tight (0.001) to loose (0.05) with non-uniform spacing
-    # Tighter values help verify saddle character but require more steps
+    # Very tight values for precise saddle point convergence
     parser.add_argument(
         "--fmax-values",
         type=float,
         nargs="+",
-        default=[0.001, 0.003, 0.005, 0.01, 0.02, 0.03, 0.05],
-        help="Force convergence thresholds to test (eV/A). Non-uniform spacing. "
-             "Default: [0.001, 0.003, 0.005, 0.01, 0.02, 0.03, 0.05]",
+        default=[0.00005, 0.0001, 0.0003, 0.0005],
+        help="Force convergence thresholds to test (eV/A). "
+             "Default: [0.00005, 0.0001, 0.0003, 0.0005]",
     )
     parser.add_argument(
         "--test-cartesian",
