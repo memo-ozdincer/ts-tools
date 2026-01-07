@@ -257,13 +257,18 @@ def run_sella_ts(
     # Create hessian_function if using exact Hessians
     hessian_fn = None
     if use_exact_hessian:
+        # For Cartesian coords (internal=False), apply Eckart projection to remove
+        # trans/rot modes. For internal coords, Sella handles this automatically.
+        apply_eckart = not internal
         hessian_fn = create_hessian_function(
             calculator,
             calculator_type,
             device=device,
+            apply_eckart=apply_eckart,
         )
         if verbose:
-            print(f"[Sella] Using exact Hessian from {calculator_type.upper()} at every step (diag_every_n={diag_every_n})")
+            eckart_str = " (with Eckart projection)" if apply_eckart else ""
+            print(f"[Sella] Using exact Hessian from {calculator_type.upper()}{eckart_str} at every step (diag_every_n={diag_every_n})")
 
     # Create Sella optimizer with P-RFO method
     # order=1 for TS (first-order saddle point)

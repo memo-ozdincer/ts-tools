@@ -59,7 +59,7 @@ python -m src.experiments.Sella.hip_sella \
     --rho-dec 5.0 \
     --sigma-inc 1.15 \
     --sigma-dec 0.65 \
-    --eig-interval 10 \
+    --eig-interval 1 \
     --h5-path "$H5_PATH" \
     --checkpoint-path "$CKPT_PATH" \
     --out-dir "$OUT_DIR" \

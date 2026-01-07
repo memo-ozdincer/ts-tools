@@ -9,8 +9,9 @@ Units:
 
 Note on Hessians for Sella:
 - Sella can use a `hessian_function` callable to get exact Hessians at each step
-- The Hessian should be the RAW Cartesian Hessian (not mass-weighted, not Eckart-projected)
-- Sella's internal coordinate machinery handles the conversion to internal coords
+- For internal coordinates: pass RAW Cartesian Hessian (Sella handles conversion)
+- For Cartesian coordinates: apply mass-weighting + Eckart projection to remove
+  the 6 translational/rotational zero-modes before passing to Sella
 - Use `create_hessian_function()` to create this callable for HIP or SCINE
 """
 from __future__ import annotations
@@ -225,13 +226,21 @@ def create_hessian_function(
     calculator,
     calculator_type: str,
     device: str = "cuda",
+    apply_eckart: bool = False,
 ) -> Callable[[Atoms], np.ndarray]:
     """Create a hessian_function callable for Sella optimizer.
 
     This function creates a callable that Sella can use to get exact Hessians
-    at each optimization step. The returned Hessian is the RAW Cartesian Hessian
-    (not mass-weighted, not Eckart-projected) since Sella's internal coordinate
-    machinery handles all necessary transformations.
+    at each optimization step.
+
+    For internal coordinates (apply_eckart=False):
+        Returns RAW Cartesian Hessian - Sella's internal coordinate machinery
+        handles all necessary transformations.
+
+    For Cartesian coordinates (apply_eckart=True):
+        Returns mass-weighted, Eckart-projected, then un-mass-weighted Hessian.
+        This removes the 6 translational/rotational zero-modes that would
+        otherwise confuse P-RFO optimization.
 
     Using exact Hessians instead of iterative approximation can significantly
     improve convergence for ML potentials like HIP.
@@ -240,12 +249,15 @@ def create_hessian_function(
         calculator: HIP or SCINE calculator instance
         calculator_type: Either "hip" or "scine"
         device: Device for HIP calculations (ignored for SCINE)
+        apply_eckart: If True, apply mass-weighting + Eckart projection to
+            remove trans/rot modes. Use True for Cartesian coordinates
+            (internal=False), False for internal coordinates (internal=True).
 
     Returns:
         Callable that takes ASE Atoms and returns (3N, 3N) Hessian as numpy array
 
     Example:
-        >>> hessian_fn = create_hessian_function(hip_calc, "hip", device="cuda")
+        >>> hessian_fn = create_hessian_function(hip_calc, "hip", device="cuda", apply_eckart=True)
         >>> opt = Sella(atoms, hessian_function=hessian_fn, diag_every_n=1)
     """
     # Import here to avoid circular imports
@@ -284,11 +296,21 @@ def create_hessian_function(
     else:  # HIP calculator
         torch_device = torch.device(device)
 
+        # Import Eckart projection if needed
+        if apply_eckart:
+            from ...dependencies.differentiable_projection import (
+                differentiable_massweigh_and_eckartprojection_torch,
+            )
+            from hip.ff_lmdb import Z_TO_ATOM_SYMBOL
+
         def hip_hessian_function(atoms: Atoms) -> np.ndarray:
-            """Compute raw Cartesian Hessian using HIP calculator.
+            """Compute Cartesian Hessian using HIP calculator.
 
             Note: HIP returns the Hessian directly without needing
             any gradient computation - it's a direct model output.
+
+            If apply_eckart=True, applies mass-weighting + Eckart projection
+            to remove translational/rotational modes, then un-mass-weights.
             """
             positions = atoms.get_positions()  # (N, 3) in Angstrom
             atomic_numbers = atoms.get_atomic_numbers()  # (N,)
@@ -308,11 +330,28 @@ def create_hessian_function(
             # Extract raw Cartesian Hessian
             hessian = result["hessian"]
             if isinstance(hessian, torch.Tensor):
-                hessian = hessian.detach().cpu().numpy()
+                hessian_t = hessian.detach()
+            else:
+                hessian_t = torch.tensor(hessian, device=torch_device)
 
             # Ensure shape is (3N, 3N)
             n_atoms = len(atomic_numbers)
-            hessian = np.asarray(hessian).reshape(3 * n_atoms, 3 * n_atoms)
+            hessian_t = hessian_t.reshape(3 * n_atoms, 3 * n_atoms)
+
+            if apply_eckart:
+                # Apply mass-weighting + Eckart projection to remove trans/rot modes
+                # Keep in mass-weighted space - the 6 trans/rot eigenvalues are zero
+                # only in this space, which is what P-RFO needs for correct mode analysis
+                atomsymbols = [Z_TO_ATOM_SYMBOL[int(z_i)] for z_i in atomic_numbers]
+                coords_3d = coords.reshape(-1, 3)
+
+                # Get mass-weighted, Eckart-projected Hessian
+                H_mw_proj = differentiable_massweigh_and_eckartprojection_torch(
+                    hessian_t, coords_3d, atomsymbols
+                )
+                hessian = H_mw_proj.cpu().numpy()
+            else:
+                hessian = hessian_t.cpu().numpy()
 
             return hessian
 
