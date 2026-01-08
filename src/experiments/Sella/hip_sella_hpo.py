@@ -497,9 +497,20 @@ def main(argv: Optional[List[str]] = None) -> None:
     print(f"  diag_every_n: 1")
     print(f"{'='*80}\n")
     
+    # Create study name and SQLite storage path for crash recovery
+    # (defined early so it can be logged to W&B)
+    job_id = os.environ.get("SLURM_JOB_ID", "local")
+    study_name = args.study_name or f"hip_sella_hpo_{int(time.time())}"
+    db_path = Path(out_dir) / f"{study_name}.db"
+    storage_url = f"sqlite:///{db_path}"
+    
+    print(f"Optuna storage: {db_path}")
+    print(f"Study name: {study_name}")
+    if args.resume:
+        print("Resume mode: will continue from existing study if present")
+    
     # Initialize W&B if requested
     if args.wandb:
-        job_id = os.environ.get("SLURM_JOB_ID", "local")
         wandb_name = args.wandb_name or f"hip-sella-hpo-{args.n_trials}trials-job{job_id}"
         init_wandb_run(
             project=args.wandb_project,
@@ -543,16 +554,6 @@ def main(argv: Optional[List[str]] = None) -> None:
             tags=["hpo", "sella", "hip", "optuna", "bayesian", f"job-{job_id}"],
             run_dir=out_dir,
         )
-    
-    # Create SQLite storage for crash recovery
-    study_name = args.study_name or f"hip_sella_hpo_{int(time.time())}"
-    db_path = Path(out_dir) / f"{study_name}.db"
-    storage_url = f"sqlite:///{db_path}"
-    
-    print(f"Optuna storage: {db_path}")
-    print(f"Study name: {study_name}")
-    if args.resume:
-        print("Resume mode: will continue from existing study if present")
     
     # Create Optuna study with TPE sampler and MedianPruner
     sampler = TPESampler(seed=args.optuna_seed)

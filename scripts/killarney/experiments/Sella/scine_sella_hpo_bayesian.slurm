@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH -A aip-aspuru
 #SBATCH -D /project/6101772/memoozd/ts-tools
-#SBATCH --time=12:00:00
+#SBATCH --time=16:00:00
 #SBATCH --cpus-per-task=32
 #SBATCH --mem=64GB
 #SBATCH --job-name=scine_sella_hpo
