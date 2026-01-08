@@ -29,6 +29,7 @@ import os
 import sys
 import time
 import traceback
+import warnings
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -36,6 +37,9 @@ import numpy as np
 import optuna
 import torch
 from optuna.samplers import TPESampler
+
+# Suppress warnings
+warnings.filterwarnings('ignore')
 
 # Suppress Optuna's verbose logging (we log to W&B instead)
 optuna.logging.set_verbosity(optuna.logging.WARNING)
