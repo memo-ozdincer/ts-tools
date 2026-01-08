@@ -877,35 +877,6 @@ def _check_plateau_convergence(
     )
 
 
-def _check_mode_exhausted(
-    post_kick_disp_history: list[float],
-    post_kick_neg_vib_history: list[int],
-    *,
-    window: int,
-    disp_threshold: float,
-    neg_vib_std_threshold: float,
-) -> bool:
-    """Check if current escape mode is exhausted (kicks no longer effective).
-
-    Uses same criteria as v1 plateau detection:
-    1. Recent post-kick displacements are tiny (mean < threshold)
-    2. neg_vib is stable/not changing (std <= threshold)
-
-    NOTE: Progress check (neg_vib still decreasing) is done BEFORE calling this function.
-    This function only checks the plateau conditions.
-    """
-    if len(post_kick_disp_history) < window:
-        return False
-
-    recent_disp = post_kick_disp_history[-window:]
-    recent_neg_vib = post_kick_neg_vib_history[-window:]
-
-    mean_disp = float(np.mean(recent_disp))
-    std_neg_vib = float(np.std(recent_neg_vib))
-
-    return mean_disp < disp_threshold and std_neg_vib <= neg_vib_std_threshold
-
-
 def run_multi_mode_escape(
     predict_fn,
     coords0: torch.Tensor,
@@ -933,7 +904,6 @@ def run_multi_mode_escape(
     adaptive_delta: bool,
     min_interatomic_dist: float,
     max_escape_cycles: int,
-    max_escape_mode: int = 6,
     profile_every: int = 0,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """Run GAD with multi-mode escape mechanism.
@@ -945,9 +915,8 @@ def run_multi_mode_escape(
     The algorithm:
     1. Run GAD, accumulating displacement history
     2. Check for plateau: tiny displacements + stable neg_vib + index > 1
-    3. If plateau at index > 1: perturb along current escape mode (v2, v3, etc.) and restart GAD
-    4. If escape mode becomes ineffective (no progress), escalate to next mode
-    5. Repeat until index = 1 or max_escape_cycles reached
+    3. If plateau at index > 1: perturb along v2 and restart GAD
+    4. Repeat until index = 1 or max_escape_cycles reached
     """
     coords = coords0.detach().clone().to(torch.float32)
 
@@ -976,13 +945,6 @@ def run_multi_mode_escape(
     # Rolling history for displacement-based plateau detection
     disp_history: list[float] = []
     neg_vib_history: list[int] = []
-
-    # Mode escalation state for v3+ fallback kicks
-    current_escape_mode = 2  # Start with v2
-    post_kick_disp_history: list[float] = []  # Displacement AFTER kicks
-    post_kick_neg_vib_history: list[int] = []  # neg_vib AFTER kicks
-    best_neg_vib_since_kick: Optional[int] = None  # Track best neg_vib since last kick
-    mode_escalation_count = 0  # How many times we've escalated modes
 
     # Stateful dt controller variables
     dt_eff_state = float(dt)
@@ -1071,37 +1033,6 @@ def run_multi_mode_escape(
 
         trajectory.setdefault("mode_overlap", []).append(float(mode_overlap))
         trajectory.setdefault("mode_index", []).append(int(mode_index))
-        trajectory.setdefault("escape_mode", []).append(current_escape_mode)
-
-        # Track post-kick state for mode exhaustion detection
-        post_kick_disp_history.append(disp_from_last)
-        post_kick_neg_vib_history.append(neg_vib)
-
-        # Track if we're still making progress (neg_vib decreasing since last kick)
-        if best_neg_vib_since_kick is None:
-            best_neg_vib_since_kick = neg_vib
-        elif neg_vib < best_neg_vib_since_kick:
-            best_neg_vib_since_kick = neg_vib  # Progress! Current mode is working
-
-        # Check if current escape mode is exhausted (ONLY if we're NOT making progress)
-        still_making_progress = (neg_vib < best_neg_vib_since_kick) if best_neg_vib_since_kick is not None else False
-
-        if len(post_kick_disp_history) >= escape_window and not still_making_progress:
-            mode_exhausted = _check_mode_exhausted(
-                post_kick_disp_history,
-                post_kick_neg_vib_history,
-                window=escape_window,
-                disp_threshold=escape_disp_threshold,
-                neg_vib_std_threshold=escape_neg_vib_std,
-            )
-
-            if mode_exhausted and current_escape_mode < max_escape_mode:
-                # Escalate to next mode
-                current_escape_mode += 1
-                post_kick_disp_history.clear()
-                post_kick_neg_vib_history.clear()
-                best_neg_vib_since_kick = None  # Reset progress tracking for new mode
-                mode_escalation_count += 1
 
         # Check for TS (index = 1)
         if stop_at_ts and steps_to_ts is None and np.isfinite(eig_prod) and eig_prod < -abs(ts_eps):
@@ -1120,7 +1051,7 @@ def run_multi_mode_escape(
         )
 
         if is_plateau:
-            # Converged to high-index saddle, perform escape using current mode
+            # Converged to high-index saddle, perform escape
             trajectory["dt_eff"].append(float("nan"))
 
             new_coords, escape_info = perform_escape_perturbation(
@@ -1132,7 +1063,6 @@ def run_multi_mode_escape(
                 adaptive_delta=adaptive_delta,
                 min_interatomic_dist=min_interatomic_dist,
                 scine_elements=scine_elements,
-                escape_mode=current_escape_mode,
             )
             coords = new_coords
             escape_info["step"] = total_steps
@@ -1151,11 +1081,6 @@ def run_multi_mode_escape(
 
             # Discontinuous jump: reset mode tracking.
             v_prev = None
-
-            # Reset mode exhaustion tracking after kick (start fresh monitoring)
-            best_neg_vib_since_kick = None
-            post_kick_disp_history.clear()
-            post_kick_neg_vib_history.clear()
 
             escape_cycle += 1
             total_steps += 1
@@ -1222,8 +1147,6 @@ def run_multi_mode_escape(
         "escape_cycles_used": escape_cycle,
         "escape_events": escape_events,
         "total_steps": total_steps,
-        "mode_escalations": mode_escalation_count,
-        "final_escape_mode": current_escape_mode,
     }
 
     final_out_dict = {
@@ -1382,12 +1305,6 @@ def main(
         default=1000,
         help="Maximum number of escape attempts. Set high to let n_steps be the limiting factor.",
     )
-    parser.add_argument(
-        "--max-escape-mode",
-        type=int,
-        default=6,
-        help="Maximum vibrational mode to try for escapes (2=v2, 3=v3, etc.). When a mode becomes exhausted, escalates to next mode up to this limit.",
-    )
 
     parser.add_argument("--wandb", action="store_true")
     parser.add_argument("--wandb-project", type=str, default="gad-ts-search")
@@ -1519,7 +1436,6 @@ def main(
                 adaptive_delta=bool(args.adaptive_delta),
                 min_interatomic_dist=float(args.min_interatomic_dist),
                 max_escape_cycles=int(args.max_escape_cycles),
-                max_escape_mode=int(args.max_escape_mode),
                 profile_every=int(args.profile_every),
             )
             wall = time.time() - t0

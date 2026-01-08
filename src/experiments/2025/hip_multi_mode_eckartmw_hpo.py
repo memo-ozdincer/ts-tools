@@ -129,8 +129,8 @@ def load_difficult_samples(
                 dt_min=1e-6,
                 dt_max=0.05,
                 max_atom_disp=0.25,
-                plateau_patience=5,
-                plateau_boost=2.0,
+                plateau_patience=10,  # Matches noisy baseline
+                plateau_boost=1.5,    # Matches noisy baseline
                 plateau_shrink=0.5,
                 escape_disp_threshold=5e-4,
                 escape_window=20,
@@ -142,7 +142,6 @@ def load_difficult_samples(
                 adaptive_delta=True,
                 min_interatomic_dist=0.5,
                 max_escape_cycles=1000,
-                max_escape_mode=6,
                 profile_every=0,
             )
             
@@ -279,7 +278,6 @@ def objective(
                 adaptive_delta=adaptive_delta,
                 min_interatomic_dist=0.5,
                 max_escape_cycles=1000,
-                max_escape_mode=6,
                 profile_every=0,
             )
             
