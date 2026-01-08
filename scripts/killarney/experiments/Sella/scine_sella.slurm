@@ -52,7 +52,7 @@ MAX_SAMPLES=150
 # fmax: Force convergence threshold (eV/A)
 # delta0: Initial trust radius (paper value: 4.8E-2 = 0.048)
 # order: Saddle point order (1 for TS)
-FMAX=${FMAX:-0.03}
+FMAX=${FMAX:-0.0001}
 DELTA0=${DELTA0:-0.048}
 ORDER=${ORDER:-1}
 
