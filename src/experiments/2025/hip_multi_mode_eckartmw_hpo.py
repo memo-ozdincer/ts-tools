@@ -49,10 +49,10 @@ from optuna.samplers import TPESampler
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 # Relative imports: ... goes up from 2025 -> experiments -> src
-from .multi_mode_eckartmw import (
-    run_multi_mode_escape,
-    compute_convergence_diagnostics,
-)
+# IMPORTANT: Import run_multi_mode_escape from NOISY module (the working version)
+# NOT from experiments, to ensure identical algorithm behavior
+from ...noisy.multi_mode_eckartmw import run_multi_mode_escape
+from .multi_mode_eckartmw import compute_convergence_diagnostics
 from ...dependencies.common_utils import add_common_args, setup_experiment, parse_starting_geometry
 from ...dependencies.hessian import vibrational_eigvals, get_scine_elements_from_predict_output
 from ...runners._predict import make_predict_fn_from_calculator
@@ -129,8 +129,8 @@ def load_difficult_samples(
                 dt_min=1e-6,
                 dt_max=0.05,
                 max_atom_disp=0.25,
-                plateau_patience=10,  # Matches noisy baseline
-                plateau_boost=1.5,    # Matches noisy baseline
+                plateau_patience=5,   # Matches noisy SLURM script
+                plateau_boost=2.0,    # Matches noisy SLURM script
                 plateau_shrink=0.5,
                 escape_disp_threshold=5e-4,
                 escape_window=20,
