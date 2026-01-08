@@ -370,6 +370,8 @@ def main():
             # These are needed by setup_experiment
             self.sample_index_file = None
             self.scine_functional = None
+            self.device = "cuda" if torch.cuda.is_available() else "cpu"
+            self.split = "test"
     
     setup_args = SetupArgs(args)
     calculator, dataloader, device, _ = setup_experiment(setup_args, shuffle=False)

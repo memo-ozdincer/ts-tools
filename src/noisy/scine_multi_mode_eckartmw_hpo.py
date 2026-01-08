@@ -373,6 +373,8 @@ def main():
             self.scine_functional = args.scine_functional
             # These are needed by setup_experiment
             self.sample_index_file = None
+            self.device = "cpu"  # SCINE always runs on CPU
+            self.split = "test"
     
     setup_args = SetupArgs(args)
     calculator, dataloader, device, _ = setup_experiment(setup_args, shuffle=False)
