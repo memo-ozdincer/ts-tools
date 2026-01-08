@@ -152,11 +152,25 @@ class HPOResult:
             "avg_steps": self.avg_steps,
             "avg_wall_time": self.avg_wall_time,
             "avg_final_fmax": self.avg_final_fmax,
+            "hard_sample_indices": list(getattr(self, "hard_sample_indices", [])),
             "neg_eigval_distribution": dict(self.neg_eigval_counts),
         }
 
 
-def run_trial_evaluation(
+# Good starting configuration for HIP (from user's observations)
+# These are the "OK" values that work reasonably well
+HIP_GOOD_STARTING_CONFIG = HPOConfig(
+    delta0=0.5,
+    rho_dec=50.0,
+    sigma_dec=0.9,
+    rho_inc=1.035,  # Default
+    sigma_inc=1.15,  # Default
+    fmax=1e-3,
+    apply_eckart=False,
+)
+
+
+def prescreen_samples(
     calculator,
     dataloader,
     device: str,
@@ -165,20 +179,27 @@ def run_trial_evaluation(
     max_samples: int,
     start_from: str,
     noise_seed: Optional[int],
-    verbose: bool = False,
-    trial: Optional[optuna.Trial] = None,  # For pruning support
-    prune_after_n: int = 10,  # Check for pruning after this many samples
-) -> HPOResult:
-    """Run Sella optimization for a batch of samples with given config.
+    verbose: bool = True,
+) -> tuple[List[int], List[int]]:
+    """Pre-screen samples with default parameters to find "hard" samples.
     
-    Supports Optuna pruning: if trial is provided, reports intermediate values
-    and may raise TrialPruned if the trial looks unpromising.
+    Runs Sella with the given config (typically good defaults) on all samples.
+    Returns (hard_sample_indices, easy_sample_indices):
+    - hard_sample_indices: samples that did NOT converge to a true TS (1 neg eigenvalue)
+    - easy_sample_indices: samples that DID converge to a true TS
+    
+    This allows HPO to focus on hard samples where parameter tuning matters most.
     """
-    
-    # Create predict function for eigenvalue validation
     predict_fn = make_predict_fn_from_calculator(calculator, "hip")
     
-    result = HPOResult(config=config)
+    hard_indices = []
+    easy_indices = []
+    
+    if verbose:
+        print(f"\n{'='*60}")
+        print("PRE-SCREENING: Identifying hard samples")
+        print(f"Config: {config.to_str()}")
+        print(f"{'='*60}")
     
     for i, batch in enumerate(dataloader):
         if i >= max_samples:
@@ -187,15 +208,12 @@ def run_trial_evaluation(
         batch = batch.to(device)
         atomic_nums = batch.z.detach().cpu().to(device)
         
-        # Get starting geometry
         start_coords = parse_starting_geometry(
             start_from,
             batch,
             noise_seed=noise_seed,
             sample_index=i,
         ).detach().to(device)
-        
-        t0 = time.time()
         
         try:
             out_dict, aux = run_sella_ts(
@@ -223,9 +241,127 @@ def run_trial_evaluation(
                 sigma_dec=config.sigma_dec,
                 apply_eckart=config.apply_eckart,
             )
+            
+            # Check if it converged to a true TS
+            final_coords = out_dict["final_coords"].to(device)
+            final_out = predict_fn(final_coords, atomic_nums, do_hessian=True, require_grad=False)
+            final_scine_elements = get_scine_elements_from_predict_output(final_out)
+            final_vib = vibrational_eigvals(
+                final_out["hessian"], final_coords, atomic_nums,
+                scine_elements=final_scine_elements
+            )
+            final_neg = int((final_vib < 0).sum().item())
+            
+            is_ts = final_neg == 1
+            if is_ts:
+                easy_indices.append(i)
+                if verbose:
+                    print(f"  Sample {i}: EASY (TS found, 1 neg eigenvalue)")
+            else:
+                hard_indices.append(i)
+                if verbose:
+                    print(f"  Sample {i}: HARD ({final_neg} neg eigenvalues)")
+                    
+        except Exception as e:
+            # Errors count as hard samples
+            hard_indices.append(i)
+            if verbose:
+                print(f"  Sample {i}: HARD (error: {e})")
+    
+    if verbose:
+        print(f"\n{'='*60}")
+        print(f"Pre-screening complete:")
+        print(f"  Easy samples: {len(easy_indices)} ({100*len(easy_indices)/max(1, len(easy_indices)+len(hard_indices)):.1f}%)")
+        print(f"  Hard samples: {len(hard_indices)} ({100*len(hard_indices)/max(1, len(easy_indices)+len(hard_indices)):.1f}%)")
+        print(f"{'='*60}\n")
+    
+    return hard_indices, easy_indices
+
+
+def run_trial_evaluation(
+    calculator,
+    dataloader,
+    device: str,
+    config: HPOConfig,
+    max_steps: int,
+    max_samples: int,
+    start_from: str,
+    noise_seed: Optional[int],
+    verbose: bool = False,
+    trial: Optional[optuna.Trial] = None,  # For pruning support
+    prune_after_n: int = 10,  # Check for pruning after this many samples
+    sample_indices: Optional[List[int]] = None,  # If provided, only run these samples
+) -> HPOResult:
+    """Run Sella optimization for a batch of samples with given config.
+    
+    Supports Optuna pruning: if trial is provided, reports intermediate values
+    and may raise TrialPruned if the trial looks unpromising.
+    
+    If sample_indices is provided, only evaluates those specific samples (useful
+    for focusing on hard samples identified during pre-screening).
+    """
+    
+    # Create predict function for eigenvalue validation
+    predict_fn = make_predict_fn_from_calculator(calculator, "hip")
+    
+    result = HPOResult(config=config)
+    
+    # Pre-load all batches into a list for random access
+    all_batches = list(dataloader)
+    
+    # Determine which samples to run
+    if sample_indices is not None:
+        # Use provided indices (e.g., hard samples from prescreening)
+        indices_to_run = [idx for idx in sample_indices if idx < len(all_batches)][:max_samples]
+    else:
+        # Run first max_samples sequentially
+        indices_to_run = list(range(min(max_samples, len(all_batches))))
+    
+    samples_processed = 0
+    for sample_idx in indices_to_run:
+        batch = all_batches[sample_idx].to(device)
+        atomic_nums = batch.z.detach().cpu().to(device)
+        
+        # Get starting geometry
+        start_coords = parse_starting_geometry(
+            start_from,
+            batch,
+            noise_seed=noise_seed,
+            sample_index=sample_idx,
+        ).detach().to(device)
+        
+        t0 = time.time()
+        
+        try:
+            out_dict, aux = run_sella_ts(
+                calculator,
+                "hip",
+                start_coords,
+                atomic_nums,
+                fmax=config.fmax,
+                max_steps=max_steps,
+                internal=config.internal,
+                delta0=config.delta0,
+                order=config.order,
+                device=device,
+                save_trajectory=False,
+                trajectory_dir=None,
+                sample_index=sample_idx,
+                logfile=None,
+                verbose=False,
+                use_exact_hessian=config.use_exact_hessian,
+                diag_every_n=config.diag_every_n,
+                gamma=config.gamma,
+                rho_inc=config.rho_inc,
+                rho_dec=config.rho_dec,
+                sigma_inc=config.sigma_inc,
+                sigma_dec=config.sigma_dec,
+                apply_eckart=config.apply_eckart,
+            )
             wall_time = time.time() - t0
             
             # Track metrics
+            samples_processed += 1
             result.n_samples += 1
             result.steps_list.append(out_dict["steps_taken"])
             result.wall_time_list.append(wall_time)
@@ -263,7 +399,8 @@ def run_trial_evaluation(
                 
         except Exception as e:
             if verbose:
-                print(f"[WARN] Sample {i} failed: {e}")
+                print(f"[WARN] Sample {sample_idx} failed: {e}")
+            samples_processed += 1
             result.n_samples += 1
             result.neg_eigval_counts[-1] += 1
         
@@ -302,10 +439,14 @@ def create_objective(
     verbose: bool,
     use_wandb: bool,
     prune_after_n: int = 10,
+    sample_indices: Optional[List[int]] = None,  # Focus on specific samples (e.g., hard ones)
 ):
     """Create Optuna objective function for HIP HPO.
     
     Uses MedianPruner-compatible intermediate reporting after prune_after_n samples.
+    
+    If sample_indices is provided, trials will only evaluate those specific samples
+    (useful for focusing on hard samples identified during pre-screening).
     """
     
     trial_count = [0]  # Mutable counter for trial tracking
@@ -355,6 +496,7 @@ def create_objective(
                 verbose=verbose,
                 trial=trial,
                 prune_after_n=prune_after_n,
+                sample_indices=sample_indices,  # Focus on hard samples if provided
             )
         except optuna.TrialPruned:
             if verbose:
@@ -464,6 +606,23 @@ def main(argv: Optional[List[str]] = None) -> None:
         "--resume",
         action="store_true",
         help="Resume from existing study if it exists (requires --study-name)",
+    )
+    parser.add_argument(
+        "--prescreen",
+        action="store_true",
+        help="Run prescreening to identify hard samples, then focus HPO on those",
+    )
+    parser.add_argument(
+        "--prescreen-samples",
+        type=int,
+        default=100,
+        help="Number of samples to prescreen (should be > max_samples). Default: 100",
+    )
+    parser.add_argument(
+        "--hard-samples-file",
+        type=str,
+        default=None,
+        help="Load hard sample indices from file (skip prescreening)",
     )
     
     # W&B arguments
@@ -587,7 +746,69 @@ def main(argv: Optional[List[str]] = None) -> None:
         n_remaining = max(0, args.n_trials - n_existing)
         print(f"Will run {n_remaining} more trials")
     
-    # Create objective function
+    # =========================================================================
+    # PRE-SCREENING: Identify hard samples to focus HPO on
+    # =========================================================================
+    hard_sample_indices = None
+    
+    if args.hard_samples_file:
+        # Load from file
+        with open(args.hard_samples_file, "r") as f:
+            hard_sample_indices = json.load(f)
+        print(f"\nLoaded {len(hard_sample_indices)} hard sample indices from {args.hard_samples_file}")
+    elif args.prescreen:
+        # Run prescreening with good default config
+        print(f"\nPre-screening {args.prescreen_samples} samples with good defaults...")
+        hard_sample_indices, easy_sample_indices = prescreen_samples(
+            calculator=calculator,
+            dataloader=dataloader,
+            device=device,
+            config=HIP_GOOD_STARTING_CONFIG,
+            max_steps=args.max_steps,
+            max_samples=args.prescreen_samples,
+            start_from=args.start_from,
+            noise_seed=getattr(args, "noise_seed", None),
+            verbose=args.verbose,
+        )
+        
+        # Save hard samples for future runs
+        hard_samples_path = Path(out_dir) / "hard_sample_indices.json"
+        with open(hard_samples_path, "w") as f:
+            json.dump(hard_sample_indices, f)
+        print(f"Saved hard sample indices to: {hard_samples_path}")
+        
+        if not hard_sample_indices:
+            print("WARNING: No hard samples found! All samples converge with default params.")
+            print("HPO may not provide much benefit. Proceeding with all samples...")
+            hard_sample_indices = None
+    
+    if hard_sample_indices is not None:
+        print(f"\nHPO will focus on {len(hard_sample_indices)} hard samples")
+    
+    # =========================================================================
+    # SEED WITH GOOD STARTING CONFIGS (to help TPE)
+    # =========================================================================
+    if n_existing == 0:  # Only seed if this is a fresh study
+        # Seed with known-good config: delta0=0.5, rho_dec=50.0, sigma_dec=0.9
+        print("\nSeeding TPE with known-good starting configs...")
+        good_configs = [
+            # Best known config
+            {"delta0": 0.5, "rho_dec": 50.0, "rho_inc": 1.035, "sigma_dec": 0.9, 
+             "sigma_inc": 1.15, "fmax": 1e-3, "apply_eckart": False},
+            # Same but with Eckart
+            {"delta0": 0.5, "rho_dec": 50.0, "rho_inc": 1.035, "sigma_dec": 0.9, 
+             "sigma_inc": 1.15, "fmax": 1e-3, "apply_eckart": True},
+            # Slightly different
+            {"delta0": 0.4, "rho_dec": 40.0, "rho_inc": 1.05, "sigma_dec": 0.85, 
+             "sigma_inc": 1.2, "fmax": 1e-3, "apply_eckart": False},
+        ]
+        for cfg in good_configs:
+            study.enqueue_trial(cfg)
+        print(f"  Enqueued {len(good_configs)} seed trials")
+    
+    # =========================================================================
+    # CREATE OBJECTIVE FUNCTION
+    # =========================================================================
     objective = create_objective(
         calculator=calculator,
         dataloader=dataloader,
@@ -598,6 +819,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         noise_seed=getattr(args, "noise_seed", None),
         verbose=args.verbose,
         use_wandb=args.wandb,
+        sample_indices=hard_sample_indices,  # Focus on hard samples if prescreened
     )
     
     # Run optimization with graceful error handling
