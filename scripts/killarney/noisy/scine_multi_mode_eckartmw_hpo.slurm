@@ -4,125 +4,84 @@
 #SBATCH --time=20:00:00
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32GB
-#SBATCH --job-name=scine_gad_hpo_noisy
-#SBATCH --output=logs/scine_gad_hpo_noisy_%j.out
-#SBATCH --error=logs/scine_gad_hpo_noisy_%j.err
+#SBATCH --job-name=scine_multi_mode_hpo
+#SBATCH --output=logs/scine_multi_mode_hpo_%j.out
+#SBATCH --error=logs/scine_multi_mode_hpo_%j.err
 
-# NOTE: No GPU needed for SCINE - runs on CPU only
-
-# =============================================================================
-# SCINE Multi-Mode Eckart-MW GAD HPO (NOISY PATH)
-# =============================================================================
-#
-# This script runs HPO using the SAME module as the working noisy scripts.
-# It imports run_multi_mode_escape from src/noisy/multi_mode_eckartmw.py
-#
-# VERIFICATION: Before HPO, a verification run confirms the algorithm works
-# using the EXACT parameters from scripts/killarney/noisy/scine_multi_mode_eckartmw.slurm
-#
-# CRASH RECOVERY: Progress saved to SQLite after each trial.
-#   To resume: RESUME=--resume STUDY_NAME=<previous_name> sbatch ...
-# =============================================================================
+# NOTE: No GPU needed for SCINE - it runs on CPU only
 
 mkdir -p logs
 source .venv/bin/activate
 
+# Ensure CPU-side linear algebra can use allocated cores.
 export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
 export OPENBLAS_NUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
 export MKL_NUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
 export NUMEXPR_NUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
 export VECLIB_MAXIMUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
-export MPLBACKEND=Agg
 
 H5_PATH="/project/6101772/memoozd/data/transition1x.h5"
-OUT_DIR="$HOME/scratch/ts-tools-output/gad_hpo_noisy_scine_${SLURM_JOB_ID}"
+OUT_DIR="$HOME/scratch/ts-tools-output/hpo"
 
-# W&B configuration
+# W&B setup
 export WANDB_DIR="$OUT_DIR/wandb"
 mkdir -p "$WANDB_DIR"
 export WANDB_MODE=online
 if [[ -z "${WANDB_API_KEY:-}" ]]; then
-    echo "WARNING: WANDB_API_KEY not set. W&B logging disabled." >&2
-    WANDB_FLAG=""
-else
-    WANDB_FLAG="--wandb"
+    echo "ERROR: WANDB_API_KEY is not set (required for WANDB_MODE=online)." >&2
+    exit 2
 fi
 
-export WANDB_RUN_GROUP="gad-hpo-noisy"
-
-# HPO parameters
-N_TRIALS=${N_TRIALS:-100}
-N_STEPS_PER_SAMPLE=${N_STEPS_PER_SAMPLE:-800}
-N_SAMPLES=${N_SAMPLES:-15}
-MAX_SAMPLES=${MAX_SAMPLES:-100}
-VERIFICATION_SAMPLES=${VERIFICATION_SAMPLES:-5}
-SCINE_FUNCTIONAL=${SCINE_FUNCTIONAL:-DFTB0}
-
-START_FROM="midpoint_rt_noise1.0A"
-NOISE_SEED=42
-
-# Study name and resume
-STUDY_NAME="${STUDY_NAME:-scine-gad-hpo-noisy-${SLURM_JOB_ID}}"
-RESUME_FLAG="${RESUME:-}"
-
-WANDB_NAME="scine-gad-hpo-noisy_${N_TRIALS}trials_${SCINE_FUNCTIONAL}_job${SLURM_JOB_ID}"
+export WANDB_RUN_GROUP="HPO-multi-mode-eckartmw"
 
 echo `date`: Job $SLURM_JOB_ID is allocated resources.
-echo "=============================================="
-echo "SCINE MULTI-MODE ECKART-MW GAD HPO (NOISY PATH)"
-echo "=============================================="
-echo "This uses the SAME module as the working noisy scripts!"
-echo ""
-echo "SLURM_JOB_ID: $SLURM_JOB_ID"
-echo "N_TRIALS: $N_TRIALS"
-echo "N_STEPS_PER_SAMPLE: $N_STEPS_PER_SAMPLE"
-echo "N_SAMPLES: $N_SAMPLES"
-echo "VERIFICATION_SAMPLES: $VERIFICATION_SAMPLES"
-echo "SCINE_FUNCTIONAL: $SCINE_FUNCTIONAL"
-echo "STUDY_NAME: $STUDY_NAME"
-echo "OUT_DIR: $OUT_DIR"
-echo "=============================================="
-echo "A verification run will be done FIRST using exact"
-echo "parameters from the working noisy SLURM script."
-echo "=============================================="
+echo ">>> Running SCINE Multi-Mode Eckart-MW HPO..."
 
-# Build optional arguments
-RESUME_ARG=""
-if [[ -n "$RESUME_FLAG" ]]; then
-    RESUME_ARG="--resume"
-    echo "RESUME MODE ENABLED"
+# Run parameters (same as working SLURM script)
+N_STEPS=15000
+MAX_SAMPLES=100
+START_FROM="midpoint_rt_noise1.0A"
+NOISE_SEED=42
+SCINE_FUNCTIONAL="DFTB0"
+
+# HPO configuration
+N_TRIALS=${N_TRIALS:-50}
+N_STARTUP_TRIALS=${N_STARTUP_TRIALS:-5}
+STUDY_NAME=${STUDY_NAME:-"scine_multi_mode_hpo_${SLURM_JOB_ID}"}
+
+# Resume flag (set RESUME=1 to resume existing study)
+RESUME_FLAG=""
+if [[ "${RESUME:-0}" == "1" ]]; then
+    RESUME_FLAG="--resume"
 fi
 
+# Skip verification flag (set SKIP_VERIFY=1 to skip)
+SKIP_VERIFY_FLAG=""
+if [[ "${SKIP_VERIFY:-0}" == "1" ]]; then
+    SKIP_VERIFY_FLAG="--skip-verification"
+fi
+
+echo ">>> HPO Configuration:"
+echo "    Study: $STUDY_NAME"
+echo "    Trials: $N_TRIALS"
+echo "    Startup trials: $N_STARTUP_TRIALS"
+echo "    Resume: ${RESUME:-0}"
+echo "    Skip verification: ${SKIP_VERIFY:-0}"
+
 python -m src.noisy.scine_multi_mode_eckartmw_hpo \
-    --scine-functional "$SCINE_FUNCTIONAL" \
     --h5-path "$H5_PATH" \
     --out-dir "$OUT_DIR" \
+    --scine-functional "$SCINE_FUNCTIONAL" \
+    --n-steps "$N_STEPS" \
     --max-samples "$MAX_SAMPLES" \
     --start-from "$START_FROM" \
     --noise-seed "$NOISE_SEED" \
     --n-trials "$N_TRIALS" \
-    --n-steps-per-sample "$N_STEPS_PER_SAMPLE" \
-    --n-samples "$N_SAMPLES" \
-    --verification-samples "$VERIFICATION_SAMPLES" \
+    --n-startup-trials "$N_STARTUP_TRIALS" \
     --study-name "$STUDY_NAME" \
-    $RESUME_ARG \
-    $WANDB_FLAG \
-    --wandb-project "gad-hpo" \
-    --wandb-entity "memo-ozdincer-university-of-toronto" \
-    --wandb-name "$WANDB_NAME"
+    $RESUME_FLAG \
+    $SKIP_VERIFY_FLAG \
+    --wandb \
+    --wandb-project "scine-multi-mode-hpo"
 
-EXIT_CODE=$?
-
-echo ""
-echo "=============================================="
-if [ $EXIT_CODE -eq 0 ]; then
-    echo "SCINE GAD HPO completed successfully at `date`"
-else
-    echo "SCINE GAD HPO exited with code $EXIT_CODE at `date`"
-    echo "To resume: RESUME=--resume STUDY_NAME=$STUDY_NAME sbatch ..."
-fi
-echo "Results: $OUT_DIR/hpo_results.json"
-echo "Optuna DB: $OUT_DIR/${STUDY_NAME}.db"
-echo "=============================================="
-
-exit $EXIT_CODE
+echo "Job completed successfully."

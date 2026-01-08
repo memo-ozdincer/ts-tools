@@ -1,65 +1,61 @@
-from __future__ import annotations
+#!/usr/bin/env python
+"""Bayesian Hyperparameter Optimization for HIP Multi-Mode Eckart-MW.
 
-"""Optuna Bayesian Hyperparameter Optimization for HIP multi-mode Eckart-MW GAD.
+This script performs HPO directly on top of the working multi_mode_eckartmw.py
+implementation, using the exact same run_multi_mode_escape function.
 
-This script lives in src/noisy/ and imports directly from the working noisy module.
-
-IMPORTANT: Before HPO begins, a verification run is performed using the EXACT
-parameters from the working SLURM script (scripts/killarney/noisy/hip_multi_mode_eckartmw.slurm)
-to confirm the algorithm works correctly.
-
-Strategy:
-1. Run verification with EXACT noisy SLURM parameters (5 samples, quick check)
-2. If verification passes, proceed with HPO
-3. Use Optuna's TPE sampler for Bayesian optimization
-4. Focus on difficult samples (those that don't converge with default params)
-5. Objective: Maximize convergence rate + minimize steps to converge
-
-Features:
-- Verification run before HPO to confirm algorithm works
-- W&B logging for detailed tracking (no plots, just stats)
-- SQLite storage for crash recovery
-- Graceful error handling (saves partial results on interrupt)
-- Resume support for continuing from previous runs
+CRITICAL: The first trial uses EXACTLY the same parameters as the working
+hip_multi_mode_eckartmw.slurm script to verify the setup before HPO begins.
 """
+
+from __future__ import annotations
 
 import argparse
 import json
 import os
 import sys
 import time
-import traceback
 import warnings
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
-import optuna
 import torch
-from optuna.samplers import TPESampler
 
-# Suppress warnings
+# Suppress warnings (including edge_vec_0_distance errors)
 warnings.filterwarnings('ignore')
 
-# Suppress Optuna's verbose logging (we log to W&B instead)
+# Import Optuna
+import optuna
+from optuna.samplers import TPESampler
+
+# Suppress Optuna's verbose logging
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
-# Import from the LOCAL noisy module (not experiments)
-from .multi_mode_eckartmw import run_multi_mode_escape
-from ..dependencies.common_utils import add_common_args, setup_experiment, parse_starting_geometry
-from ..dependencies.hessian import vibrational_eigvals, get_scine_elements_from_predict_output
+# Import from the working implementation
+from .multi_mode_eckartmw import (
+    run_multi_mode_escape,
+    vibrational_eigvals,
+    get_scine_elements_from_predict_output,
+)
+from ..dependencies.common_utils import setup_experiment
+from ..dependencies.hessian import vibrational_eigvals
 from ..runners._predict import make_predict_fn_from_calculator
-from ..logging import finish_wandb, init_wandb_run, log_sample, log_summary
+
+# Try to import wandb
+try:
+    import wandb
+    WANDB_AVAILABLE = True
+except ImportError:
+    WANDB_AVAILABLE = False
 
 
 # =============================================================================
-# EXACT parameters from working SLURM: scripts/killarney/noisy/hip_multi_mode_eckartmw.slurm
+# EXACT BASELINE PARAMETERS FROM hip_multi_mode_eckartmw.slurm
 # =============================================================================
-NOISY_SLURM_PARAMS = {
-    "n_steps": 15000,
+BASELINE_PARAMS = {
+    "method": "euler",
     "dt": 0.001,
-    "stop_at_ts": True,
-    "ts_eps": 1e-5,
     "dt_control": "neg_eig_plateau",
     "dt_min": 1e-6,
     "dt_max": 0.05,
@@ -69,52 +65,120 @@ NOISY_SLURM_PARAMS = {
     "plateau_shrink": 0.5,
     "escape_disp_threshold": 5e-4,
     "escape_window": 20,
-    "hip_vib_mode": "proj_tol",
-    "hip_rigid_tol": 1e-6,
-    "hip_eigh_device": "cpu",
     "escape_neg_vib_std": 0.5,
     "escape_delta": 0.1,
     "adaptive_delta": True,
     "min_interatomic_dist": 0.5,
     "max_escape_cycles": 1000,
-    "profile_every": 0,
+    "hip_vib_mode": "proj_tol",
+    "hip_rigid_tol": 1e-6,
+    "hip_eigh_device": "cpu",
+    "stop_at_ts": True,
+    "ts_eps": 1e-5,
 }
 
 
-def run_verification(
-    dataloader,
-    device: str,
+def run_single_sample(
     predict_fn,
+    coords: torch.Tensor,
+    atomic_nums: torch.Tensor,
+    params: Dict[str, Any],
+    n_steps: int,
+) -> Dict[str, Any]:
+    """Run a single sample with given parameters.
+    
+    Returns dict with:
+        - final_neg_vib: Final number of negative vibrational eigenvalues
+        - steps_taken: Number of steps taken
+        - steps_to_ts: Steps to reach TS (if found)
+        - escape_cycles: Number of escape cycles used
+        - success: Whether we reached index-1 saddle
+        - wall_time: Wall clock time
+    """
+    t0 = time.time()
+    
+    try:
+        out_dict, aux = run_multi_mode_escape(
+            predict_fn,
+            coords,
+            atomic_nums,
+            n_steps=n_steps,
+            dt=params["dt"],
+            stop_at_ts=params["stop_at_ts"],
+            ts_eps=params["ts_eps"],
+            dt_control=params["dt_control"],
+            dt_min=params["dt_min"],
+            dt_max=params["dt_max"],
+            max_atom_disp=params["max_atom_disp"],
+            plateau_patience=params["plateau_patience"],
+            plateau_boost=params["plateau_boost"],
+            plateau_shrink=params["plateau_shrink"],
+            escape_disp_threshold=params["escape_disp_threshold"],
+            escape_window=params["escape_window"],
+            hip_vib_mode=params["hip_vib_mode"],
+            hip_rigid_tol=params["hip_rigid_tol"],
+            hip_eigh_device=params["hip_eigh_device"],
+            escape_neg_vib_std=params["escape_neg_vib_std"],
+            escape_delta=params["escape_delta"],
+            adaptive_delta=params["adaptive_delta"],
+            min_interatomic_dist=params["min_interatomic_dist"],
+            max_escape_cycles=params["max_escape_cycles"],
+            profile_every=0,
+        )
+        wall_time = time.time() - t0
+        
+        final_neg_vib = out_dict.get("final_neg_vibrational", -1)
+        steps_taken = out_dict.get("steps_taken", n_steps)
+        steps_to_ts = aux.get("steps_to_ts")
+        escape_cycles = aux.get("escape_cycles_used", 0)
+        
+        return {
+            "final_neg_vib": final_neg_vib,
+            "steps_taken": steps_taken,
+            "steps_to_ts": steps_to_ts,
+            "escape_cycles": escape_cycles,
+            "success": final_neg_vib == 1,
+            "wall_time": wall_time,
+            "error": None,
+        }
+        
+    except Exception as e:
+        wall_time = time.time() - t0
+        return {
+            "final_neg_vib": -1,
+            "steps_taken": 0,
+            "steps_to_ts": None,
+            "escape_cycles": 0,
+            "success": False,
+            "wall_time": wall_time,
+            "error": str(e),
+        }
+
+
+def run_batch(
+    predict_fn,
+    dataloader,
+    device,
+    params: Dict[str, Any],
+    n_steps: int,
+    max_samples: int,
     start_from: str,
     noise_seed: Optional[int],
-    n_samples: int = 5,
 ) -> Dict[str, Any]:
-    """Run verification with EXACT noisy SLURM parameters.
+    """Run a batch of samples with given parameters.
     
-    This confirms the algorithm works before HPO begins.
-    Uses the EXACT same parameters as scripts/killarney/noisy/hip_multi_mode_eckartmw.slurm
-    
-    Returns:
-        Dict with verification results (n_converged, n_total, convergence_rate, details)
+    Returns aggregated metrics.
     """
-    print("\n" + "=" * 80)
-    print("VERIFICATION RUN")
-    print("Using EXACT parameters from scripts/killarney/noisy/hip_multi_mode_eckartmw.slurm")
-    print("=" * 80)
-    print("\nParameters:")
-    for k, v in NOISY_SLURM_PARAMS.items():
-        print(f"  {k}: {v}")
-    print(f"\nRunning {n_samples} samples for verification...")
-    print("=" * 80 + "\n")
+    from ..dependencies.common_utils import parse_starting_geometry
     
     results = []
     
     for i, batch in enumerate(dataloader):
-        if i >= n_samples:
+        if i >= max_samples:
             break
             
         batch = batch.to(device)
-        atomic_nums = batch.z.detach().cpu().to(device)
+        atomic_nums = batch.z.detach().to(device)
         
         start_coords = parse_starting_geometry(
             start_from,
@@ -123,539 +187,357 @@ def run_verification(
             sample_index=i,
         ).detach().to(device)
         
-        # Get initial neg vib
-        try:
-            init_out = predict_fn(start_coords, atomic_nums, do_hessian=True, require_grad=False)
-            init_scine_elements = get_scine_elements_from_predict_output(init_out)
-            init_vib = vibrational_eigvals(init_out["hessian"], start_coords, atomic_nums, scine_elements=init_scine_elements)
-            initial_neg = int((init_vib < 0).sum().item())
-        except Exception:
-            initial_neg = -1
-        
-        t0 = time.time()
-        try:
-            # Run with EXACT noisy SLURM parameters
-            out_dict, aux = run_multi_mode_escape(
-                predict_fn,
-                start_coords,
-                atomic_nums,
-                **NOISY_SLURM_PARAMS,
-            )
-            
-            wall = time.time() - t0
-            converged = aux.get("steps_to_ts") is not None
-            steps_to_ts = aux.get("steps_to_ts")
-            final_neg = out_dict.get("final_neg_vibrational", -1)
-            
-            results.append({
-                "index": i,
-                "converged": converged,
-                "steps_to_ts": steps_to_ts,
-                "final_neg": final_neg,
-                "initial_neg": initial_neg,
-                "wall_time": wall,
-                "error": None,
-            })
-            
-            status = "✓ CONVERGED" if converged else "✗ not converged"
-            print(f"  Sample {i:3d}: {status} | steps={steps_to_ts or 'N/A':>6} | "
-                  f"final_neg={final_neg} | initial_neg={initial_neg} | time={wall:.1f}s")
-            
-        except Exception as e:
-            wall = time.time() - t0
-            results.append({
-                "index": i,
-                "converged": False,
-                "steps_to_ts": None,
-                "final_neg": -1,
-                "initial_neg": initial_neg,
-                "wall_time": wall,
-                "error": str(e),
-            })
-            print(f"  Sample {i:3d}: ✗ ERROR: {e}")
+        result = run_single_sample(
+            predict_fn, start_coords, atomic_nums, params, n_steps
+        )
+        result["sample_idx"] = i
+        results.append(result)
     
-    # Compute summary
-    n_converged = sum(1 for r in results if r["converged"])
-    n_total = len(results)
-    convergence_rate = n_converged / n_total if n_total > 0 else 0.0
+    # Aggregate metrics
+    n_samples = len(results)
+    n_success = sum(1 for r in results if r["success"])
+    n_errors = sum(1 for r in results if r["error"] is not None)
     
-    print("\n" + "=" * 80)
-    print("VERIFICATION RESULTS")
-    print("=" * 80)
-    print(f"Converged: {n_converged}/{n_total} = {convergence_rate * 100:.1f}%")
+    steps_when_success = [r["steps_to_ts"] for r in results if r["steps_to_ts"] is not None]
+    escape_cycles_list = [r["escape_cycles"] for r in results if r["error"] is None]
+    wall_times = [r["wall_time"] for r in results]
     
-    if convergence_rate >= 0.5:
-        print("✓ Verification PASSED - algorithm is working")
-    else:
-        print("⚠ WARNING: Low convergence rate in verification")
-        print("  This may indicate an issue with the algorithm or parameters")
-    
-    print("=" * 80 + "\n")
+    final_neg_vibs = [r["final_neg_vib"] for r in results if r["error"] is None]
+    neg_vib_counts = {}
+    for v in final_neg_vibs:
+        neg_vib_counts[v] = neg_vib_counts.get(v, 0) + 1
     
     return {
-        "n_converged": n_converged,
-        "n_total": n_total,
-        "convergence_rate": convergence_rate,
+        "n_samples": n_samples,
+        "n_success": n_success,
+        "n_errors": n_errors,
+        "success_rate": n_success / max(n_samples, 1),
+        "mean_steps_when_success": np.mean(steps_when_success) if steps_when_success else float("nan"),
+        "mean_escape_cycles": np.mean(escape_cycles_list) if escape_cycles_list else float("nan"),
+        "mean_wall_time": np.mean(wall_times),
+        "total_wall_time": sum(wall_times),
+        "neg_vib_counts": neg_vib_counts,
         "results": results,
-        "passed": convergence_rate >= 0.5,
     }
 
 
-def load_difficult_samples(
-    dataloader,
-    device: str,
+def compute_objective(batch_metrics: Dict[str, Any]) -> float:
+    """Compute objective value (higher is better).
+    
+    Priority:
+    1. Success rate (index-1 saddle) - weight 1.0
+    2. Speed (fewer steps when successful) - weight 0.01
+    
+    Returns negative value for minimization.
+    """
+    success_rate = batch_metrics["success_rate"]
+    mean_steps = batch_metrics["mean_steps_when_success"]
+    
+    # Speed score: inversely proportional to steps (normalized)
+    if np.isfinite(mean_steps) and mean_steps > 0:
+        speed_score = 1000.0 / mean_steps  # Normalize to roughly 0-1 range
+    else:
+        speed_score = 0.0
+    
+    # Combined score (higher is better)
+    score = success_rate * 1.0 + speed_score * 0.01
+    
+    # Return negative for minimization
+    return -score
+
+
+def sample_hyperparameters(trial: optuna.Trial) -> Dict[str, Any]:
+    """Sample hyperparameters for a trial."""
+    params = BASELINE_PARAMS.copy()
+    
+    # dt: base time step
+    params["dt"] = trial.suggest_float("dt", 0.0005, 0.005, log=True)
+    
+    # dt_max: maximum allowed time step
+    params["dt_max"] = trial.suggest_float("dt_max", 0.01, 0.1, log=True)
+    
+    # max_atom_disp: safety cap on per-atom displacement
+    params["max_atom_disp"] = trial.suggest_float("max_atom_disp", 0.1, 0.5)
+    
+    # Plateau controller parameters
+    params["plateau_patience"] = trial.suggest_int("plateau_patience", 3, 20)
+    params["plateau_boost"] = trial.suggest_float("plateau_boost", 1.2, 3.0)
+    params["plateau_shrink"] = trial.suggest_float("plateau_shrink", 0.3, 0.7)
+    
+    # Escape detection parameters
+    params["escape_disp_threshold"] = trial.suggest_float("escape_disp_threshold", 1e-4, 1e-3, log=True)
+    params["escape_window"] = trial.suggest_int("escape_window", 10, 50)
+    params["escape_neg_vib_std"] = trial.suggest_float("escape_neg_vib_std", 0.2, 1.0)
+    
+    # Escape perturbation parameters
+    params["escape_delta"] = trial.suggest_float("escape_delta", 0.05, 0.3)
+    params["adaptive_delta"] = trial.suggest_categorical("adaptive_delta", [True, False])
+    params["min_interatomic_dist"] = trial.suggest_float("min_interatomic_dist", 0.3, 0.7)
+    
+    return params
+
+
+def run_verification(
     predict_fn,
+    dataloader,
+    device,
+    n_steps: int,
+    max_samples: int,
     start_from: str,
     noise_seed: Optional[int],
-    target_count: int = 30,
-    difficulty_threshold: float = 0.5,
-    n_baseline_steps: int = 200,
-) -> List[Dict[str, Any]]:
-    """Identify difficult samples that fail to converge with baseline parameters.
+) -> Dict[str, Any]:
+    """Run verification with EXACT baseline parameters.
     
-    Uses EXACT noisy SLURM parameters for baseline testing.
+    This confirms the setup matches the working SLURM script behavior.
     """
-    print("\n" + "=" * 80)
-    print("IDENTIFYING DIFFICULT SAMPLES")
-    print(f"Running {n_baseline_steps}-step baseline with noisy SLURM parameters...")
-    print("=" * 80)
+    print("\n" + "=" * 70)
+    print("VERIFICATION RUN: Using EXACT baseline parameters from SLURM script")
+    print("=" * 70)
+    print(f"Parameters: {json.dumps(BASELINE_PARAMS, indent=2)}")
+    print("=" * 70 + "\n")
     
-    baseline_results = []
-    
-    # Use noisy SLURM params but with fewer steps for quick baseline
-    baseline_params = NOISY_SLURM_PARAMS.copy()
-    baseline_params["n_steps"] = n_baseline_steps
-    
-    for i, batch in enumerate(dataloader):
-        if i >= 100:  # Test on first 100 samples max
-            break
-            
-        batch = batch.to(device)
-        atomic_nums = batch.z.detach().cpu().to(device)
-        
-        start_coords = parse_starting_geometry(
-            start_from,
-            batch,
-            noise_seed=noise_seed,
-            sample_index=i,
-        ).detach().to(device)
-        
-        # Get initial neg vib
-        try:
-            init_out = predict_fn(start_coords, atomic_nums, do_hessian=True, require_grad=False)
-            init_scine_elements = get_scine_elements_from_predict_output(init_out)
-            init_vib = vibrational_eigvals(init_out["hessian"], start_coords, atomic_nums, scine_elements=init_scine_elements)
-            initial_neg = int((init_vib < 0).sum().item())
-        except Exception:
-            initial_neg = -1
-        
-        try:
-            out_dict, aux = run_multi_mode_escape(
-                predict_fn,
-                start_coords,
-                atomic_nums,
-                **baseline_params,
-            )
-            
-            converged = aux.get("steps_to_ts") is not None
-            steps_to_converge = aux.get("steps_to_ts", n_baseline_steps)
-            final_neg = out_dict.get("final_neg_vibrational", -1)
-            
-        except Exception as e:
-            print(f"[WARN] Sample {i} failed baseline: {e}")
-            converged = False
-            steps_to_converge = n_baseline_steps
-            final_neg = -1
-        
-        # Difficulty score: higher = more difficult
-        if not converged:
-            difficulty = 1000.0
-        else:
-            difficulty = steps_to_converge
-            
-        baseline_results.append({
-            "index": i,
-            "batch": batch,
-            "start_coords": start_coords,
-            "initial_neg": initial_neg,
-            "converged": converged,
-            "steps_to_converge": steps_to_converge,
-            "final_neg": final_neg,
-            "difficulty": difficulty,
-        })
-        
-        status = "✓" if converged else "✗"
-        print(f"  Sample {i:3d}: {status} converged={converged} steps={steps_to_converge} difficulty={difficulty:.1f}")
-    
-    # Sort by difficulty (hardest first)
-    baseline_results.sort(key=lambda x: x["difficulty"], reverse=True)
-    
-    # Take top difficult samples
-    n_difficult = int(len(baseline_results) * difficulty_threshold)
-    n_difficult = max(n_difficult, target_count)
-    n_difficult = min(n_difficult, len(baseline_results))
-    
-    difficult_samples = baseline_results[:n_difficult]
-    
-    n_converged = sum(1 for r in baseline_results if r["converged"])
-    n_total = len(baseline_results)
-    baseline_rate = n_converged / n_total if n_total > 0 else 0.0
-    
-    print(f"\nBaseline convergence rate: {n_converged}/{n_total} = {baseline_rate * 100:.1f}%")
-    print(f"Selected {len(difficult_samples)} difficult samples for HPO")
-    print("=" * 80 + "\n")
-    
-    return difficult_samples
-
-
-def objective(
-    trial: optuna.Trial,
-    difficult_samples: List[Dict[str, Any]],
-    predict_fn,
-    device: str,
-    n_steps_per_sample: int,
-    use_wandb: bool = False,
-) -> float:
-    """Optuna objective function.
-    
-    Returns a score where higher is better:
-    - Primary: Convergence rate (% of samples that converge)
-    - Secondary: Mean steps to converge for successful samples (lower is better)
-    """
-    
-    # Sample hyperparameters
-    dt_min = trial.suggest_float("dt_min", 1e-7, 1e-5, log=True)
-    dt_max = trial.suggest_float("dt_max", 0.01, 0.1, log=True)
-    
-    plateau_patience = trial.suggest_int("plateau_patience", 3, 15)
-    plateau_boost = trial.suggest_float("plateau_boost", 1.2, 3.0)
-    plateau_shrink = trial.suggest_float("plateau_shrink", 0.3, 0.7)
-    
-    escape_disp_threshold = trial.suggest_float("escape_disp_threshold", 1e-5, 1e-3, log=True)
-    escape_window = trial.suggest_int("escape_window", 10, 40)
-    escape_neg_vib_std = trial.suggest_float("escape_neg_vib_std", 0.1, 1.0)
-    
-    escape_delta = trial.suggest_float("escape_delta", 0.05, 0.3)
-    adaptive_delta = trial.suggest_categorical("adaptive_delta", [True, False])
-    
-    trust_radius_max = trial.suggest_float("trust_radius_max", 0.15, 0.4)
-    
-    # Run on all difficult samples
-    results = []
-    
-    for sample_info in difficult_samples:
-        try:
-            out_dict, aux = run_multi_mode_escape(
-                predict_fn,
-                sample_info["start_coords"],
-                sample_info["batch"].z.detach().cpu().to(device),
-                n_steps=n_steps_per_sample,
-                dt=0.001,
-                stop_at_ts=True,
-                ts_eps=1e-5,
-                dt_control="neg_eig_plateau",
-                dt_min=dt_min,
-                dt_max=dt_max,
-                max_atom_disp=trust_radius_max,
-                plateau_patience=plateau_patience,
-                plateau_boost=plateau_boost,
-                plateau_shrink=plateau_shrink,
-                escape_disp_threshold=escape_disp_threshold,
-                escape_window=escape_window,
-                hip_vib_mode="proj_tol",
-                hip_rigid_tol=1e-6,
-                hip_eigh_device="cpu",
-                escape_neg_vib_std=escape_neg_vib_std,
-                escape_delta=escape_delta,
-                adaptive_delta=adaptive_delta,
-                min_interatomic_dist=0.5,
-                max_escape_cycles=1000,
-                profile_every=0,
-            )
-            
-            converged = aux.get("steps_to_ts") is not None
-            steps_to_converge = aux.get("steps_to_ts", n_steps_per_sample)
-            
-            results.append({
-                "converged": converged,
-                "steps_to_converge": steps_to_converge,
-            })
-            
-        except Exception:
-            results.append({
-                "converged": False,
-                "steps_to_converge": n_steps_per_sample,
-            })
-    
-    # Compute metrics
-    n_converged = sum(1 for r in results if r["converged"])
-    n_total = len(results)
-    convergence_rate = n_converged / n_total if n_total > 0 else 0.0
-    
-    converged_steps = [r["steps_to_converge"] for r in results if r["converged"]]
-    mean_steps = float(np.mean(converged_steps)) if converged_steps else float(n_steps_per_sample)
-    
-    # Score: prioritize convergence rate, use steps as tiebreaker
-    score = convergence_rate - 0.0001 * mean_steps
-    
-    # Log to Optuna
-    trial.set_user_attr("convergence_rate", convergence_rate)
-    trial.set_user_attr("mean_steps_to_converge", mean_steps)
-    trial.set_user_attr("n_converged", n_converged)
-    trial.set_user_attr("n_total", n_total)
-    
-    print(f"Trial {trial.number}: convergence_rate={convergence_rate:.3f} ({n_converged}/{n_total}) "
-          f"mean_steps={mean_steps:.1f} score={score:.4f}")
-    
-    # Log to W&B
-    if use_wandb:
-        log_sample(
-            trial.number,
-            {
-                "trial/number": trial.number,
-                "hparams/dt_min": dt_min,
-                "hparams/dt_max": dt_max,
-                "hparams/plateau_patience": plateau_patience,
-                "hparams/plateau_boost": plateau_boost,
-                "hparams/plateau_shrink": plateau_shrink,
-                "hparams/escape_disp_threshold": escape_disp_threshold,
-                "hparams/escape_window": escape_window,
-                "hparams/escape_neg_vib_std": escape_neg_vib_std,
-                "hparams/escape_delta": escape_delta,
-                "hparams/adaptive_delta": adaptive_delta,
-                "hparams/trust_radius_max": trust_radius_max,
-                "metrics/convergence_rate": convergence_rate,
-                "metrics/mean_steps": mean_steps,
-                "metrics/score": score,
-                "counts/n_converged": n_converged,
-                "counts/n_total": n_total,
-            },
-        )
-    
-    return score
-
-
-def main(argv: Optional[List[str]] = None) -> None:
-    parser = argparse.ArgumentParser(
-        description="Bayesian HPO for HIP multi-mode Eckart-MW GAD (in noisy path)."
+    metrics = run_batch(
+        predict_fn, dataloader, device, BASELINE_PARAMS,
+        n_steps, max_samples, start_from, noise_seed
     )
-    parser = add_common_args(parser)
-    parser.set_defaults(calculator="hip", noise_seed=42)
     
-    # HPO parameters
-    parser.add_argument("--n-trials", type=int, default=100, help="Number of Optuna trials")
-    parser.add_argument("--n-steps-per-sample", type=int, default=800, help="Steps per sample per trial")
-    parser.add_argument("--n-samples", type=int, default=15, help="Number of samples per trial")
-    parser.add_argument("--difficulty-threshold", type=float, default=0.5)
+    print("\n" + "=" * 70)
+    print("VERIFICATION RESULTS")
+    print("=" * 70)
+    print(f"  Samples: {metrics['n_samples']}")
+    print(f"  Success (index-1): {metrics['n_success']} ({metrics['success_rate']*100:.1f}%)")
+    print(f"  Errors: {metrics['n_errors']}")
+    print(f"  Mean steps when success: {metrics['mean_steps_when_success']:.1f}")
+    print(f"  Mean escape cycles: {metrics['mean_escape_cycles']:.2f}")
+    print(f"  Total wall time: {metrics['total_wall_time']:.1f}s")
+    print(f"  Neg vib distribution: {metrics['neg_vib_counts']}")
+    print("=" * 70 + "\n")
+    
+    return metrics
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Bayesian HPO for HIP Multi-Mode Eckart-MW"
+    )
+    
+    # Data paths
+    parser.add_argument("--h5-path", type=str, required=True)
+    parser.add_argument("--checkpoint-path", type=str, required=True)
+    parser.add_argument("--out-dir", type=str, required=True)
+    
+    # Run configuration
+    parser.add_argument("--n-steps", type=int, default=15000)
+    parser.add_argument("--max-samples", type=int, default=100)
     parser.add_argument("--start-from", type=str, default="midpoint_rt_noise1.0A")
+    parser.add_argument("--noise-seed", type=int, default=42)
+    
+    # HPO configuration
+    parser.add_argument("--n-trials", type=int, default=50)
+    parser.add_argument("--n-startup-trials", type=int, default=5)
     parser.add_argument("--study-name", type=str, default=None)
-    parser.add_argument("--storage", type=str, default=None)
-    parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--resume", action="store_true", help="Resume from existing study")
+    parser.add_argument("--skip-verification", action="store_true")
     
-    # Verification
-    parser.add_argument("--skip-verification", action="store_true", 
-                        help="Skip the verification run (not recommended)")
-    parser.add_argument("--verification-samples", type=int, default=5,
-                        help="Number of samples for verification run")
-    
-    # W&B
+    # W&B configuration
     parser.add_argument("--wandb", action="store_true")
-    parser.add_argument("--wandb-project", type=str, default="gad-hpo")
+    parser.add_argument("--wandb-project", type=str, default="hip-multi-mode-hpo")
     parser.add_argument("--wandb-entity", type=str, default=None)
-    parser.add_argument("--wandb-name", type=str, default=None)
     
-    args = parser.parse_args(argv)
+    args = parser.parse_args()
     
-    # Setup
-    calculator, dataloader, device, out_dir = setup_experiment(args, shuffle=False)
-    predict_fn = make_predict_fn_from_calculator(calculator, "hip")
+    # Create output directory
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
     
     # Generate study name
-    job_id = os.environ.get("SLURM_JOB_ID", str(int(time.time())))
-    study_name = args.study_name or f"hip-gad-hpo-noisy-{job_id}"
+    job_id = os.environ.get("SLURM_JOB_ID", "local")
+    study_name = args.study_name or f"hip_multi_mode_hpo_{job_id}"
+    db_path = out_dir / f"{study_name}.db"
+    storage_url = f"sqlite:///{db_path}"
     
-    # Setup storage
-    storage_url = args.storage
-    if storage_url is None:
-        db_path = Path(out_dir) / f"{study_name}.db"
-        storage_url = f"sqlite:///{db_path}"
+    # Setup calculator and dataloader
+    # Create a minimal args namespace for setup_experiment
+    class SetupArgs:
+        def __init__(self, args):
+            self.h5_path = args.h5_path
+            self.checkpoint_path = args.checkpoint_path
+            self.out_dir = args.out_dir
+            self.calculator = "hip"
+            self.max_samples = args.max_samples
+            self.start_from = args.start_from
+            self.noise_seed = args.noise_seed
+            # These are needed by setup_experiment
+            self.sample_index_file = None
+            self.scine_functional = None
     
-    print("\n" + "=" * 80)
-    print("HIP MULTI-MODE ECKART-MW GAD HPO (NOISY PATH)")
-    print("=" * 80)
-    print(f"Study: {study_name}")
-    print(f"Storage: {storage_url}")
-    print(f"Trials: {args.n_trials}")
-    print(f"Steps per sample: {args.n_steps_per_sample}")
-    print(f"Samples per trial: {args.n_samples}")
-    print("=" * 80)
+    setup_args = SetupArgs(args)
+    calculator, dataloader, device, _ = setup_experiment(setup_args, shuffle=False)
+    predict_fn = make_predict_fn_from_calculator(calculator, "hip")
     
     # Initialize W&B
-    if args.wandb:
-        wandb_name = args.wandb_name or f"hip-gad-hpo-noisy-{job_id}"
-        init_wandb_run(
+    if args.wandb and WANDB_AVAILABLE:
+        wandb.init(
             project=args.wandb_project,
-            name=wandb_name,
+            entity=args.wandb_entity,
+            name=f"HPO-{study_name}",
             config={
-                "calculator": "hip",
                 "study_name": study_name,
                 "n_trials": args.n_trials,
-                "n_steps_per_sample": args.n_steps_per_sample,
-                "n_samples": args.n_samples,
+                "n_steps": args.n_steps,
+                "max_samples": args.max_samples,
                 "start_from": args.start_from,
                 "noise_seed": args.noise_seed,
-                "noisy_slurm_params": NOISY_SLURM_PARAMS,
-                "slurm_job_id": job_id,
+                "baseline_params": BASELINE_PARAMS,
             },
-            entity=args.wandb_entity,
-            tags=["hpo", "gad", "hip", "optuna", "noisy-path"],
-            run_dir=out_dir,
+            tags=["hpo", "hip", "multi-mode-eckartmw"],
         )
     
-    # === VERIFICATION RUN ===
+    # Run verification (unless skipped)
     if not args.skip_verification:
-        verification = run_verification(
-            dataloader,
-            device,
-            predict_fn,
-            args.start_from,
-            args.noise_seed,
-            n_samples=args.verification_samples,
+        verification_metrics = run_verification(
+            predict_fn, dataloader, device,
+            args.n_steps, args.max_samples,
+            args.start_from, args.noise_seed
         )
         
-        if args.wandb:
-            log_sample(
-                -1,  # Use -1 for verification
-                {
-                    "verification/n_converged": verification["n_converged"],
-                    "verification/n_total": verification["n_total"],
-                    "verification/convergence_rate": verification["convergence_rate"],
-                    "verification/passed": verification["passed"],
-                },
-            )
-        
-        if not verification["passed"]:
-            print("\n" + "!" * 80)
-            print("WARNING: Verification failed!")
-            print("The algorithm is not performing as expected.")
-            print("Check the parameters and algorithm before proceeding.")
-            print("!" * 80 + "\n")
-            # Continue anyway but warn
+        if args.wandb and WANDB_AVAILABLE:
+            wandb.log({
+                "verification/success_rate": verification_metrics["success_rate"],
+                "verification/n_success": verification_metrics["n_success"],
+                "verification/mean_steps": verification_metrics["mean_steps_when_success"],
+                "verification/mean_escape_cycles": verification_metrics["mean_escape_cycles"],
+                "verification/total_time": verification_metrics["total_wall_time"],
+            })
     
-    # === LOAD DIFFICULT SAMPLES ===
-    difficult_samples = load_difficult_samples(
-        dataloader,
-        device,
-        predict_fn,
-        args.start_from,
-        args.noise_seed,
-        target_count=args.n_samples * 2,
-        difficulty_threshold=args.difficulty_threshold,
+    # Create Optuna study
+    sampler = TPESampler(
+        n_startup_trials=args.n_startup_trials,
+        seed=42,
     )
-    
-    # Save difficult sample indices
-    difficult_indices = [s["index"] for s in difficult_samples]
-    indices_path = Path(out_dir) / "difficult_sample_indices.json"
-    with open(indices_path, "w") as f:
-        json.dump(difficult_indices, f)
-    print(f"Saved difficult sample indices to: {indices_path}")
-    
-    # Use subset for HPO
-    hpo_samples = difficult_samples[:args.n_samples]
-    print(f"\nUsing {len(hpo_samples)} samples for HPO")
-    
-    # === CREATE OPTUNA STUDY ===
-    sampler = TPESampler(seed=42, n_startup_trials=10)
     
     study = optuna.create_study(
         study_name=study_name,
         storage=storage_url,
-        load_if_exists=args.resume or True,
-        direction="maximize",
+        load_if_exists=args.resume,
+        direction="minimize",
         sampler=sampler,
     )
     
-    n_existing = len(study.trials)
-    if n_existing > 0:
-        print(f"Loaded {n_existing} existing trials from storage")
+    # Enqueue baseline as first trial if starting fresh
+    if not args.resume and len(study.trials) == 0:
+        baseline_trial_params = {
+            "dt": BASELINE_PARAMS["dt"],
+            "dt_max": BASELINE_PARAMS["dt_max"],
+            "max_atom_disp": BASELINE_PARAMS["max_atom_disp"],
+            "plateau_patience": BASELINE_PARAMS["plateau_patience"],
+            "plateau_boost": BASELINE_PARAMS["plateau_boost"],
+            "plateau_shrink": BASELINE_PARAMS["plateau_shrink"],
+            "escape_disp_threshold": BASELINE_PARAMS["escape_disp_threshold"],
+            "escape_window": BASELINE_PARAMS["escape_window"],
+            "escape_neg_vib_std": BASELINE_PARAMS["escape_neg_vib_std"],
+            "escape_delta": BASELINE_PARAMS["escape_delta"],
+            "adaptive_delta": BASELINE_PARAMS["adaptive_delta"],
+            "min_interatomic_dist": BASELINE_PARAMS["min_interatomic_dist"],
+        }
+        study.enqueue_trial(baseline_trial_params)
     
-    # === RUN HPO ===
-    try:
-        n_to_run = max(0, args.n_trials - n_existing) if args.resume else args.n_trials
+    # Define objective function
+    def objective(trial: optuna.Trial) -> float:
+        params = sample_hyperparameters(trial)
         
-        if n_to_run > 0:
-            print(f"\nRunning {n_to_run} HPO trials...")
-            study.optimize(
-                lambda trial: objective(
-                    trial,
-                    hpo_samples,
-                    predict_fn,
-                    device,
-                    args.n_steps_per_sample,
-                    use_wandb=args.wandb,
-                ),
-                n_trials=n_to_run,
-                show_progress_bar=True,
-            )
-        else:
-            print(f"Already have {n_existing} trials, skipping HPO")
-            
+        print(f"\n>>> Trial {trial.number}: Running with params...")
+        for k, v in params.items():
+            if k not in BASELINE_PARAMS or params[k] != BASELINE_PARAMS[k]:
+                print(f"    {k}: {v}")
+        
+        # Reload dataloader (it may be exhausted)
+        _, dataloader_fresh, _, _ = setup_experiment(setup_args, shuffle=False)
+        
+        metrics = run_batch(
+            predict_fn, dataloader_fresh, device, params,
+            args.n_steps, args.max_samples,
+            args.start_from, args.noise_seed
+        )
+        
+        score = compute_objective(metrics)
+        
+        print(f"    Success rate: {metrics['success_rate']*100:.1f}%")
+        print(f"    Mean steps: {metrics['mean_steps_when_success']:.1f}")
+        print(f"    Score: {-score:.4f}")
+        
+        # Log to W&B
+        if args.wandb and WANDB_AVAILABLE:
+            log_dict = {
+                f"trial/success_rate": metrics["success_rate"],
+                f"trial/n_success": metrics["n_success"],
+                f"trial/mean_steps": metrics["mean_steps_when_success"],
+                f"trial/mean_escape_cycles": metrics["mean_escape_cycles"],
+                f"trial/total_time": metrics["total_wall_time"],
+                f"trial/score": -score,
+                f"trial/number": trial.number,
+            }
+            # Log hyperparameters
+            for k, v in params.items():
+                if isinstance(v, (int, float, bool)):
+                    log_dict[f"hparams/{k}"] = v
+            wandb.log(log_dict)
+        
+        return score
+    
+    # Run optimization
+    print(f"\n>>> Starting HPO with {args.n_trials} trials...")
+    print(f"    Study: {study_name}")
+    print(f"    Database: {db_path}")
+    
+    try:
+        study.optimize(
+            objective,
+            n_trials=args.n_trials,
+            show_progress_bar=True,
+            catch=(Exception,),
+        )
     except KeyboardInterrupt:
-        print("\n[INTERRUPTED] Saving results...")
-    except Exception as e:
-        print(f"\n[ERROR] {e}")
-        print(traceback.format_exc())
+        print("\n>>> HPO interrupted by user. Saving results...")
     
-    # === SAVE RESULTS ===
-    print("\n" + "=" * 80)
-    print("OPTIMIZATION COMPLETE")
-    print("=" * 80)
+    # Print best results
+    print("\n" + "=" * 70)
+    print("BEST TRIAL")
+    print("=" * 70)
+    best_trial = study.best_trial
+    print(f"  Trial number: {best_trial.number}")
+    print(f"  Score: {-best_trial.value:.4f}")
+    print(f"  Parameters:")
+    for k, v in best_trial.params.items():
+        print(f"    {k}: {v}")
+    print("=" * 70)
     
-    completed_trials = [t for t in study.trials if t.value is not None]
-    if not completed_trials:
-        print("No completed trials.")
-        if args.wandb:
-            finish_wandb()
-        return
-    
-    print(f"Total trials: {len(study.trials)}")
-    print(f"Best trial: {study.best_trial.number}")
-    print(f"Best score: {study.best_value:.4f}")
-    print(f"Best convergence rate: {study.best_trial.user_attrs['convergence_rate']:.3f}")
-    print(f"Best mean steps: {study.best_trial.user_attrs['mean_steps_to_converge']:.1f}")
-    print("\nBest hyperparameters:")
-    for key, value in study.best_params.items():
-        print(f"  {key}: {value}")
-    
-    # Save JSON results
-    results_path = Path(out_dir) / "hpo_results.json"
+    # Save results
+    results_path = out_dir / f"{study_name}_results.json"
+    results = {
+        "study_name": study_name,
+        "best_trial": {
+            "number": best_trial.number,
+            "value": best_trial.value,
+            "params": best_trial.params,
+        },
+        "n_trials": len(study.trials),
+        "baseline_params": BASELINE_PARAMS,
+    }
     with open(results_path, "w") as f:
-        json.dump({
-            "study_name": study_name,
-            "best_trial": study.best_trial.number,
-            "best_score": study.best_value,
-            "best_params": study.best_params,
-            "best_convergence_rate": study.best_trial.user_attrs["convergence_rate"],
-            "best_mean_steps": study.best_trial.user_attrs["mean_steps_to_converge"],
-            "noisy_slurm_params": NOISY_SLURM_PARAMS,
-            "n_trials": len(study.trials),
-        }, f, indent=2, default=str)
-    
+        json.dump(results, f, indent=2)
     print(f"\nResults saved to: {results_path}")
     
-    if args.wandb:
-        log_summary({
-            "best/trial_number": study.best_trial.number,
-            "best/score": study.best_value,
-            "best/convergence_rate": study.best_trial.user_attrs.get("convergence_rate", 0),
-            "best/mean_steps": study.best_trial.user_attrs.get("mean_steps_to_converge", 0),
-            **{f"best/{k}": v for k, v in study.best_params.items()},
+    # Log final results to W&B
+    if args.wandb and WANDB_AVAILABLE:
+        wandb.log({
+            "best/trial_number": best_trial.number,
+            "best/score": -best_trial.value,
+            **{f"best/{k}": v for k, v in best_trial.params.items()},
         })
-        finish_wandb()
+        wandb.finish()
     
-    print(f"Optuna study saved to: {storage_url}")
-    print(f"To resume: --resume --study-name {study_name}")
-    print("=" * 80)
+    print("\nHPO complete!")
 
 
 if __name__ == "__main__":
