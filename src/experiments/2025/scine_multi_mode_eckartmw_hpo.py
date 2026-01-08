@@ -309,15 +309,13 @@ def main(argv: list[str] | None = None) -> None:
         description="Bayesian HPO for SCINE multi-mode Eckart-MW GAD convergence optimization."
     )
     parser = add_common_args(parser)
-    parser.set_defaults(calculator="scine")
+    parser.set_defaults(calculator="scine", noise_seed=42)  # Override defaults
     
-    parser.add_argument("--scine-functional", type=str, default="DFTB0")
     parser.add_argument("--n-trials", type=int, default=100, help="Number of Optuna trials")
     parser.add_argument("--n-steps-per-sample", type=int, default=800, help="Steps per sample per trial")
     parser.add_argument("--n-samples", type=int, default=15, help="Number of samples per trial (from difficult set)")
     parser.add_argument("--difficulty-threshold", type=float, default=0.5, help="Fraction of samples to consider difficult")
     parser.add_argument("--start-from", type=str, default="midpoint_rt_noise1.0A")
-    parser.add_argument("--noise-seed", type=int, default=42)
     parser.add_argument("--study-name", type=str, default="scine-multi-mode-eckartmw-hpo")
     parser.add_argument("--storage", type=str, default=None, help="Optuna storage URL (e.g., sqlite:///optuna.db)")
     
