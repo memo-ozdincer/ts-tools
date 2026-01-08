@@ -42,22 +42,23 @@ import numpy as np
 import torch
 
 # Note: We use gad_euler_step_projected defined below, not from core_algos
-from ..core_algos.gad import pick_tracked_mode
-from ..dependencies.common_utils import add_common_args, parse_starting_geometry, setup_experiment
-from ..dependencies.experiment_logger import ExperimentLogger, RunResult, build_loss_type_flags
-from ..dependencies.hessian import (
+# Using ... (3 dots) to go up from 2025 -> experiments -> src
+from ...core_algos.gad import pick_tracked_mode
+from ...dependencies.common_utils import add_common_args, parse_starting_geometry, setup_experiment
+from ...dependencies.experiment_logger import ExperimentLogger, RunResult, build_loss_type_flags
+from ...dependencies.hessian import (
     vibrational_eigvals,
     get_scine_elements_from_predict_output,
     project_hessian_remove_rigid_modes,
     prepare_hessian,
 )
-from ..logging import finish_wandb, init_wandb_run, log_sample, log_summary
-from ..logging.plotly_utils import plot_gad_trajectory_interactive
-from ..runners._predict import make_predict_fn_from_calculator
+from ...logging import finish_wandb, init_wandb_run, log_sample, log_summary
+from ...logging.plotly_utils import plot_gad_trajectory_interactive
+from ...runners._predict import make_predict_fn_from_calculator
 
 # SCINE projection (may not be available)
 try:
-    from ..dependencies.scine_masses import (
+    from ...dependencies.scine_masses import (
         ScineFrequencyAnalyzer,
         get_scine_masses,
     )

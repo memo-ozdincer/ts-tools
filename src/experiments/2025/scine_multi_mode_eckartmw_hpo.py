@@ -32,28 +32,19 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-import importlib
-
 import numpy as np
 import optuna
 import torch
 from optuna.samplers import TPESampler
 
-# Use importlib for packages with numeric names (Python doesn't allow direct imports)
-mm_module = importlib.import_module("src.experiments.2025.multi_mode_eckartmw")
-common_utils = importlib.import_module("src.dependencies.common_utils")
-hessian_module = importlib.import_module("src.dependencies.hessian")
-predict_module = importlib.import_module("src.runners._predict")
-
-# Extract what we need
-run_multi_mode_escape = mm_module.run_multi_mode_escape
-compute_convergence_diagnostics = mm_module.compute_convergence_diagnostics
-add_common_args = common_utils.add_common_args
-setup_experiment = common_utils.setup_experiment
-parse_starting_geometry = common_utils.parse_starting_geometry
-vibrational_eigvals = hessian_module.vibrational_eigvals
-get_scine_elements_from_predict_output = hessian_module.get_scine_elements_from_predict_output
-make_predict_fn_from_calculator = predict_module.make_predict_fn_from_calculator
+# Relative imports: ... goes up from 2025 -> experiments -> src
+from .multi_mode_eckartmw import (
+    run_multi_mode_escape,
+    compute_convergence_diagnostics,
+)
+from ...dependencies.common_utils import add_common_args, setup_experiment, parse_starting_geometry
+from ...dependencies.hessian import vibrational_eigvals, get_scine_elements_from_predict_output
+from ...runners._predict import make_predict_fn_from_calculator
 
 
 def load_difficult_samples(
