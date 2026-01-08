@@ -61,7 +61,7 @@ echo "=============================================="
 START_FROM="midpoint_rt_noise1.0A"
 NOISE_SEED=42
 MAX_STEPS=100
-MAX_SAMPLES=5
+MAX_SAMPLES=30
 FMAX=0.03
 
 WANDB_NAME="sella | HIP | ECKART+INTERNAL | ${START_FROM} | seed${NOISE_SEED} | job${SLURM_JOB_ID}"
