@@ -26,6 +26,12 @@ Objective function (in priority order):
 3. TERTIARY: sella_convergence_rate (fmax reached)
 
 Uses Optuna pruning to stop bad trials early after 10 samples.
+
+Performance optimizations:
+- Pre-screening: Runs default params first to identify "hard" samples that don't converge.
+  HPO then focuses only on these hard samples (more efficient use of compute).
+- Multi-GPU: Uses joblib to parallelize trials across available GPUs.
+- Good priors: Seeds TPE with known-good starting configs.
 """
 from __future__ import annotations
 
@@ -35,9 +41,10 @@ import os
 import time
 import traceback
 from collections import defaultdict
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 import numpy as np
 import optuna
