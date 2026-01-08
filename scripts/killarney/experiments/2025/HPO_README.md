@@ -12,6 +12,13 @@ This directory contains Optuna-based Bayesian hyperparameter optimization (HPO) 
 
 **Strategy**: Use Bayesian optimization (TPE sampler) to find hyperparameters that help the remaining non-converging samples converge while maintaining or improving performance on already-converging samples.
 
+## Key Features
+
+- **W&B Logging**: Detailed per-trial hyperparameter and metric tracking (no plots, just stats)
+- **Crash Recovery**: SQLite storage saves every trial immediately - resume on failure
+- **Graceful Error Handling**: Saves partial results on KeyboardInterrupt or exceptions
+- **Difficult Sample Focus**: Pre-screens samples to identify hard cases, focuses HPO on those
+
 ## Files
 
 ### Python Scripts
@@ -88,6 +95,15 @@ sbatch hip_multi_mode_eckartmw_hpo.slurm
 sbatch scine_multi_mode_eckartmw_hpo.slurm
 ```
 
+### Crash Recovery / Resume
+
+Progress is saved to SQLite after each trial. To resume a crashed or interrupted job:
+
+```bash
+# Resume from previous study
+RESUME=--resume STUDY_NAME=hip-gad-hpo-12345 sbatch hip_multi_mode_eckartmw_hpo.slurm
+```
+
 ### Custom Configuration
 
 Modify environment variables in SLURM script or set before submission:
@@ -100,6 +116,15 @@ export DIFFICULTY_THRESHOLD=0.3  # Fraction of samples to use (default: 0.5)
 
 sbatch hip_multi_mode_eckartmw_hpo.slurm
 ```
+
+### W&B Logging
+
+W&B logging is enabled automatically if `WANDB_API_KEY` is set. Metrics logged:
+
+- **Per-trial**: All hyperparameters (`hparams/*`), convergence rate, mean steps, score
+- **Summary**: Best trial info, best hyperparameters, trial statistics
+
+View results at: https://wandb.ai/memo-ozdincer-university-of-toronto/gad-hpo
 
 ### Running Locally (for testing)
 
