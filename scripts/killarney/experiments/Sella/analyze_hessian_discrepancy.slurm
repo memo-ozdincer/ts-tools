@@ -1,11 +1,11 @@
 #!/bin/bash
-#SBATCH --job-name=hess-discrepancy
 #SBATCH -A aip-aspuru
 #SBATCH -D /project/6101772/memoozd/ts-tools
 #SBATCH --time=1:00:00
 #SBATCH --gres=gpu:l40s:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32GB
+#SBATCH --job-name=hess_discrepancy
 #SBATCH --output=logs/hess_discrepancy_%j.out
 #SBATCH --error=logs/hess_discrepancy_%j.err
 
@@ -21,24 +21,26 @@
 # Sella+HIP has erratic trust radius behavior while Sella+SCINE works well.
 # ==============================================================================
 
-set -e
-
-# Change to project root
-cd /home/user/ts-tools
-
-# Create logs directory
 mkdir -p logs
+source .venv/bin/activate
 
-# Activate environment
-source /home/user/miniconda3/etc/profile.d/conda.sh
-conda activate ts-tools
+# Ensure CPU-side ops can use the allocated cores.
+export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
+export OPENBLAS_NUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
+export MKL_NUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
+export NUMEXPR_NUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
+export VECLIB_MAXIMUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
+
+# Use non-interactive matplotlib backend to avoid tkinter dependency
+export MPLBACKEND=Agg
 
 # Configuration
-CHECKPOINT_PATH="ckpt/hip_v2.ckpt"
-H5_PATH="data/transition1x.h5"
+CHECKPOINT_PATH="/project/6101772/memoozd/models/hip_v2.ckpt"
+H5_PATH="/project/6101772/memoozd/data/transition1x.h5"
 MAX_SAMPLES=20
 SPLIT="test"
 
+echo `date`: Job $SLURM_JOB_ID is allocated resources.
 echo "=============================================="
 echo "HIP Hessian Discrepancy Analysis"
 echo "=============================================="
