@@ -110,6 +110,9 @@ def differentiable_massweigh_and_eckartprojection_torch(
       2) build MW projector P
       3) project: P H_mw P
     Everything is differentiable w.r.t. coords, Hessian elements, and (if you wish) masses.
+
+    NOTE: Returns Hessian in MASS-WEIGHTED space. For Cartesian output, use
+    eckart_project_and_return_cartesian_torch() instead.
     """
     device = hessian.device
     dtype = torch.float64
@@ -128,6 +131,60 @@ def differentiable_massweigh_and_eckartprojection_torch(
     H_proj = P @ H_mw @ P
     H_proj = 0.5 * (H_proj + H_proj.transpose(0, 1))
     return H_proj
+
+
+def eckart_project_and_return_cartesian_torch(
+    hessian: torch.Tensor,
+    cart_coords: torch.Tensor,
+    atomsymbols: list[str],
+):
+    """
+    Eckart projection that returns the Hessian in CARTESIAN coordinates.
+
+    Full cycle:
+      1) mass-weight H:         H_mw = M^{-1/2} H M^{-1/2}
+      2) build MW projector P
+      3) project in MW space:   H_mw_proj = P H_mw P
+      4) UN-mass-weight:        H_cart_proj = M^{1/2} H_mw_proj M^{1/2}
+
+    This removes the 6 translational/rotational modes while keeping the
+    Hessian in Cartesian coordinates (required by Sella for internal coord conversion).
+
+    Args:
+        hessian: Raw Cartesian Hessian (3N, 3N)
+        cart_coords: Cartesian coordinates (N, 3)
+        atomsymbols: List of atom symbols ['C', 'H', 'O', ...]
+
+    Returns:
+        Eckart-projected Hessian in CARTESIAN coordinates (3N, 3N)
+    """
+    device = hessian.device
+    dtype = torch.float64
+
+    masses_t = torch.tensor([MASS_DICT[atom.lower()] for atom in atomsymbols],
+                            dtype=dtype, device=device)
+    masses3d_t = masses_t.repeat_interleave(3)
+
+    # Mass-weighting matrices
+    sqrt_m_inv = torch.diag(1.0 / torch.sqrt(masses3d_t))  # M^{-1/2}
+    sqrt_m = torch.diag(torch.sqrt(masses3d_t))            # M^{1/2}
+
+    # 1) mass-weight the Hessian: H_mw = M^{-1/2} H M^{-1/2}
+    h_t = _to_torch_double(hessian, device=device)
+    H_mw = sqrt_m_inv @ h_t @ sqrt_m_inv
+
+    # 2) projector in the MW space
+    P = eckartprojection_torch(cart_coords, masses_t)
+
+    # 3) project in MW space: H_mw_proj = P H_mw P
+    H_mw_proj = P @ H_mw @ P
+    H_mw_proj = 0.5 * (H_mw_proj + H_mw_proj.transpose(0, 1))
+
+    # 4) UN-mass-weight back to Cartesian: H_cart_proj = M^{1/2} H_mw_proj M^{1/2}
+    H_cart_proj = sqrt_m @ H_mw_proj @ sqrt_m
+    H_cart_proj = 0.5 * (H_cart_proj + H_cart_proj.transpose(0, 1))
+
+    return H_cart_proj
 
 
 # ---- compare with non-differentiable version ---------------------------------------------------
