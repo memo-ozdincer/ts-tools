@@ -289,42 +289,56 @@ class ScineFrequencyAnalyzer:
         elements: list,
         positions_angstrom: np.ndarray,
         hessian_ev_ang2: np.ndarray,
+        apply_massweight: bool = True,
+        apply_eckart: bool = True,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Mass-weight and Eckart-project a Hessian.
+        Mass-weight and/or Eckart-project a Hessian.
 
         Args:
             elements: List of scine_utilities.ElementType
             positions_angstrom: (N, 3) positions in Angstrom
             hessian_ev_ang2: (3N, 3N) Hessian in eV/Å²
+            apply_massweight: If True, apply mass-weighting (M^{-1/2} H M^{-1/2}).
+                Default True.
+            apply_eckart: If True, apply Eckart projection to remove trans/rot modes.
+                Default True.
 
         Returns:
-            proj_hessian: (3N-k, 3N-k) projected mass-weighted Hessian
-                         Eigenvalues are in eV/AMU (same units as HIP)
+            proj_hessian: Projected Hessian.
+                - If both True: (3N-k, 3N-k) projected mass-weighted, eV/AMU units
+                - If only massweight: (3N, 3N) mass-weighted, eV/AMU units
+                - If only eckart: (3N-k, 3N-k) projected but NOT mass-weighted
+                - If neither: (3N, 3N) raw Hessian
             masses_amu: (N,) masses in AMU (for reference)
         """
         n_atoms = len(elements)
         masses_amu = get_scine_masses(elements)
 
-        # Mass-weight Hessian in eV/Å² and AMU units (matching HIP's approach)
-        # M^{-1/2} H M^{-1/2} where H is in eV/Å² and M is in AMU
-        # Result has eigenvalues in eV/AMU
-        m_sqrt = np.sqrt(masses_amu)
-        m_sqrt_repeat = np.repeat(m_sqrt, 3)  # (3N,)
-        inv_m_sqrt_mat = np.outer(1.0 / m_sqrt_repeat, 1.0 / m_sqrt_repeat)
+        # Start with raw Hessian
+        hessian = hessian_ev_ang2.copy()
 
-        mw_hessian = hessian_ev_ang2 * inv_m_sqrt_mat
+        # Step 1: Apply mass-weighting if requested
+        if apply_massweight:
+            # M^{-1/2} H M^{-1/2} where H is in eV/Å² and M is in AMU
+            # Result has eigenvalues in eV/AMU
+            m_sqrt = np.sqrt(masses_amu)
+            m_sqrt_repeat = np.repeat(m_sqrt, 3)  # (3N,)
+            inv_m_sqrt_mat = np.outer(1.0 / m_sqrt_repeat, 1.0 / m_sqrt_repeat)
+            hessian = hessian * inv_m_sqrt_mat
 
-        # Build projection matrix P (using positions in Angstrom, masses in AMU)
-        P = self._get_vibrational_projector(positions_angstrom, masses_amu)
+        # Step 2: Apply Eckart projection if requested
+        if apply_eckart:
+            # Build projection matrix P (using positions in Angstrom, masses in AMU)
+            P = self._get_vibrational_projector(positions_angstrom, masses_amu)
 
-        # Project: P H_mw P^T
-        proj_hessian = P @ mw_hessian @ P.T
+            # Project: P H P^T -> (3N-k, 3N-k)
+            hessian = P @ hessian @ P.T
 
         # Symmetrize to remove numerical noise
-        proj_hessian = 0.5 * (proj_hessian + proj_hessian.T)
+        hessian = 0.5 * (hessian + hessian.T)
 
-        return proj_hessian, masses_amu
+        return hessian, masses_amu
 
     def analyze(
         self,
@@ -384,6 +398,8 @@ def scine_project_hessian_remove_rigid_modes(
     hessian_raw: torch.Tensor,
     coords: torch.Tensor,
     elements: list,  # List of scine_utilities.ElementType
+    apply_massweight: bool = True,
+    apply_eckart: bool = True,
 ) -> torch.Tensor:
     """
     Mass-weight + Eckart-project Hessian using SCINE masses (NumPy backend).
@@ -395,17 +411,46 @@ def scine_project_hessian_remove_rigid_modes(
         hessian_raw: (3N, 3N) Hessian in eV/Å²
         coords: (N, 3) coordinates in Angstrom
         elements: List of scine_utilities.ElementType
+        apply_massweight: If True, apply mass-weighting (M^{-1/2} H M^{-1/2}).
+            Default True.
+        apply_eckart: If True, apply Eckart projection to remove trans/rot modes.
+            Default True.
 
     Returns:
-        proj_hessian: (3N-k, 3N-k) projected Hessian as PyTorch tensor
+        proj_hessian: Projected Hessian as PyTorch tensor.
+            If both flags True: (3N-k, 3N-k)
+            If only massweight: (3N, 3N) mass-weighted
+            If neither: (3N, 3N) raw Hessian
+
+    Raises:
+        ValueError: If coords and elements have inconsistent atom counts
     """
     # Convert to NumPy
     hess_np = hessian_raw.detach().cpu().numpy()
     coords_np = coords.detach().cpu().numpy().reshape(-1, 3)
 
+    # Validate atom count consistency
+    n_atoms_coords = coords_np.shape[0]
+    n_atoms_elements = len(elements)
+    if n_atoms_coords != n_atoms_elements:
+        raise ValueError(
+            f"Atom count mismatch in SCINE Hessian projection: "
+            f"coords has {n_atoms_coords} atoms but elements has {n_atoms_elements}. "
+            f"This usually means trajectory positions don't match the original molecule. "
+            f"Check that trajectory files aren't stale from a previous run."
+        )
+
+    # If no processing requested, return raw Hessian
+    if not apply_massweight and not apply_eckart:
+        return hessian_raw.clone()
+
     # Project using SCINE analyzer
     analyzer = ScineFrequencyAnalyzer()
-    proj_hess_np, _ = analyzer.project_hessian(elements, coords_np, hess_np)
+    proj_hess_np, _ = analyzer.project_hessian(
+        elements, coords_np, hess_np,
+        apply_massweight=apply_massweight,
+        apply_eckart=apply_eckart,
+    )
 
     # Convert back to PyTorch
     return torch.from_numpy(proj_hess_np).to(
@@ -418,6 +463,8 @@ def scine_vibrational_eigvals(
     hessian_raw: torch.Tensor,
     coords: torch.Tensor,
     elements: list,  # List of scine_utilities.ElementType
+    apply_massweight: bool = True,
+    apply_eckart: bool = True,
 ) -> torch.Tensor:
     """
     Extract vibrational eigenvalues using SCINE mass-weighting.
@@ -428,10 +475,18 @@ def scine_vibrational_eigvals(
         hessian_raw: (3N, 3N) Hessian in eV/Å²
         coords: (N, 3) coordinates in Angstrom
         elements: List of scine_utilities.ElementType
+        apply_massweight: If True, apply mass-weighting. Default True.
+        apply_eckart: If True, apply Eckart projection. Default True.
 
     Returns:
-        vib_eigvals: (3N-k,) vibrational eigenvalues as PyTorch tensor
+        vib_eigvals: Eigenvalues as PyTorch tensor.
+            If both flags True: (3N-k,) vibrational eigenvalues
+            Otherwise: (3N,) all eigenvalues
     """
-    proj_hess = scine_project_hessian_remove_rigid_modes(hessian_raw, coords, elements)
+    proj_hess = scine_project_hessian_remove_rigid_modes(
+        hessian_raw, coords, elements,
+        apply_massweight=apply_massweight,
+        apply_eckart=apply_eckart,
+    )
     eigvals, _ = torch.linalg.eigh(proj_hess)
     return eigvals

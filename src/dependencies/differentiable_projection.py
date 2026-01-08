@@ -103,34 +103,75 @@ def differentiable_massweigh_and_eckartprojection_torch(
     cart_coords: torch.Tensor,
     atomsymbols: list[str],
     ev_thresh: float = -1e-6,   # kept for API compat; unused here
+    apply_massweight: bool = True,
+    apply_eckart: bool = True,
 ):
     """
     Eckart projection for a *non*-mass-weighted Hessian:
-      1) mass-weight H
+      1) mass-weight H (if apply_massweight=True)
       2) build MW projector P
-      3) project: P H_mw P
+      3) project: P H_mw P (if apply_eckart=True)
     Everything is differentiable w.r.t. coords, Hessian elements, and (if you wish) masses.
 
     NOTE: Returns Hessian in MASS-WEIGHTED space. For Cartesian output, use
     eckart_project_and_return_cartesian_torch() instead.
+
+    Args:
+        hessian: Raw Cartesian Hessian (3N, 3N)
+        cart_coords: Cartesian coordinates (N, 3)
+        atomsymbols: List of atom symbols ['C', 'H', 'O', ...]
+        ev_thresh: Unused, kept for API compatibility
+        apply_massweight: If True, apply mass-weighting. Default True.
+        apply_eckart: If True, apply Eckart projection. Default True.
+
+    Returns:
+        Processed Hessian tensor.
+        If both flags True: (3N, 3N) mass-weighted projected Hessian
+        If only massweight: (3N, 3N) mass-weighted Hessian
+        If only eckart: (3N, 3N) projected but NOT mass-weighted
+        If neither: (3N, 3N) raw Hessian
+
+    Raises:
+        ValueError: If coords and atomsymbols have inconsistent atom counts
     """
     device = hessian.device
     dtype = torch.float64
+
+    # Validate atom count consistency
+    coords_3d = cart_coords.reshape(-1, 3)
+    n_atoms_coords = coords_3d.shape[0]
+    n_atoms_symbols = len(atomsymbols)
+    if n_atoms_coords != n_atoms_symbols:
+        raise ValueError(
+            f"Atom count mismatch in HIP Hessian projection: "
+            f"coords has {n_atoms_coords} atoms but atomsymbols has {n_atoms_symbols}. "
+            f"This usually means trajectory positions don't match the original molecule. "
+            f"Check that trajectory files aren't stale from a previous run."
+        )
+
+    # If no processing requested, return raw Hessian (converted to float64 for consistency)
+    if not apply_massweight and not apply_eckart:
+        return hessian.to(dtype=dtype)
 
     masses_t = torch.tensor([MASS_DICT[atom.lower()] for atom in atomsymbols],
                             dtype=dtype, device=device)
     masses3d_t = masses_t.repeat_interleave(3)
 
-    # 1) mass-weight the Hessian
-    H_mw = mass_weigh_hessian_torch(hessian, masses3d_t)             # (3N,3N)
+    # Start with Hessian (converted to float64)
+    H = hessian.to(dtype=dtype)
 
-    # 2) projector in the MW space
-    P = eckartprojection_torch(cart_coords, masses_t)   # (3N,3N)
+    # 1) mass-weight the Hessian if requested
+    if apply_massweight:
+        H = mass_weigh_hessian_torch(H, masses3d_t)             # (3N,3N)
 
-    # 3) project and symmetrize
-    H_proj = P @ H_mw @ P
-    H_proj = 0.5 * (H_proj + H_proj.transpose(0, 1))
-    return H_proj
+    # 2) project if requested
+    if apply_eckart:
+        P = eckartprojection_torch(cart_coords, masses_t)   # (3N,3N)
+        H = P @ H @ P
+
+    # Symmetrize
+    H = 0.5 * (H + H.transpose(0, 1))
+    return H
 
 
 def eckart_project_and_return_cartesian_torch(

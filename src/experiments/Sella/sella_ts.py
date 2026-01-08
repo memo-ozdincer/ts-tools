@@ -172,6 +172,8 @@ def run_sella_ts(
     sigma_dec: float = 0.65,
     # Diagnostic mode for debugging
     diagnostic: bool = False,
+    # Eckart projection for Hessians
+    apply_eckart: bool = False,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """Run Sella TS refinement on a starting geometry.
 
@@ -215,6 +217,9 @@ def run_sella_ts(
         rho_dec: Threshold below which to decrease trust radius. Paper value: 5.0.
         sigma_inc: Factor by which to increase trust radius. Paper value: 1.15.
         sigma_dec: Factor by which to decrease trust radius. Paper value: 0.65.
+        apply_eckart: If True, apply Eckart projection to Hessians before passing
+            to Sella. Removes trans/rot modes while returning Cartesian Hessian.
+            Default: False.
 
     Returns:
         out_dict: Dictionary containing:
@@ -259,9 +264,7 @@ def run_sella_ts(
     # Create hessian_function if using exact Hessians
     hessian_fn = None
     if use_exact_hessian:
-        # For Cartesian coords (internal=False), apply Eckart projection to remove
-        # trans/rot modes. For internal coords, Sella handles this automatically.
-        apply_eckart = not internal
+        # apply_eckart is now an explicit parameter (can be used with internal coords too)
         hessian_fn = create_hessian_function(
             calculator,
             calculator_type,

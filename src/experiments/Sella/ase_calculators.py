@@ -226,7 +226,7 @@ def create_hessian_function(
     calculator,
     calculator_type: str,
     device: str = "cuda",
-    apply_eckart: bool = True,  # Default True - always apply for HIP
+    apply_eckart: bool = False,
 ) -> Callable[[Atoms], np.ndarray]:
     """Create a hessian_function callable for Sella optimizer.
 
@@ -234,43 +234,49 @@ def create_hessian_function(
     at each optimization step.
 
     For HIP calculator:
-        Always applies Eckart projection to remove trans/rot modes, then
-        un-mass-weights back to Cartesian coordinates. This is required because
-        HIP's predicted Hessian may have spurious trans/rot components.
+        If apply_eckart=True, applies Eckart projection to remove trans/rot modes,
+        then un-mass-weights back to Cartesian coordinates before passing to Sella.
+        This may help when HIP's predicted Hessian has spurious trans/rot components.
 
-        The transformation is:
+        The transformation (when apply_eckart=True) is:
             H_cart → M^{-1/2} H M^{-1/2} → P H_mw P → M^{1/2} H_proj M^{1/2}
+
+        If apply_eckart=False, returns raw Cartesian Hessian directly.
 
         The returned Cartesian Hessian can then be converted to internal
         coordinates by Sella if internal=True.
 
     For SCINE calculator:
-        Returns raw Cartesian Hessian - SCINE's analytical Hessian is
-        well-behaved and doesn't need projection.
+        If apply_eckart=True, applies Eckart projection (same as HIP).
+        If apply_eckart=False, returns raw Cartesian Hessian.
+        SCINE's analytical Hessian is generally well-behaved.
 
     Args:
         calculator: HIP or SCINE calculator instance
         calculator_type: Either "hip" or "scine"
         device: Device for HIP calculations (ignored for SCINE)
-        apply_eckart: If True, apply Eckart projection for HIP. Default True.
-            (SCINE always returns raw Hessian regardless of this setting)
+        apply_eckart: If True, apply Eckart projection before returning Hessian.
+            The projection removes trans/rot modes and returns Cartesian Hessian.
+            Default False (pass raw Hessian to Sella).
 
     Returns:
         Callable that takes ASE Atoms and returns (3N, 3N) Hessian as numpy array
 
     Example:
-        >>> hessian_fn = create_hessian_function(hip_calc, "hip", device="cuda")
+        >>> hessian_fn = create_hessian_function(hip_calc, "hip", device="cuda", apply_eckart=True)
         >>> opt = Sella(atoms, hessian_function=hessian_fn, internal=True, diag_every_n=1)
     """
-    # Note: apply_eckart is kept for API compatibility but HIP always applies
-    # Eckart projection now. Set to False only if you want to test raw Hessian.
-    _ = apply_eckart  # Suppress unused warning; always True for HIP in practice
     # Import here to avoid circular imports
     from ...dependencies.pyg_batch import coords_to_pyg_batch
+    from ...dependencies.differentiable_projection import eckart_project_and_return_cartesian_torch
+    from hip.ff_lmdb import Z_TO_ATOM_SYMBOL
 
     if calculator_type.lower() == "scine":
         def scine_hessian_function(atoms: Atoms) -> np.ndarray:
-            """Compute raw Cartesian Hessian using SCINE calculator."""
+            """Compute Cartesian Hessian using SCINE calculator.
+            
+            Optionally applies Eckart projection if apply_eckart=True.
+            """
             positions = atoms.get_positions()  # (N, 3) in Angstrom
             atomic_numbers = atoms.get_atomic_numbers()  # (N,)
 
@@ -285,16 +291,26 @@ def create_hessian_function(
             with torch.no_grad():
                 result = calculator.predict(batch, do_hessian=True)
 
-            # Extract raw Cartesian Hessian
+            # Extract Hessian
             hessian = result["hessian"]
             if isinstance(hessian, torch.Tensor):
-                hessian = hessian.detach().cpu().numpy()
+                hessian_t = hessian.detach()
+            else:
+                hessian_t = torch.tensor(hessian, device=torch.device("cpu"))
 
             # Ensure shape is (3N, 3N)
             n_atoms = len(atomic_numbers)
-            hessian = np.asarray(hessian).reshape(3 * n_atoms, 3 * n_atoms)
+            hessian_t = hessian_t.reshape(3 * n_atoms, 3 * n_atoms)
 
-            return hessian
+            # Apply Eckart projection if requested
+            if apply_eckart:
+                atomsymbols = [Z_TO_ATOM_SYMBOL[int(z_i)] for z_i in atomic_numbers]
+                coords_3d = coords.reshape(-1, 3)
+                hessian_t = eckart_project_and_return_cartesian_torch(
+                    hessian_t, coords_3d, atomsymbols
+                )
+
+            return hessian_t.cpu().numpy().astype(np.float64)
 
         return scine_hessian_function
 
@@ -302,11 +318,9 @@ def create_hessian_function(
         torch_device = torch.device(device)
 
         def hip_hessian_function(atoms: Atoms) -> np.ndarray:
-            """Compute raw Cartesian Hessian using HIP's direct prediction.
+            """Compute Cartesian Hessian using HIP's direct prediction.
 
-            This returns the directly predicted Hessian from HIP (do_hessian=True)
-            without any projection or transformation. Sella handles coordinate
-            conversion to internal coordinates if internal=True.
+            Optionally applies Eckart projection if apply_eckart=True.
 
             Note: HIP predicts energy, forces, and Hessian as separate neural
             network outputs. The Hessian is a direct model output, not computed
@@ -326,7 +340,7 @@ def create_hessian_function(
             with torch.no_grad():
                 result = calculator.predict(batch, do_hessian=True)
 
-            # Extract raw Cartesian Hessian
+            # Extract Hessian
             hessian = result["hessian"]
             if isinstance(hessian, torch.Tensor):
                 hessian_t = hessian.detach()
@@ -337,7 +351,14 @@ def create_hessian_function(
             n_atoms = len(atomic_numbers)
             hessian_t = hessian_t.reshape(3 * n_atoms, 3 * n_atoms)
 
-            # Return raw Cartesian Hessian - let Sella handle everything
-            return hessian_t.cpu().numpy()
+            # Apply Eckart projection if requested
+            if apply_eckart:
+                atomsymbols = [Z_TO_ATOM_SYMBOL[int(z_i)] for z_i in atomic_numbers]
+                coords_3d = coords.reshape(-1, 3)
+                hessian_t = eckart_project_and_return_cartesian_torch(
+                    hessian_t, coords_3d, atomsymbols
+                )
+
+            return hessian_t.cpu().numpy().astype(np.float64)
 
         return hip_hessian_function

@@ -50,14 +50,30 @@ def project_hessian_remove_rigid_modes(
     hessian_raw: torch.Tensor,
     coords: torch.Tensor,
     atomic_nums: torch.Tensor,
+    apply_massweight: bool = True,
+    apply_eckart: bool = True,
 ) -> torch.Tensor:
-    """Mass-weight + Eckart-project Hessian to remove translation/rotation null modes."""
+    """Mass-weight and/or Eckart-project Hessian to remove translation/rotation null modes.
 
+    Args:
+        hessian_raw: Raw Hessian tensor
+        coords: Atomic coordinates
+        atomic_nums: Atomic numbers
+        apply_massweight: If True, apply mass-weighting. Default True.
+        apply_eckart: If True, apply Eckart projection. Default True.
+
+    Returns:
+        Processed Hessian tensor
+    """
     coords3d = coords.reshape(-1, 3)
     num_atoms = int(coords3d.shape[0])
     hess = prepare_hessian(hessian_raw, num_atoms)
     atomsymbols = atomic_nums_to_symbols(atomic_nums)
-    return _massweigh_and_eckartprojection_torch(hess, coords3d, atomsymbols)
+    return _massweigh_and_eckartprojection_torch(
+        hess, coords3d, atomsymbols,
+        apply_massweight=apply_massweight,
+        apply_eckart=apply_eckart,
+    )
 
 
 def get_scine_elements_from_predict_output(predict_output: dict) -> Optional[list]:
@@ -84,6 +100,8 @@ def vibrational_eigvals(
     coords: torch.Tensor,
     atomic_nums: torch.Tensor,
     scine_elements: Optional[list] = None,
+    apply_massweight: bool = True,
+    apply_eckart: bool = True,
 ) -> torch.Tensor:
     """Projected vibrational eigenvalues with rigid modes removed.
 
@@ -96,9 +114,11 @@ def vibrational_eigvals(
         atomic_nums: Atomic numbers
         scine_elements: Optional list of scine_utilities.ElementType objects.
             If provided, uses SCINE-specific mass-weighting. Otherwise uses HIP.
+        apply_massweight: If True, apply mass-weighting. Default True.
+        apply_eckart: If True, apply Eckart projection. Default True.
 
     Returns:
-        Vibrational eigenvalues with rigid modes removed
+        Vibrational eigenvalues (with rigid modes removed if apply_eckart=True)
     """
     if scine_elements is not None:
         # Use SCINE-specific mass-weighting
@@ -107,8 +127,26 @@ def vibrational_eigvals(
                 "SCINE mass-weighting requested but scine_masses module not available. "
                 "Install SCINE or remove scine_elements argument."
             )
-        return _scine_vibrational_eigvals(hessian_raw, coords, scine_elements)
+        return _scine_vibrational_eigvals(
+            hessian_raw, coords, scine_elements,
+            apply_massweight=apply_massweight,
+            apply_eckart=apply_eckart,
+        )
 
     # Default: Use HIP mass-weighting
-    hess_proj = project_hessian_remove_rigid_modes(hessian_raw, coords, atomic_nums)
-    return extract_vibrational_eigenvalues(hess_proj, coords.reshape(-1, 3))
+    hess_proj = project_hessian_remove_rigid_modes(
+        hessian_raw, coords, atomic_nums,
+        apply_massweight=apply_massweight,
+        apply_eckart=apply_eckart,
+    )
+
+    # Only extract vibrational eigenvalues if we didn't apply Eckart projection
+    # (because projection already removes rigid modes)
+    if apply_eckart:
+        # Eckart projection keeps (3N, 3N) shape but zeroes out rigid modes
+        # extract_vibrational_eigenvalues handles this correctly
+        return extract_vibrational_eigenvalues(hess_proj, coords.reshape(-1, 3))
+    else:
+        # No Eckart projection - just return all eigenvalues sorted
+        eigvals, _ = torch.linalg.eigh(hess_proj)
+        return eigvals

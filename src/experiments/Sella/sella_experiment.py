@@ -142,6 +142,7 @@ def _compute_eigenvalues_at_intervals(
     """
     positions_list = trajectory.get("positions", [])
     n_steps = len(positions_list)
+    n_atoms_expected = atomic_nums.numel()
 
     eig_data: Dict[str, List[Optional[float]]] = {
         "eig0": [None] * n_steps,
@@ -172,6 +173,16 @@ def _compute_eigenvalues_at_intervals(
         try:
             pos = positions_list[step_idx]
             coords = torch.tensor(pos, dtype=torch.float32, device=device).reshape(-1, 3)
+
+            # Validate atom count consistency BEFORE calling predict_fn
+            n_atoms_pos = coords.shape[0]
+            if n_atoms_pos != n_atoms_expected:
+                raise ValueError(
+                    f"Atom count mismatch: trajectory position at step {step_idx} has "
+                    f"{n_atoms_pos} atoms but atomic_nums has {n_atoms_expected}. "
+                    f"This usually means the trajectory file is stale from a previous run "
+                    f"with a different molecule. Try deleting old trajectory files."
+                )
 
             out = predict_fn(coords, atomic_nums, do_hessian=True, require_grad=False)
             scine_elements = get_scine_elements_from_predict_output(out)
