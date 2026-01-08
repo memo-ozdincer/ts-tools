@@ -685,11 +685,10 @@ def perform_escape_perturbation(
     delta_shrink_factor: float = 0.5,
     max_shrink_attempts: int = 5,
     scine_elements: Optional[list] = None,
-    escape_mode: int = 2,
 ) -> Tuple[torch.Tensor, Dict[str, Any]]:
-    """Perturb geometry along v_N (Nth-lowest VIBRATIONAL eigenvector) to escape high-index saddle.
+    """Perturb geometry along v2 (second-lowest VIBRATIONAL eigenvector) to escape high-index saddle.
 
-    Uses PROJECTED Hessian to find the escape mode, skipping translation/rotation modes.
+    Uses PROJECTED Hessian to find v2, skipping translation/rotation modes.
     Tries both +delta and -delta directions, picks the one with lower energy.
     Validates that new geometry doesn't have atoms too close together.
     If both directions create invalid geometries, tries progressively smaller deltas.
@@ -700,12 +699,11 @@ def perform_escape_perturbation(
         atomic_nums: Atomic numbers
         hessian: Raw Hessian matrix (will be projected internally)
         escape_delta: Base displacement magnitude in Angstrom
-        adaptive_delta: If True, scale delta by 1/sqrt(|lambda_escape|)
+        adaptive_delta: If True, scale delta by 1/sqrt(|lambda2|)
         min_interatomic_dist: Minimum allowed distance between atoms (A)
         delta_shrink_factor: Factor to reduce delta when geometry is invalid
         max_shrink_attempts: Max number of times to try smaller delta
         scine_elements: SCINE element types (if using SCINE calculator)
-        escape_mode: Which vibrational mode to use for escape (2=v2, 3=v3, etc.)
 
     Returns:
         new_coords: Perturbed coordinates (or original if all attempts fail)
@@ -722,42 +720,32 @@ def perform_escape_perturbation(
     # Get eigenvalues and eigenvectors from PROJECTED Hessian
     evals, evecs = torch.linalg.eigh(hess_proj)
 
-    # Skip near-zero TR modes and get the requested vibrational mode
+    # Skip near-zero TR modes and get second vibrational mode (v2)
     tr_threshold = 1e-6
     vib_mask = torch.abs(evals) > tr_threshold
     vib_indices = torch.where(vib_mask)[0]
 
-    # Mode index (0-indexed): escape_mode=2 -> index 1, escape_mode=3 -> index 2, etc.
-    mode_idx = escape_mode - 1
-
-    if len(vib_indices) < escape_mode:
-        # Not enough vibrational modes, fall back to highest available
-        if len(vib_indices) > 0:
-            mode_idx = len(vib_indices) - 1
-            selected_vib_idx = vib_indices[mode_idx]
-            v_escape = evecs[:, selected_vib_idx]
-            lambda_escape = float(evals[selected_vib_idx].item())
-        else:
-            # No vibrational modes, use raw eigenvector
-            v_escape = evecs[:, min(escape_mode - 1, evecs.shape[1] - 1)]
-            lambda_escape = float(evals[min(escape_mode - 1, len(evals) - 1)].item())
+    if len(vib_indices) < 2:
+        # Not enough vibrational modes, fall back to second eigenvector
+        v2 = evecs[:, 1]
+        lambda2 = float(evals[1].item())
     else:
-        # Use the requested vibrational mode
-        selected_vib_idx = vib_indices[mode_idx]
-        v_escape = evecs[:, selected_vib_idx]
-        lambda_escape = float(evals[selected_vib_idx].item())
+        # Second vibrational mode (skip TR modes)
+        second_vib_idx = vib_indices[1]
+        v2 = evecs[:, second_vib_idx]
+        lambda2 = float(evals[second_vib_idx].item())
 
-    v_escape = v_escape / (v_escape.norm() + 1e-12)  # Normalize
+    v2 = v2 / (v2.norm() + 1e-12)  # Normalize
 
     # Adaptive delta scaling based on curvature
     base_delta = float(escape_delta)
-    if adaptive_delta and lambda_escape < -0.01:
+    if adaptive_delta and lambda2 < -0.01:
         # Scale larger for strong negative curvature
-        base_delta = float(escape_delta) / np.sqrt(abs(lambda_escape))
+        base_delta = float(escape_delta) / np.sqrt(abs(lambda2))
         base_delta = min(base_delta, 1.0)  # Cap at 1 Angstrom
 
-    # Reshape to (N, 3)
-    v_escape_3d = v_escape.reshape(num_atoms, 3)
+    # Reshape v2 to (N, 3)
+    v2_3d = v2.reshape(num_atoms, 3)
 
     # Get current energy once
     E_current = _to_float(predict_fn(coords, atomic_nums, do_hessian=False, require_grad=False)["energy"])
@@ -766,8 +754,8 @@ def perform_escape_perturbation(
     delta = base_delta
     for shrink_attempt in range(max_shrink_attempts + 1):
         # Try both directions
-        coords_plus = coords + delta * v_escape_3d
-        coords_minus = coords - delta * v_escape_3d
+        coords_plus = coords + delta * v2_3d
+        coords_minus = coords - delta * v2_3d
 
         plus_valid = _geometry_is_valid(coords_plus, min_interatomic_dist)
         minus_valid = _geometry_is_valid(coords_minus, min_interatomic_dist)
@@ -803,7 +791,7 @@ def perform_escape_perturbation(
             candidates.sort(key=lambda x: x[2])
             new_coords, direction, energy_after = candidates[0]
 
-            disp_per_atom = float(v_escape_3d.norm(dim=1).mean().item()) * delta
+            disp_per_atom = float(v2_3d.norm(dim=1).mean().item()) * delta
             min_dist_after = _min_interatomic_distance(new_coords)
 
             info = {
@@ -811,8 +799,7 @@ def perform_escape_perturbation(
                 "delta_base": base_delta,
                 "shrink_attempts": shrink_attempt,
                 "direction": direction,
-                "lambda_escape": lambda_escape,
-                "escape_mode": escape_mode,
+                "lambda2": lambda2,
                 "energy_before": E_current,
                 "energy_after": energy_after,
                 "energy_change": energy_after - E_current,
@@ -832,8 +819,7 @@ def perform_escape_perturbation(
         "delta_base": base_delta,
         "shrink_attempts": max_shrink_attempts + 1,
         "direction": 0,
-        "lambda_escape": lambda_escape,
-        "escape_mode": escape_mode,
+        "lambda2": lambda2,
         "energy_before": E_current,
         "energy_after": E_current,
         "energy_change": 0.0,
