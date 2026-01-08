@@ -301,29 +301,16 @@ def create_hessian_function(
     else:  # HIP calculator
         torch_device = torch.device(device)
 
-        # Import Eckart projection that returns Cartesian Hessian
-        from ...dependencies.differentiable_projection import (
-            eckart_project_and_return_cartesian_torch,
-        )
-        from hip.ff_lmdb import Z_TO_ATOM_SYMBOL
-
         def hip_hessian_function(atoms: Atoms) -> np.ndarray:
-            """Compute Eckart-projected Cartesian Hessian using HIP calculator.
+            """Compute raw Cartesian Hessian using HIP's direct prediction.
 
-            This function:
-            1. Gets the directly predicted Hessian from HIP (do_hessian=True)
-            2. Applies mass-weighted Eckart projection to remove trans/rot modes
-            3. UN-mass-weights back to Cartesian coordinates
+            This returns the directly predicted Hessian from HIP (do_hessian=True)
+            without any projection or transformation. Sella handles coordinate
+            conversion to internal coordinates if internal=True.
 
-            The full cycle is:
-              H_cart → M^{-1/2} H M^{-1/2} → P H_mw P → M^{1/2} H_proj M^{1/2}
-
-            This gives a Cartesian Hessian with the 6 trans/rot modes projected out,
-            which Sella can then convert to internal coordinates.
-
-            Key insight: Previous attempts failed because the Hessian was returned
-            in mass-weighted space. Sella expects Cartesian, then does its own
-            internal coordinate conversion. We must un-mass-weigh after Eckart projection.
+            Note: HIP predicts energy, forces, and Hessian as separate neural
+            network outputs. The Hessian is a direct model output, not computed
+            via autograd from forces.
             """
             positions = atoms.get_positions()  # (N, 3) in Angstrom
             atomic_numbers = atoms.get_atomic_numbers()  # (N,)
@@ -350,16 +337,7 @@ def create_hessian_function(
             n_atoms = len(atomic_numbers)
             hessian_t = hessian_t.reshape(3 * n_atoms, 3 * n_atoms)
 
-            # Apply Eckart projection and return CARTESIAN Hessian
-            # This does: mass-weigh → project → UN-mass-weigh
-            atomsymbols = [Z_TO_ATOM_SYMBOL[int(z_i)] for z_i in atomic_numbers]
-            coords_3d = coords.reshape(-1, 3)
-
-            H_cart_proj = eckart_project_and_return_cartesian_torch(
-                hessian_t, coords_3d, atomsymbols
-            )
-
-            # Return Cartesian Hessian (Sella will convert to internal coords)
-            return H_cart_proj.cpu().numpy()
+            # Return raw Cartesian Hessian - let Sella handle everything
+            return hessian_t.cpu().numpy()
 
         return hip_hessian_function
