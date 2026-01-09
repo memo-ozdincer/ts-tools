@@ -32,24 +32,42 @@ Performance optimizations:
   HPO then focuses only on these hard samples (more efficient use of compute).
 - Multi-GPU: Uses joblib to parallelize trials across available GPUs.
 - Good priors: Seeds TPE with known-good starting configs.
+- Stdout suppression: Silences HIP's "Error edge_vec_0_distance" messages.
 """
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import os
+import sys
 import time
 import traceback
+import warnings
 from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
+# Suppress warnings
+warnings.filterwarnings('ignore')
+
 import numpy as np
 import optuna
 from optuna.samplers import TPESampler
 import torch
+
+
+class SuppressStdout:
+    """Context manager to suppress stdout (including HIP's edge_vec_0_distance errors)."""
+    def __enter__(self):
+        self._stdout = sys.stdout
+        sys.stdout = io.StringIO()
+        return self
+    
+    def __exit__(self, *args):
+        sys.stdout = self._stdout
 
 from ...dependencies.common_utils import (
     add_common_args,
@@ -216,31 +234,33 @@ def prescreen_samples(
         ).detach().to(device)
         
         try:
-            out_dict, aux = run_sella_ts(
-                calculator,
-                "hip",
-                start_coords,
-                atomic_nums,
-                fmax=config.fmax,
-                max_steps=max_steps,
-                internal=config.internal,
-                delta0=config.delta0,
-                order=config.order,
-                device=device,
-                save_trajectory=False,
-                trajectory_dir=None,
-                sample_index=i,
-                logfile=None,
-                verbose=False,
-                use_exact_hessian=config.use_exact_hessian,
-                diag_every_n=config.diag_every_n,
-                gamma=config.gamma,
-                rho_inc=config.rho_inc,
-                rho_dec=config.rho_dec,
-                sigma_inc=config.sigma_inc,
-                sigma_dec=config.sigma_dec,
-                apply_eckart=config.apply_eckart,
-            )
+            # Suppress HIP's "Error edge_vec_0_distance" messages
+            with SuppressStdout():
+                out_dict, aux = run_sella_ts(
+                    calculator,
+                    "hip",
+                    start_coords,
+                    atomic_nums,
+                    fmax=config.fmax,
+                    max_steps=max_steps,
+                    internal=config.internal,
+                    delta0=config.delta0,
+                    order=config.order,
+                    device=device,
+                    save_trajectory=False,
+                    trajectory_dir=None,
+                    sample_index=i,
+                    logfile=None,
+                    verbose=False,
+                    use_exact_hessian=config.use_exact_hessian,
+                    diag_every_n=config.diag_every_n,
+                    gamma=config.gamma,
+                    rho_inc=config.rho_inc,
+                    rho_dec=config.rho_dec,
+                    sigma_inc=config.sigma_inc,
+                    sigma_dec=config.sigma_dec,
+                    apply_eckart=config.apply_eckart,
+                )
             
             # Check if it converged to a true TS
             final_coords = out_dict["final_coords"].to(device)
@@ -333,31 +353,33 @@ def run_trial_evaluation(
         t0 = time.time()
         
         try:
-            out_dict, aux = run_sella_ts(
-                calculator,
-                "hip",
-                start_coords,
-                atomic_nums,
-                fmax=config.fmax,
-                max_steps=max_steps,
-                internal=config.internal,
-                delta0=config.delta0,
-                order=config.order,
-                device=device,
-                save_trajectory=False,
-                trajectory_dir=None,
-                sample_index=sample_idx,
-                logfile=None,
-                verbose=False,
-                use_exact_hessian=config.use_exact_hessian,
-                diag_every_n=config.diag_every_n,
-                gamma=config.gamma,
-                rho_inc=config.rho_inc,
-                rho_dec=config.rho_dec,
-                sigma_inc=config.sigma_inc,
-                sigma_dec=config.sigma_dec,
-                apply_eckart=config.apply_eckart,
-            )
+            # Suppress HIP's "Error edge_vec_0_distance" messages
+            with SuppressStdout():
+                out_dict, aux = run_sella_ts(
+                    calculator,
+                    "hip",
+                    start_coords,
+                    atomic_nums,
+                    fmax=config.fmax,
+                    max_steps=max_steps,
+                    internal=config.internal,
+                    delta0=config.delta0,
+                    order=config.order,
+                    device=device,
+                    save_trajectory=False,
+                    trajectory_dir=None,
+                    sample_index=sample_idx,
+                    logfile=None,
+                    verbose=False,
+                    use_exact_hessian=config.use_exact_hessian,
+                    diag_every_n=config.diag_every_n,
+                    gamma=config.gamma,
+                    rho_inc=config.rho_inc,
+                    rho_dec=config.rho_dec,
+                    sigma_inc=config.sigma_inc,
+                    sigma_dec=config.sigma_dec,
+                    apply_eckart=config.apply_eckart,
+                )
             wall_time = time.time() - t0
             
             # Track metrics

@@ -1,8 +1,8 @@
 #!/bin/bash
 #SBATCH -A aip-aspuru
 #SBATCH -D /project/6101772/memoozd/ts-tools
-#SBATCH --time=10:00:00
-#SBATCH --gres=gpu:l40s:1
+#SBATCH --time=14:00:00
+#SBATCH --gres=gpu:h100:1
 #SBATCH --cpus-per-task=32
 #SBATCH --mem=96GB
 #SBATCH --job-name=hip_sella_hpo
@@ -14,7 +14,7 @@
 # =============================================================================
 # 
 # Uses Optuna with TPE sampler to optimize Sella hyperparameters for HIP.
-# Uses 4x L40s GPUs.
+# Uses 1x H100 GPU (GAD is sequential per-sample, more GPUs don't help).
 #
 # KEY FEATURES:
 #   - PRE-SCREENING: Runs default params first to find "hard" samples that
@@ -101,7 +101,7 @@ WANDB_NAME="hip-sella-hpo_${N_TRIALS}trials_${START_FROM}_job${SLURM_JOB_ID}"
 
 echo `date`: Job $SLURM_JOB_ID is allocated resources.
 echo "=============================================="
-echo "HIP Sella Bayesian HPO (4x L40s)"
+echo "HIP Sella Bayesian HPO (1x H100)"
 echo "=============================================="
 echo "SLURM_JOB_ID: $SLURM_JOB_ID"
 echo "N_TRIALS: $N_TRIALS"
