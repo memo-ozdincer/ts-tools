@@ -1,10 +1,10 @@
 #!/bin/bash
 #SBATCH -A aip-aspuru
 #SBATCH -D /project/6101772/memoozd/ts-tools
-#SBATCH --time=14:00:00
+#SBATCH --time=10:00:00
 #SBATCH --gres=gpu:h100:1
 #SBATCH --cpus-per-task=32
-#SBATCH --mem=96GB
+#SBATCH --mem=64GB
 #SBATCH --job-name=hip_sella_hpo
 #SBATCH --output=logs/hip_sella_hpo_%j.out
 #SBATCH --error=logs/hip_sella_hpo_%j.err
