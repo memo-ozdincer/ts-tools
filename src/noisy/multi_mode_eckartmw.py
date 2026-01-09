@@ -622,6 +622,9 @@ def run_multi_mode_escape(
     min_interatomic_dist: float,
     max_escape_cycles: int,
     profile_every: int = 0,
+    # Early stopping parameters
+    early_stop_patience: int = 0,  # 0 = disabled, else stop if neg_vib unchanged for this many steps
+    early_stop_min_steps: int = 100,  # Don't early stop before this many steps
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """Run GAD with multi-mode escape mechanism.
 
@@ -634,6 +637,11 @@ def run_multi_mode_escape(
     2. Check for plateau: tiny displacements + stable neg_vib + index > 1
     3. If plateau at index > 1: perturb along v2 and restart GAD
     4. Repeat until index = 1 or max_escape_cycles reached
+    
+    Early stopping:
+    - If early_stop_patience > 0, stop if the average neg_vib over the last
+      early_stop_patience steps equals the average over the previous early_stop_patience
+      steps (i.e., no progress in reducing negative eigenvalue count).
     """
     coords = coords0.detach().clone().to(torch.float32)
 
@@ -658,6 +666,7 @@ def run_multi_mode_escape(
     total_steps = 0
     escape_cycle = 0
     escape_events: list[Dict[str, Any]] = []
+    early_stopped = False
 
     # Rolling history for displacement-based plateau detection
     disp_history: list[float] = []
@@ -736,6 +745,19 @@ def run_multi_mode_escape(
         if total_steps > 0:  # Only add after first step (disp_from_last=0 at step 0)
             disp_history.append(disp_from_last)
             neg_vib_history.append(neg_vib)
+
+        # Early stopping check: if neg_vib hasn't changed in early_stop_patience steps
+        if (early_stop_patience > 0 and 
+            total_steps >= early_stop_min_steps and 
+            len(neg_vib_history) >= 2 * early_stop_patience):
+            # Compare avg of last window vs previous window
+            recent_avg = np.mean(neg_vib_history[-early_stop_patience:])
+            prev_avg = np.mean(neg_vib_history[-2*early_stop_patience:-early_stop_patience])
+            # If averages are essentially the same (within 0.1), stop early
+            if abs(recent_avg - prev_avg) < 0.1:
+                trajectory["dt_eff"].append(float("nan"))
+                early_stopped = True
+                break
 
         trajectory["energy"].append(energy_value)
         trajectory["force_mean"].append(force_mean)
@@ -864,6 +886,7 @@ def run_multi_mode_escape(
         "escape_cycles_used": escape_cycle,
         "escape_events": escape_events,
         "total_steps": total_steps,
+        "early_stopped": early_stopped,
     }
 
     final_out_dict = {

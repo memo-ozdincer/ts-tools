@@ -2,9 +2,11 @@
 #SBATCH -A aip-aspuru
 #SBATCH -D /project/6101772/memoozd/ts-tools
 #SBATCH --time=20:00:00
-#SBATCH --gres=gpu:l40s:1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=32GB
+# NOTE: GAD is sequential per-sample, so 1 GPU is sufficient
+# Multiple GPUs would only help if we parallelize across samples (not implemented)
+#SBATCH --gres=gpu:h100:1
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=64GB
 #SBATCH --job-name=hip_multi_mode_hpo
 #SBATCH --output=logs/hip_multi_mode_hpo_%j.out
 #SBATCH --error=logs/hip_multi_mode_hpo_%j.err
@@ -37,9 +39,10 @@ export WANDB_RUN_GROUP="HPO-multi-mode-eckartmw"
 echo `date`: Job $SLURM_JOB_ID is allocated resources.
 echo ">>> Running HIP Multi-Mode Eckart-MW HPO..."
 
-# Run parameters (same as working SLURM script)
-N_STEPS=15000
-MAX_SAMPLES=100
+# Run parameters (with early stopping at 500 steps of no progress)
+# Reduced samples for faster HPO trials (30 is statistically meaningful)
+N_STEPS=4000
+MAX_SAMPLES=${MAX_SAMPLES:-30}
 START_FROM="midpoint_rt_noise1.0A"
 NOISE_SEED=42
 

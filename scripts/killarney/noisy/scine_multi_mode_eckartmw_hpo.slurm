@@ -2,8 +2,8 @@
 #SBATCH -A aip-aspuru
 #SBATCH -D /project/6101772/memoozd/ts-tools
 #SBATCH --time=20:00:00
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=32GB
+#SBATCH --cpus-per-task=32
+#SBATCH --mem=64GB
 #SBATCH --job-name=scine_multi_mode_hpo
 #SBATCH --output=logs/scine_multi_mode_hpo_%j.out
 #SBATCH --error=logs/scine_multi_mode_hpo_%j.err
@@ -37,8 +37,8 @@ export WANDB_RUN_GROUP="HPO-multi-mode-eckartmw"
 echo `date`: Job $SLURM_JOB_ID is allocated resources.
 echo ">>> Running SCINE Multi-Mode Eckart-MW HPO..."
 
-# Run parameters (same as working SLURM script)
-N_STEPS=15000
+# Run parameters (with early stopping at 500 steps of no progress)
+N_STEPS=4000
 MAX_SAMPLES=100
 START_FROM="midpoint_rt_noise1.0A"
 NOISE_SEED=42

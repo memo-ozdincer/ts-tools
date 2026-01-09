@@ -19,11 +19,23 @@ import warnings
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import io
 import numpy as np
 import torch
 
 # Suppress warnings (including edge_vec_0_distance errors)
 warnings.filterwarnings('ignore')
+
+
+class SuppressStdout:
+    """Context manager to suppress stdout (including HIP's edge_vec_0_distance errors)."""
+    def __enter__(self):
+        self._stdout = sys.stdout
+        sys.stdout = io.StringIO()
+        return self
+    
+    def __exit__(self, *args):
+        sys.stdout = self._stdout
 
 # Import Optuna
 import optuna
@@ -72,9 +84,12 @@ BASELINE_PARAMS = {
     "max_escape_cycles": 1000,
     "hip_vib_mode": "proj_tol",
     "hip_rigid_tol": 1e-6,
-    "hip_eigh_device": "cpu",
+    "hip_eigh_device": "cuda",  # GPU eigendecomp is faster than CPU→GPU transfer
     "stop_at_ts": True,
     "ts_eps": 1e-5,
+    # Early stopping: stop if avg neg_vib unchanged for 500 steps
+    "early_stop_patience": 500,
+    "early_stop_min_steps": 200,
 }
 
 
@@ -98,39 +113,44 @@ def run_single_sample(
     t0 = time.time()
     
     try:
-        out_dict, aux = run_multi_mode_escape(
-            predict_fn,
-            coords,
-            atomic_nums,
-            n_steps=n_steps,
-            dt=params["dt"],
-            stop_at_ts=params["stop_at_ts"],
-            ts_eps=params["ts_eps"],
-            dt_control=params["dt_control"],
-            dt_min=params["dt_min"],
-            dt_max=params["dt_max"],
-            max_atom_disp=params["max_atom_disp"],
-            plateau_patience=params["plateau_patience"],
-            plateau_boost=params["plateau_boost"],
-            plateau_shrink=params["plateau_shrink"],
-            escape_disp_threshold=params["escape_disp_threshold"],
-            escape_window=params["escape_window"],
-            hip_vib_mode=params["hip_vib_mode"],
-            hip_rigid_tol=params["hip_rigid_tol"],
-            hip_eigh_device=params["hip_eigh_device"],
-            escape_neg_vib_std=params["escape_neg_vib_std"],
-            escape_delta=params["escape_delta"],
-            adaptive_delta=params["adaptive_delta"],
-            min_interatomic_dist=params["min_interatomic_dist"],
-            max_escape_cycles=params["max_escape_cycles"],
-            profile_every=0,
-        )
+        # Suppress stdout to hide HIP's "Error edge_vec_0_distance" messages
+        with SuppressStdout():
+            out_dict, aux = run_multi_mode_escape(
+                predict_fn,
+                coords,
+                atomic_nums,
+                n_steps=n_steps,
+                dt=params["dt"],
+                stop_at_ts=params["stop_at_ts"],
+                ts_eps=params["ts_eps"],
+                dt_control=params["dt_control"],
+                dt_min=params["dt_min"],
+                dt_max=params["dt_max"],
+                max_atom_disp=params["max_atom_disp"],
+                plateau_patience=params["plateau_patience"],
+                plateau_boost=params["plateau_boost"],
+                plateau_shrink=params["plateau_shrink"],
+                escape_disp_threshold=params["escape_disp_threshold"],
+                escape_window=params["escape_window"],
+                hip_vib_mode=params["hip_vib_mode"],
+                hip_rigid_tol=params["hip_rigid_tol"],
+                hip_eigh_device=params["hip_eigh_device"],
+                escape_neg_vib_std=params["escape_neg_vib_std"],
+                escape_delta=params["escape_delta"],
+                adaptive_delta=params["adaptive_delta"],
+                min_interatomic_dist=params["min_interatomic_dist"],
+                max_escape_cycles=params["max_escape_cycles"],
+                profile_every=0,
+                early_stop_patience=params.get("early_stop_patience", 0),
+                early_stop_min_steps=params.get("early_stop_min_steps", 100),
+            )
         wall_time = time.time() - t0
         
         final_neg_vib = out_dict.get("final_neg_vibrational", -1)
         steps_taken = out_dict.get("steps_taken", n_steps)
         steps_to_ts = aux.get("steps_to_ts")
         escape_cycles = aux.get("escape_cycles_used", 0)
+        early_stopped = aux.get("early_stopped", False)
         
         return {
             "final_neg_vib": final_neg_vib,
@@ -139,6 +159,7 @@ def run_single_sample(
             "escape_cycles": escape_cycles,
             "success": final_neg_vib == 1,
             "wall_time": wall_time,
+            "early_stopped": early_stopped,
             "error": None,
         }
         
@@ -151,6 +172,7 @@ def run_single_sample(
             "escape_cycles": 0,
             "success": False,
             "wall_time": wall_time,
+            "early_stopped": False,
             "error": str(e),
         }
 
@@ -197,6 +219,7 @@ def run_batch(
     n_samples = len(results)
     n_success = sum(1 for r in results if r["success"])
     n_errors = sum(1 for r in results if r["error"] is not None)
+    n_early_stopped = sum(1 for r in results if r.get("early_stopped", False))
     
     steps_when_success = [r["steps_to_ts"] for r in results if r["steps_to_ts"] is not None]
     escape_cycles_list = [r["escape_cycles"] for r in results if r["error"] is None]
@@ -211,6 +234,7 @@ def run_batch(
         "n_samples": n_samples,
         "n_success": n_success,
         "n_errors": n_errors,
+        "n_early_stopped": n_early_stopped,
         "success_rate": n_success / max(n_samples, 1),
         "mean_steps_when_success": np.mean(steps_when_success) if steps_when_success else float("nan"),
         "mean_escape_cycles": np.mean(escape_cycles_list) if escape_cycles_list else float("nan"),
@@ -327,7 +351,7 @@ def main():
     parser.add_argument("--out-dir", type=str, required=True)
     
     # Run configuration
-    parser.add_argument("--n-steps", type=int, default=15000)
+    parser.add_argument("--n-steps", type=int, default=4000)
     parser.add_argument("--max-samples", type=int, default=100)
     parser.add_argument("--start-from", type=str, default="midpoint_rt_noise1.0A")
     parser.add_argument("--noise-seed", type=int, default=42)

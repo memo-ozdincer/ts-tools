@@ -51,11 +51,11 @@ MAX_SAMPLES=100
 # escape_delta: Base perturbation magnitude (Angstrom) along v2
 # adaptive_delta: Scale delta by 1/sqrt(|lambda2|) for stronger curvature
 # max_escape_cycles: Max attempts to escape high-index saddles
-ESCAPE_DISP_THRESHOLD=${ESCAPE_DISP_THRESHOLD:-5e-4}
-ESCAPE_WINDOW=${ESCAPE_WINDOW:-20}
-ESCAPE_NEG_VIB_STD=${ESCAPE_NEG_VIB_STD:-0.5}
-ESCAPE_DELTA=${ESCAPE_DELTA:-0.1}
-MIN_INTERATOMIC_DIST=${MIN_INTERATOMIC_DIST:-0.5}
+ESCAPE_DISP_THRESHOLD=${ESCAPE_DISP_THRESHOLD:-0.00019284383743673793}
+ESCAPE_WINDOW=${ESCAPE_WINDOW:-27}
+ESCAPE_NEG_VIB_STD=${ESCAPE_NEG_VIB_STD:-0.8596534261919356}
+ESCAPE_DELTA=${ESCAPE_DELTA:-0.2155875777745253}
+MIN_INTERATOMIC_DIST=${MIN_INTERATOMIC_DIST:-0.4121103074412086}
 MAX_ESCAPE_CYCLES=${MAX_ESCAPE_CYCLES:-1000}
 
 WANDB_NAME="noisy | multi-mode-eckartmw | SCINE | ${START_FROM} | seed${NOISE_SEED} | job${SLURM_JOB_ID}"
@@ -64,17 +64,17 @@ echo ">>> SCINE Euler + multi-mode escape (Eckart-MW), start-from=$START_FROM, n
 python -m src.noisy.scine_multi_mode_eckartmw \
     --method euler \
     --dt-control neg_eig_plateau \
-    --plateau-patience 5 \
-    --plateau-boost 2.0 \
-    --plateau-shrink 0.5 \
+    --plateau-patience 9 \
+    --plateau-boost 1.8080728236469248 \
+    --plateau-shrink 0.4359629239850771 \
     --dt-min 1e-6 \
-    --dt-max 0.05 \
-    --max-atom-disp 0.25 \
+    --dt-max 0.02292394234778395 \
+    --max-atom-disp 0.43218830360353944 \
     --escape-disp-threshold "$ESCAPE_DISP_THRESHOLD" \
     --escape-window "$ESCAPE_WINDOW" \
     --escape-neg-vib-std "$ESCAPE_NEG_VIB_STD" \
     --escape-delta "$ESCAPE_DELTA" \
-    --adaptive-delta \
+    --no-adaptive-delta \
     --min-interatomic-dist "$MIN_INTERATOMIC_DIST" \
     --max-escape-cycles "$MAX_ESCAPE_CYCLES" \
     --scine-functional DFTB0 \
@@ -85,7 +85,7 @@ python -m src.noisy.scine_multi_mode_eckartmw \
     --start-from "$START_FROM" \
     --noise-seed "$NOISE_SEED" \
     --stop-at-ts \
-    --dt 0.001 \
+    --dt 0.0021305320115760995 \
     --wandb \
     --wandb-project "noisy-multi-mode-eckartmw" \
     --wandb-name "$WANDB_NAME"
