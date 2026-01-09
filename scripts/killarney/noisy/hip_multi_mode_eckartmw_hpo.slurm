@@ -4,7 +4,7 @@
 #SBATCH --time=10:00:00
 # NOTE: GAD is sequential per-sample, so 1 GPU is sufficient
 # Multiple GPUs would only help if we parallelize across samples (not implemented)
-#SBATCH --gres=gpu:h100:1
+#SBATCH --gres=gpu:l40s:1
 #SBATCH --cpus-per-task=32
 #SBATCH --mem=64GB
 #SBATCH --job-name=hip_multi_mode_hpo
