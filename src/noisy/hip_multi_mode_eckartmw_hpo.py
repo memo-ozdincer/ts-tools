@@ -492,6 +492,19 @@ def main():
         print(f"    Mean steps: {metrics['mean_steps_when_success']:.1f}")
         print(f"    Score: {-score:.4f}")
         
+        # Store detailed user attributes on trial for later analysis
+        # (These are saved to the SQLite database's trial_user_attributes table)
+        trial.set_user_attr("success_rate", metrics["success_rate"])
+        trial.set_user_attr("n_success", metrics["n_success"])
+        trial.set_user_attr("n_samples", metrics["n_samples"])
+        trial.set_user_attr("n_errors", metrics["n_errors"])
+        trial.set_user_attr("n_early_stopped", metrics["n_early_stopped"])
+        trial.set_user_attr("mean_steps_when_success", float(metrics["mean_steps_when_success"]) if np.isfinite(metrics["mean_steps_when_success"]) else None)
+        trial.set_user_attr("mean_escape_cycles", float(metrics["mean_escape_cycles"]) if np.isfinite(metrics["mean_escape_cycles"]) else None)
+        trial.set_user_attr("mean_wall_time", metrics["mean_wall_time"])
+        trial.set_user_attr("total_wall_time", metrics["total_wall_time"])
+        trial.set_user_attr("neg_vib_distribution", metrics["neg_vib_counts"])
+        
         # Log to W&B
         if args.wandb and WANDB_AVAILABLE:
             log_dict = {
