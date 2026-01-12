@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH -A aip-aspuru
 #SBATCH -D /project/6101772/memoozd/ts-tools
-#SBATCH --time=10:00:00
+#SBATCH --time=50:00:00
 #SBATCH --gres=gpu:l40s:1
 #SBATCH --cpus-per-task=32
 #SBATCH --mem=64GB
