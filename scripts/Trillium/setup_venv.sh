@@ -104,14 +104,25 @@ echo ""
 echo ">>> Installing ts-tools in editable mode..."
 pip install -e .
 
-# Install HIP repository if present
-if [ -d "$PROJECT_ROOT/hip_repository" ]; then
+# Install HIP repository (sibling directory)
+if [ -d "$PROJECT_ROOT/../hip" ]; then
     echo ""
-    echo ">>> Installing HIP repository..."
-    pip install -e "$PROJECT_ROOT/hip_repository"
+    echo ">>> Installing HIP repository (../hip)..."
+    pip install -e "$PROJECT_ROOT/../hip"
+else
+    echo "Warning: ../hip not found, skipping"
 fi
 
-# Install Sella repository if present
+# Install transition1x repository (sibling directory)
+if [ -d "$PROJECT_ROOT/../transition1x" ]; then
+    echo ""
+    echo ">>> Installing transition1x repository (../transition1x)..."
+    pip install -e "$PROJECT_ROOT/../transition1x"
+else
+    echo "Warning: ../transition1x not found, skipping"
+fi
+
+# Install Sella repository if present (inside ts-tools)
 if [ -d "$PROJECT_ROOT/sella_repository" ]; then
     echo ""
     echo ">>> Installing Sella repository..."
