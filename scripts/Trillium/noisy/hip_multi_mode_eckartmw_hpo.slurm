@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=hip_multimode_hpo
-#SBATCH --nodes=1
-#SBATCH --gpus-per-node=1
+#SBATCH --nodes=1#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=24#SBATCH --gpus-per-node=1
 #SBATCH --time=10:00:00
 #SBATCH --output=/scratch/memoozd/ts-tools-scratch/logs/hip_multimode_hpo_%j.out
 #SBATCH --error=/scratch/memoozd/ts-tools-scratch/logs/hip_multimode_hpo_%j.err
