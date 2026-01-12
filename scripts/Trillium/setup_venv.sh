@@ -6,6 +6,8 @@
 # Creates a Python virtual environment with correct PyTorch/CUDA wheels for
 # Trillium's H100 GPUs (CUDA 12.x).
 #
+# Uses UV for faster, more reliable installs (handles dependency conflicts better)
+#
 # Usage:
 #   ./setup_venv.sh [venv_name]
 #
@@ -21,7 +23,7 @@ VENV_NAME="${1:-.venv}"
 PROJECT_ROOT="$( cd "$( dirname "${BASH_SOURCE[0]}" )/../.." && pwd )"
 
 echo "=============================================="
-echo "Trillium Virtual Environment Setup"
+echo "Trillium Virtual Environment Setup (UV)"
 echo "=============================================="
 echo "Project root: $PROJECT_ROOT"
 echo "Venv name: $VENV_NAME"
@@ -38,9 +40,17 @@ module load cuda/12.6
 echo "Loaded modules:"
 module list
 
+# Install UV if not present
+echo ""
+echo ">>> Installing/updating UV..."
+pip install --user --upgrade uv
+
+# Add user bin to PATH for uv
+export PATH="$HOME/.local/bin:$PATH"
+
 # Create virtual environment
 echo ""
-echo ">>> Creating virtual environment..."
+echo ">>> Creating virtual environment with UV..."
 cd "$PROJECT_ROOT"
 
 if [ -d "$VENV_NAME" ]; then
@@ -49,25 +59,21 @@ if [ -d "$VENV_NAME" ]; then
     echo
     if [[ $REPLY =~ ^[Yy]$ ]]; then
         rm -rf "$VENV_NAME"
-        python -m venv "$VENV_NAME"
+        uv venv "$VENV_NAME" --python python3.11
     fi
 else
-    python -m venv "$VENV_NAME"
+    uv venv "$VENV_NAME" --python python3.11
 fi
 
 # Activate the venv
 source "$VENV_NAME/bin/activate"
 
-# Upgrade pip
-echo ""
-echo ">>> Upgrading pip..."
-pip install --upgrade pip setuptools wheel
-
 # Install PyTorch with CUDA 12.4 support (compatible with CUDA 12.6)
 # H100 requires sm_90 architecture, supported in PyTorch 2.1+
+# Install PyTorch FIRST before anything else to avoid conflicts
 echo ""
-echo ">>> Installing PyTorch with CUDA 12.4..."
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+echo ">>> Installing PyTorch with CUDA 12.4 (FIRST, before other packages)..."
+uv pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
 
 # Verify CUDA availability
 echo ""
@@ -87,47 +93,92 @@ if torch.cuda.is_available():
 # Install common scientific packages
 echo ""
 echo ">>> Installing scientific packages..."
-pip install numpy scipy h5py ase
+uv pip install numpy scipy h5py ase
 
 # Install Optuna for HPO
 echo ""
 echo ">>> Installing Optuna..."
-pip install optuna optuna-dashboard
+uv pip install optuna optuna-dashboard
 
 # Install W&B (will run in offline mode on Trillium)
 echo ""
 echo ">>> Installing wandb..."
-pip install wandb
+uv pip install wandb
 
-# Install the project in editable mode
-echo ""
-echo ">>> Installing ts-tools in editable mode..."
-pip install -e .
+# =============================================================================
+# Install repositories with --no-deps to avoid PyTorch conflicts
+# Then install their non-torch dependencies separately
+# =============================================================================
+
+# Install transition1x repository (sibling directory) - BEFORE hip
+if [ -d "$PROJECT_ROOT/../transition1x" ]; then
+    echo ""
+    echo ">>> Installing transition1x repository (../transition1x)..."
+    uv pip install -e "$PROJECT_ROOT/../transition1x" --no-deps
+    # Install transition1x deps except torch
+    uv pip install progressbar2 || true
+else
+    echo "Warning: ../transition1x not found at $PROJECT_ROOT/../transition1x"
+    echo "Expected structure:"
+    echo "  parent_dir/"
+    echo "    ├── ts-tools/"
+    echo "    ├── hip/"
+    echo "    └── transition1x/"
+fi
 
 # Install HIP repository (sibling directory)
 if [ -d "$PROJECT_ROOT/../hip" ]; then
     echo ""
-    echo ">>> Installing HIP repository (../hip)..."
-    pip install -e "$PROJECT_ROOT/../hip"
+    echo ">>> Installing HIP repository (../hip) with --no-deps..."
+    uv pip install -e "$PROJECT_ROOT/../hip" --no-deps
+    # Install hip deps except torch (they're already installed)
+    echo ">>> Installing HIP dependencies (excluding torch)..."
+    uv pip install e3nn pytorch_lightning torch_geometric torch_scatter torch_sparse torch_cluster || true
 else
-    echo "Warning: ../hip not found, skipping"
-fi
-
-# Install transition1x repository (sibling directory)
-if [ -d "$PROJECT_ROOT/../transition1x" ]; then
-    echo ""
-    echo ">>> Installing transition1x repository (../transition1x)..."
-    pip install -e "$PROJECT_ROOT/../transition1x"
-else
-    echo "Warning: ../transition1x not found, skipping"
+    echo "Warning: ../hip not found at $PROJECT_ROOT/../hip"
+    echo "Expected structure:"
+    echo "  parent_dir/"
+    echo "    ├── ts-tools/"
+    echo "    ├── hip/"
+    echo "    └── transition1x/"
 fi
 
 # Install Sella repository if present (inside ts-tools)
 if [ -d "$PROJECT_ROOT/sella_repository" ]; then
     echo ""
     echo ">>> Installing Sella repository..."
-    pip install -e "$PROJECT_ROOT/sella_repository"
+    uv pip install -e "$PROJECT_ROOT/sella_repository"
 fi
+
+# Install the project in editable mode (LAST, after dependencies)
+echo ""
+echo ">>> Installing ts-tools in editable mode..."
+uv pip install -e . --no-deps
+# Install ts-tools deps
+uv pip install tqdm || true
+
+# Final verification
+echo ""
+echo ">>> Final verification..."
+python -c "
+import torch
+print(f'PyTorch: {torch.__version__}, CUDA: {torch.cuda.is_available()}')
+try:
+    import hip
+    print('HIP: OK')
+except ImportError as e:
+    print(f'HIP: FAILED - {e}')
+try:
+    import transition1x
+    print('transition1x: OK')
+except ImportError as e:
+    print(f'transition1x: FAILED - {e}')
+try:
+    import sella
+    print('Sella: OK')
+except ImportError as e:
+    print(f'Sella: FAILED - {e}')
+"
 
 # Print summary
 echo ""
