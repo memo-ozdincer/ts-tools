@@ -103,11 +103,63 @@ uv pip install optuna optuna-dashboard
 # Install W&B (will run in offline mode on Trillium)
 echo ""
 echo ">>> Installing wandb..."
-uv pip install wandb
+uv pip install wandb==0.21.0
 
 # =============================================================================
-# Install repositories with --no-deps to avoid PyTorch conflicts
-# Then install their non-torch dependencies separately
+# Install HIP dependencies (based on HIP's requirements.txt)
+# These are installed AFTER torch to avoid version conflicts
+# =============================================================================
+echo ""
+echo ">>> Installing HIP dependencies (from HIP requirements)..."
+
+# Core scientific computing
+uv pip install scipy scikit-learn pandas
+
+# Chemistry and molecular modeling
+uv pip install ase rdkit rmsd pyscf openbabel-wheel
+# dxtb[libcint] can be tricky, try without libcint first
+uv pip install dxtb || echo "Warning: dxtb install failed, continuing..."
+
+# Visualization and plotting
+uv pip install plotly imageio seaborn kaleido nglview py3Dmol==2.5.0
+
+# Development and formatting
+uv pip install ruff pydantic==2.11.4
+
+# Progress and utilities
+uv pip install tqdm "progressbar==2.5"
+
+# Machine learning (torch-dependent - install carefully)
+uv pip install einops torchmetrics pyarrow fastparquet pytorch_warmup
+uv pip install lightning==2.5.1.post0
+uv pip install triton==3.3.0 || echo "Warning: triton install failed, continuing..."
+uv pip install opt-einsum-fx==0.1.4
+uv pip install e3nn==0.5.1
+
+# Jupyter and notebook support
+uv pip install ipykernel nbformat
+
+# Configuration management
+uv pip install toml omegaconf pyyaml
+uv pip install hydra-core==1.* hydra-submitit-launcher
+
+# Experiment tracking and cloud
+uv pip install datasets huggingface_hub kagglehub
+
+# Job submission and distributed computing
+uv pip install submitit joblib==1.5.1 networkx==3.4.2
+
+# Database and storage
+uv pip install lmdb==1.5.1 h5py
+
+# Optuna for HPO
+uv pip install optuna optuna-dashboard
+
+# Muon optimizer
+uv pip install git+https://github.com/KellerJordan/Muon || echo "Warning: Muon install failed, continuing..."
+
+# =============================================================================
+# Install local repositories in editable mode
 # =============================================================================
 
 # Install transition1x repository (sibling directory) - BEFORE hip
@@ -115,8 +167,6 @@ if [ -d "$PROJECT_ROOT/../transition1x" ]; then
     echo ""
     echo ">>> Installing transition1x repository (../transition1x)..."
     uv pip install -e "$PROJECT_ROOT/../transition1x" --no-deps
-    # Install transition1x deps except torch
-    uv pip install progressbar2 || true
 else
     echo "Warning: ../transition1x not found at $PROJECT_ROOT/../transition1x"
     echo "Expected structure:"
@@ -129,11 +179,8 @@ fi
 # Install HIP repository (sibling directory)
 if [ -d "$PROJECT_ROOT/../hip" ]; then
     echo ""
-    echo ">>> Installing HIP repository (../hip) with --no-deps..."
+    echo ">>> Installing HIP repository (../hip)..."
     uv pip install -e "$PROJECT_ROOT/../hip" --no-deps
-    # Install hip deps except torch (they're already installed)
-    echo ">>> Installing HIP dependencies (excluding torch)..."
-    uv pip install e3nn pytorch_lightning torch_geometric torch_scatter torch_sparse torch_cluster || true
 else
     echo "Warning: ../hip not found at $PROJECT_ROOT/../hip"
     echo "Expected structure:"
@@ -150,12 +197,10 @@ if [ -d "$PROJECT_ROOT/sella_repository" ]; then
     uv pip install -e "$PROJECT_ROOT/sella_repository"
 fi
 
-# Install the project in editable mode (LAST, after dependencies)
+# Install ts-tools in editable mode (LAST)
 echo ""
 echo ">>> Installing ts-tools in editable mode..."
 uv pip install -e . --no-deps
-# Install ts-tools deps
-uv pip install tqdm || true
 
 # Final verification
 echo ""
