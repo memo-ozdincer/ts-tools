@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH -A aip-aspuru
 #SBATCH -D /project/6101772/memoozd/ts-tools
-#SBATCH --time=16:00:00
+#SBATCH --time=20:00:00
 # NOTE: GAD is sequential per-sample, so 1 GPU is sufficient
 # Multiple GPUs would only help if we parallelize across samples (not implemented)
 #SBATCH --gres=gpu:l40s:1
