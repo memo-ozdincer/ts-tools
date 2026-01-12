@@ -1,0 +1,14 @@
+{
+  "delta0": 0.27051643131983377,
+  "rho_inc": 1.0804102437468215,
+  "rho_dec": 27.091886188926388,
+  "sigma_inc": 1.3564428335326815,
+  "sigma_dec": 0.5908067901573085,
+  "fmax": 0.00045183635887455106,
+  "apply_eckart": false,
+  "gamma": 0.0,
+  "internal": true,
+  "order": 1,
+  "use_exact_hessian": true,
+  "diag_every_n": 1
+}

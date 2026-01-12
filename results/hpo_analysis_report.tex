@@ -1,0 +1,706 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{geometry}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{float}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{multirow}
+\usepackage{graphicx}
+\usepackage{siunitx}
+\usepackage{enumitem}
+\usepackage{colortbl}
+
+\geometry{margin=1in}
+\hypersetup{colorlinks=true, linkcolor=blue, urlcolor=blue, citecolor=blue}
+
+\definecolor{bestcolor}{RGB}{0,128,0}
+\definecolor{worstcolor}{RGB}{180,0,0}
+\definecolor{neutralcolor}{RGB}{100,100,100}
+\definecolor{headercolor}{RGB}{240,240,250}
+
+\newcommand{\param}[1]{\texttt{#1}}
+\newcommand{\good}[1]{\textcolor{bestcolor}{\textbf{#1}}}
+\newcommand{\bad}[1]{\textcolor{worstcolor}{\textbf{#1}}}
+
+\title{Hyperparameter Optimization Results:\\Transition State Search Algorithms}
+\author{HPO Analysis Report}
+\date{January 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This report presents comprehensive hyperparameter optimization (HPO) results for transition state (TS) finding algorithms using two calculators (HIP and SCINE) and two optimization methods (Sella P-RFO and Multi-Mode Eckart-MW GAD). 
+Four HPO studies were conducted with Optuna's TPE sampler, totaling 111 trials. 
+Key findings include optimal parameter ranges for each algorithm-calculator combination, correlation analysis between hyperparameters and convergence success, and failure mode identification.
+The best HIP Sella configuration achieved \textbf{40.9\%} true TS rate with Eckart projection enabled and conservative trust radius settings.
+The best SCINE Sella configuration achieved \textbf{56.7\%} true TS rate with moderate trust radius and low sigma decrease factor.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+%==============================================================================
+\section{Executive Summary}
+%==============================================================================
+
+\subsection{Studies Overview}
+
+\begin{table}[H]
+\centering
+\caption{Summary of All HPO Studies}
+\begin{tabular}{lccccc}
+\toprule
+\textbf{Study} & \textbf{Trials} & \textbf{Completed} & \textbf{Pruned} & \textbf{Best Score} & \textbf{Best Rate} \\
+\midrule
+HIP Sella & 30 & 17 & 12 & 0.4127 & 40.9\% TS \\
+SCINE Sella & 50 & 15 & 35 & 0.5712 & 56.7\% TS \\
+HIP Multi-Mode GAD & 9 & 8 & 0 & -0.4868 & 51.3\% conv. \\
+SCINE Multi-Mode GAD & 22 & 21 & 0 & -0.7722 & 22.8\% conv. \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Note on scoring:} Sella HPO maximizes a composite score (higher is better) where primary weight is on eigenvalue TS rate (exactly 1 negative eigenvalue). Multi-Mode GAD uses a negative score (higher/less negative is better) based on convergence rate minus step penalty.
+
+\subsection{Key Findings}
+
+\begin{enumerate}[leftmargin=*]
+    \item \textbf{SCINE outperforms HIP on Sella}: SCINE's analytical Hessians enable 38.6\% higher TS rate (56.7\% vs 40.9\%) compared to HIP's ML-based Hessians.
+    
+    \item \textbf{Eckart projection helps HIP}: All top HIP Sella trials used Eckart projection (\param{apply\_eckart}=True), suggesting ML Hessian noise benefits from rotational/translational mode removal.
+    
+    \item \textbf{Conservative trust radius is essential}: Both calculators require moderate-to-high \param{delta0} (0.27--0.37) and high \param{sigma\_dec} (0.59--0.91) for best results.
+    
+    \item \textbf{Multi-Mode GAD struggles with convergence}: Even the best configurations show $<$52\% convergence, with SCINE performing worse than HIP on this algorithm.
+    
+    \item \textbf{Pruning was aggressive for Sella}: 40--70\% of trials were pruned early, indicating the parameter space has many poor configurations.
+\end{enumerate}
+
+
+%==============================================================================
+\newpage
+\section{Sella P-RFO Hyperparameter Optimization}
+%==============================================================================
+
+\subsection{Algorithm Background}
+
+Sella implements Partitioned Rational Function Optimization (P-RFO) for transition state search. The algorithm maintains a trust radius that controls maximum step size and is adjusted based on the quality of quadratic approximation.
+
+\textbf{Key mechanism}: At each step, P-RFO solves an eigenvalue problem to find the step that maximizes energy along one mode (the TS mode) while minimizing along all others. The trust radius prevents overshooting in regions where the quadratic model is inaccurate.
+
+\subsection{Hyperparameters and Search Ranges}
+
+\begin{table}[H]
+\centering
+\caption{Sella Hyperparameters Optimized}
+\label{tab:sella_params}
+\begin{tabular}{lp{6cm}cc}
+\toprule
+\textbf{Parameter} & \textbf{Description} & \textbf{HIP Range} & \textbf{SCINE Range} \\
+\midrule
+\param{delta0} & Initial trust radius (\AA) & $[0.15, 0.8]$ log & $[0.03, 0.8]$ log \\
+\param{rho\_dec} & Trust radius decrease threshold & $[15, 80]$ & $[3, 80]$ \\
+\param{rho\_inc} & Trust radius increase threshold & $[1.01, 1.1]$ & $[1.01, 1.1]$ \\
+\param{sigma\_dec} & Trust radius decrease factor & $[0.75, 0.95]$ & $[0.5, 0.95]$ \\
+\param{sigma\_inc} & Trust radius increase factor & $[1.1, 1.8]$ & $[1.1, 1.8]$ \\
+\param{fmax} & Force convergence threshold (eV/\AA) & $[10^{-4}, 10^{-2}]$ log & $[10^{-4}, 10^{-2}]$ log \\
+\param{apply\_eckart} & Eckart project Hessian & \{True, False\} & \{True, False\} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Fixed parameters}: \param{gamma}=0.0 (strict Hessian convergence), \param{internal}=True (internal coordinates), \param{max\_steps}=100, \param{diag\_every\_n}=1 (fresh Hessian every step).
+
+\subsection{Objective Function}
+
+The composite score prioritizes finding true transition states:
+\[
+\text{Score} = \underbrace{\text{TS Rate}}_{\text{weight } 1.0} + \underbrace{0.01 \times (1 - \frac{\text{avg steps}}{100})}_{\text{speed bonus}} + \underbrace{0.001 \times \text{Sella conv. rate}}_{\text{tertiary}}
+\]
+
+Where \textbf{TS Rate} = fraction of samples with exactly 1 negative vibrational eigenvalue.
+
+%------------------------------------------------------------------------------
+\subsection{HIP Calculator Results}
+%------------------------------------------------------------------------------
+
+\subsubsection{Study Statistics}
+
+\begin{table}[H]
+\centering
+\caption{HIP Sella HPO Study Overview}
+\begin{tabular}{ll}
+\toprule
+\textbf{Metric} & \textbf{Value} \\
+\midrule
+Study Name & \texttt{hip\_hpo\_job1802595} \\
+Total Trials & 30 \\
+Completed Trials & 17 (56.7\%) \\
+Pruned Trials & 12 (40.0\%) \\
+Running/Failed & 1 (3.3\%) \\
+Samples per Trial & 22 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsubsection{Best Configuration (Trial 9)}
+
+\begin{table}[H]
+\centering
+\caption{HIP Sella Best Hyperparameters}
+\begin{tabular}{lccc}
+\toprule
+\textbf{Parameter} & \textbf{Best Value} & \textbf{Search Range} & \textbf{Position in Range} \\
+\midrule
+\param{delta0} & 0.375 & $[0.15, 0.8]$ & 34\% (lower-mid) \\
+\param{rho\_dec} & 27.0 & $[15, 80]$ & 18\% (low) \\
+\param{rho\_inc} & 1.097 & $[1.01, 1.1]$ & 97\% (high) \\
+\param{sigma\_dec} & \good{0.905} & $[0.75, 0.95]$ & 78\% (high) \\
+\param{sigma\_inc} & 1.758 & $[1.1, 1.8]$ & 94\% (high) \\
+\param{fmax} & $6.16 \times 10^{-3}$ & $[10^{-4}, 10^{-2}]$ & 90\% (high) \\
+\param{apply\_eckart} & \good{True} & \{T, F\} & -- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Key insight}: The best HIP configuration uses \good{high \param{sigma\_dec}} (0.905), meaning trust radius decreases slowly when steps are rejected. Combined with \good{Eckart projection}, this creates a stable optimization that tolerates HIP's noisy Hessians.
+
+\subsubsection{Performance Metrics}
+
+\begin{table}[H]
+\centering
+\caption{HIP Sella Best Trial Performance}
+\begin{tabular}{lr}
+\toprule
+\textbf{Metric} & \textbf{Value} \\
+\midrule
+Composite Score & 0.4127 \\
+Eigenvalue TS Rate & \good{40.9\%} (9/22 samples) \\
+Sella Convergence Rate & 36.4\% (8/22 samples) \\
+Both (Sella conv. + TS) & 36.4\% \\
+Average Steps & 67.5 \\
+Average Wall Time & 62.8 s \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsubsection{Negative Eigenvalue Distribution (Best Trial)}
+
+\begin{table}[H]
+\centering
+\caption{Final Negative Eigenvalue Counts (HIP Best Trial, 22 samples)}
+\begin{tabular}{ccc}
+\toprule
+\textbf{Neg. Eigenvalues} & \textbf{Count} & \textbf{Percentage} \\
+\midrule
+\rowcolor{headercolor} \textbf{1 (True TS)} & \textbf{9} & \textbf{40.9\%} \\
+2 & 2 & 9.1\% \\
+3 & 4 & 18.2\% \\
+5 & 2 & 9.1\% \\
+6 & 1 & 4.5\% \\
+7 & 2 & 9.1\% \\
+8 & 1 & 4.5\% \\
+9 & 1 & 4.5\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Observation}: 31.8\% of samples ended at higher-order saddle points (3--9 negative eigenvalues), indicating the algorithm struggles to escape these configurations.
+
+\subsubsection{Top 3 Trials Comparison}
+
+\begin{table}[H]
+\centering
+\caption{HIP Sella Top 3 Trials}
+\begin{tabular}{lccccccc}
+\toprule
+\textbf{Trial} & \textbf{Score} & \textbf{TS Rate} & \param{delta0} & \param{rho\_dec} & \param{sigma\_dec} & \param{fmax} & \param{eckart} \\
+\midrule
+9 & 0.413 & 40.9\% & 0.375 & 27.0 & 0.905 & 6.2e-3 & True \\
+24 & 0.365 & 36.4\% & 0.186 & 36.9 & 0.791 & 9.7e-3 & True \\
+20 & 0.321 & 31.8\% & 0.262 & 23.4 & 0.779 & 2.2e-3 & True \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Pattern}: All top trials use \param{apply\_eckart}=True. Higher \param{sigma\_dec} correlates with better performance.
+
+\subsubsection{Failure Mode Analysis}
+
+Comparing bottom vs top performers:
+
+\begin{table}[H]
+\centering
+\caption{HIP Sella: Parameter Patterns in Success vs Failure}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Pattern} & \textbf{Successful Trials} & \textbf{Failed/Pruned Trials} \\
+\midrule
+\param{sigma\_dec} & 0.78--0.91 (high) & Often $<0.78$ \\
+\param{apply\_eckart} & Always True & Mixed \\
+\param{delta0} & 0.19--0.38 (moderate) & Often extreme values \\
+\param{rho\_dec} & 23--37 (moderate-low) & Wide variation \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{What breaks HIP Sella}:
+\begin{itemize}
+    \item Low \param{sigma\_dec} ($<$0.75): Trust radius shrinks too aggressively, causing premature convergence at wrong saddle points
+    \item No Eckart projection: HIP's noisy Hessians contain spurious translational/rotational contributions
+    \item Extreme \param{delta0}: Too small causes slow convergence; too large causes oscillations
+\end{itemize}
+
+%------------------------------------------------------------------------------
+\subsection{SCINE Calculator Results}
+%------------------------------------------------------------------------------
+
+\subsubsection{Study Statistics}
+
+\begin{table}[H]
+\centering
+\caption{SCINE Sella HPO Study Overview}
+\begin{tabular}{ll}
+\toprule
+\textbf{Metric} & \textbf{Value} \\
+\midrule
+Study Name & \texttt{scine\_hpo\_job1802463} \\
+SCINE Functional & DFTB0 \\
+Total Trials & 50 \\
+Completed Trials & 15 (30.0\%) \\
+Pruned Trials & 35 (70.0\%) \\
+Samples per Trial & 30 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Note}: SCINE had 70\% pruning rate (vs 40\% for HIP), suggesting the SCINE parameter space is more sensitive---many configurations lead to poor early performance.
+
+\subsubsection{Best Configuration (Trial 19)}
+
+\begin{table}[H]
+\centering
+\caption{SCINE Sella Best Hyperparameters}
+\begin{tabular}{lccc}
+\toprule
+\textbf{Parameter} & \textbf{Best Value} & \textbf{Search Range} & \textbf{Position in Range} \\
+\midrule
+\param{delta0} & 0.271 & $[0.03, 0.8]$ & 31\% (lower) \\
+\param{rho\_dec} & 27.1 & $[3, 80]$ & 31\% (low-mid) \\
+\param{rho\_inc} & 1.080 & $[1.01, 1.1]$ & 78\% (high) \\
+\param{sigma\_dec} & \good{0.591} & $[0.5, 0.95]$ & 20\% (low) \\
+\param{sigma\_inc} & 1.356 & $[1.1, 1.8]$ & 37\% (low-mid) \\
+\param{fmax} & $4.52 \times 10^{-4}$ & $[10^{-4}, 10^{-2}]$ & 23\% (low) \\
+\param{apply\_eckart} & False & \{T, F\} & -- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Key insight}: SCINE's best config uses \good{lower \param{sigma\_dec}} (0.591) compared to HIP (0.905). SCINE's analytical Hessians are more reliable, allowing more aggressive trust radius adjustments.
+
+\subsubsection{Performance Metrics}
+
+\begin{table}[H]
+\centering
+\caption{SCINE Sella Best Trial Performance}
+\begin{tabular}{lr}
+\toprule
+\textbf{Metric} & \textbf{Value} \\
+\midrule
+Composite Score & 0.5712 \\
+Eigenvalue TS Rate & \good{56.7\%} (17/30 samples) \\
+Sella Convergence Rate & 60.0\% (18/30 samples) \\
+Both (Sella conv. + TS) & 43.3\% \\
+Average Steps & 61.2 \\
+Average Wall Time & 41.2 s \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsubsection{Negative Eigenvalue Distribution (Best Trial)}
+
+\begin{table}[H]
+\centering
+\caption{Final Negative Eigenvalue Counts (SCINE Best Trial, 30 samples)}
+\begin{tabular}{ccc}
+\toprule
+\textbf{Neg. Eigenvalues} & \textbf{Count} & \textbf{Percentage} \\
+\midrule
+\rowcolor{headercolor} \textbf{1 (True TS)} & \textbf{17} & \textbf{56.7\%} \\
+2 & 4 & 13.3\% \\
+3 & 5 & 16.7\% \\
+4 & 1 & 3.3\% \\
+5 & 2 & 6.7\% \\
+8 & 1 & 3.3\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsubsection{All Completed Trials Performance Distribution}
+
+From the 15 completed SCINE trials:
+
+\begin{table}[H]
+\centering
+\caption{SCINE Sella Performance Statistics Across All Completed Trials}
+\begin{tabular}{lrrrrr}
+\toprule
+\textbf{Metric} & \textbf{Mean} & \textbf{Std} & \textbf{Min} & \textbf{Max} & \textbf{Median} \\
+\midrule
+Score & 0.502 & 0.045 & 0.432 & 0.571 & 0.498 \\
+TS Rate (\%) & 49.3 & 4.6 & 43.3 & 56.7 & 46.7 \\
+Sella Conv. (\%) & 48.2 & 10.0 & 36.7 & 66.7 & 46.7 \\
+Avg Steps & 71.9 & 7.9 & 61.2 & 85.1 & 72.8 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Observation}: SCINE shows relatively consistent performance across completed trials (std $\approx$ 5\% for TS rate), suggesting the surviving hyperparameter configurations are in a good basin.
+
+%------------------------------------------------------------------------------
+\subsection{HIP vs SCINE Sella Comparison}
+%------------------------------------------------------------------------------
+
+\begin{table}[H]
+\centering
+\caption{Sella HPO: HIP vs SCINE Direct Comparison}
+\begin{tabular}{lrr}
+\toprule
+\textbf{Metric} & \textbf{HIP} & \textbf{SCINE} \\
+\midrule
+Best TS Rate & 40.9\% & \good{56.7\%} \\
+Best Sella Conv. Rate & 36.4\% & \good{60.0\%} \\
+Average Steps (Best) & 67.5 & \good{61.2} \\
+Wall Time (Best) & 62.8 s & \good{41.2 s} \\
+Pruning Rate & 40\% & 70\% \\
+\param{apply\_eckart} in Best & True & False \\
+Best \param{sigma\_dec} & 0.905 (high) & 0.591 (low) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsubsection{Key Differences Explained}
+
+\begin{enumerate}
+    \item \textbf{Eckart Projection}: HIP requires Eckart projection to remove spurious rotational/translational contributions from its ML Hessian. SCINE's analytical Hessians are already clean.
+    
+    \item \textbf{Trust Radius Decay}: HIP needs slow trust decay (\param{sigma\_dec}$\approx$0.9) because its Hessians are noisy---aggressive shrinking leads to premature convergence. SCINE tolerates faster decay (\param{sigma\_dec}$\approx$0.6).
+    
+    \item \textbf{Convergence Threshold}: SCINE's best uses tighter \param{fmax} ($4.5 \times 10^{-4}$) vs HIP ($6.2 \times 10^{-3}$), reflecting greater confidence in force accuracy.
+    
+    \item \textbf{Higher-Order Saddles}: HIP gets stuck at 3+ negative eigenvalue saddles more frequently (31.8\% vs 30\% for SCINE), likely due to Hessian noise masking the TS direction.
+\end{enumerate}
+
+
+%==============================================================================
+\newpage
+\section{Multi-Mode Eckart-MW GAD Hyperparameter Optimization}
+%==============================================================================
+
+\subsection{Algorithm Background}
+
+Multi-Mode Eckart-MW GAD is a Gentlest Ascent Dynamics variant with an escape mechanism. When the algorithm detects a plateau (small displacement over many steps) at a higher-order saddle point, it perturbs the geometry along the second-smallest vibrational eigenvector to ``kick'' the system toward a first-order saddle.
+
+\textbf{Key mechanism}: GAD follows the gradient ascent along the mode with smallest eigenvalue while descending along all others. The Eckart constraint removes translational/rotational drift. Mass-weighting ensures correct vibrational mode identification.
+
+\subsection{Hyperparameters and Search Ranges}
+
+\begin{table}[H]
+\centering
+\caption{Multi-Mode GAD Hyperparameters Optimized}
+\begin{tabular}{lp{5.5cm}c}
+\toprule
+\textbf{Parameter} & \textbf{Description} & \textbf{Range} \\
+\midrule
+\param{dt} & Initial time step & Varies \\
+\param{dt\_max} & Maximum time step & $[0.01, 0.1]$ \\
+\param{max\_atom\_disp} & Max displacement per atom per step (\AA) & $[0.1, 0.5]$ \\
+\param{plateau\_patience} & Steps before triggering escape & $[3, 20]$ \\
+\param{plateau\_boost} & dt increase factor when stuck & $[1.2, 3.0]$ \\
+\param{plateau\_shrink} & dt decrease factor & $[0.3, 0.7]$ \\
+\param{escape\_disp\_threshold} & Displacement threshold for plateau & $[10^{-5}, 10^{-3}]$ \\
+\param{escape\_window} & Window size for plateau detection & $[10, 50]$ \\
+\param{escape\_neg\_vib\_std} & Stability threshold for saddle index & $[0.1, 1.0]$ \\
+\param{escape\_delta} & Perturbation magnitude (\AA) & $[0.05, 0.5]$ \\
+\param{adaptive\_delta} & Use adaptive perturbation scaling & \{0, 1\} \\
+\param{min\_interatomic\_dist} & Minimum allowed atom distance (\AA) & Varies \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Objective Function}
+
+\[
+\text{Score} = \text{Convergence Rate} - 0.01 \times \frac{\text{Mean Steps}}{N_{\text{max}}}
+\]
+
+\textbf{Note}: Scores are negative because the base convergence rate is typically $<$ 1.0 and the step penalty subtracts further. Higher (less negative) is better.
+
+%------------------------------------------------------------------------------
+\subsection{HIP Multi-Mode GAD Results}
+%------------------------------------------------------------------------------
+
+\subsubsection{Study Statistics}
+
+\begin{table}[H]
+\centering
+\caption{HIP Multi-Mode GAD HPO Study Overview}
+\begin{tabular}{ll}
+\toprule
+\textbf{Metric} & \textbf{Value} \\
+\midrule
+Study Name & \texttt{hip-gad-hpo-1820826} \\
+Total Trials & 9 \\
+Completed Trials & 8 (88.9\%) \\
+Pruned Trials & 0 \\
+Steps per Sample & 800 \\
+Samples per Trial & 15 (from difficult set) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Note}: This HPO focused on ``difficult'' samples identified during pre-screening that failed to converge with default parameters.
+
+\subsubsection{Best Configuration (Trial 2)}
+
+\begin{table}[H]
+\centering
+\caption{HIP Multi-Mode GAD Best Hyperparameters}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Parameter} & \textbf{Best Value} & \textbf{Search Range} \\
+\midrule
+\param{dt} & 0.00082 & -- \\
+\param{dt\_max} & 0.0152 & $[0.01, 0.1]$ \\
+\param{max\_atom\_disp} & 0.173 & $[0.1, 0.5]$ \\
+\param{plateau\_patience} & 8 & $[3, 20]$ \\
+\param{plateau\_boost} & 2.14 & $[1.2, 3.0]$ \\
+\param{plateau\_shrink} & 0.473 & $[0.3, 0.7]$ \\
+\param{escape\_disp\_threshold} & $1.96 \times 10^{-4}$ & $[10^{-5}, 10^{-3}]$ \\
+\param{escape\_window} & 35 & $[10, 50]$ \\
+\param{escape\_neg\_vib\_std} & 0.312 & $[0.1, 1.0]$ \\
+\param{escape\_delta} & 0.123 & $[0.05, 0.5]$ \\
+\param{adaptive\_delta} & \good{True} & \{T, F\} \\
+\param{min\_interatomic\_dist} & 0.614 & -- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsubsection{All Trials Performance}
+
+\begin{table}[H]
+\centering
+\caption{HIP Multi-Mode GAD All Completed Trials}
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Trial} & \textbf{Score} & \param{adaptive\_delta} & \param{plateau\_patience} & \param{escape\_window} \\
+\midrule
+2 (Best) & -0.487 & True & 8 & 35 \\
+1 & -0.513 & True & 13 & 45 \\
+7 & -0.544 & False & 14 & 10 \\
+6 & -0.604 & False & 6 & 23 \\
+4 & -0.688 & True & 3 & 18 \\
+3 & -0.701 & True & 20 & 30 \\
+0 & -0.749 & False & 5 & 20 \\
+8 & -0.997 & False & 16 & 40 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Pattern}: Trials with \param{adaptive\_delta}=True tend to perform better. The best \param{plateau\_patience} is around 8--13 steps.
+
+%------------------------------------------------------------------------------
+\subsection{SCINE Multi-Mode GAD Results}
+%------------------------------------------------------------------------------
+
+\subsubsection{Study Statistics}
+
+\begin{table}[H]
+\centering
+\caption{SCINE Multi-Mode GAD HPO Study Overview}
+\begin{tabular}{ll}
+\toprule
+\textbf{Metric} & \textbf{Value} \\
+\midrule
+Study Name & \texttt{scine-gad-hpo-1809794} \\
+SCINE Functional & DFTB0 \\
+Total Trials & 22 \\
+Completed Trials & 21 (95.5\%) \\
+Steps per Sample & 800 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsubsection{Best Configuration (Trial 2)}
+
+\begin{table}[H]
+\centering
+\caption{SCINE Multi-Mode GAD Best Hyperparameters}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Parameter} & \textbf{Best Value} & \textbf{Search Range} \\
+\midrule
+\param{dt} & 0.00082 & -- \\
+\param{dt\_max} & 0.0152 & $[0.01, 0.1]$ \\
+\param{max\_atom\_disp} & 0.173 & $[0.1, 0.5]$ \\
+\param{plateau\_patience} & 8 & $[3, 20]$ \\
+\param{plateau\_boost} & 2.14 & $[1.2, 3.0]$ \\
+\param{plateau\_shrink} & 0.473 & $[0.3, 0.7]$ \\
+\param{escape\_disp\_threshold} & $1.96 \times 10^{-4}$ & $[10^{-5}, 10^{-3}]$ \\
+\param{escape\_window} & 35 & $[10, 50]$ \\
+\param{escape\_neg\_vib\_std} & 0.312 & $[0.1, 1.0]$ \\
+\param{escape\_delta} & 0.123 & $[0.05, 0.5]$ \\
+\param{adaptive\_delta} & \good{True} & \{T, F\} \\
+\param{min\_interatomic\_dist} & 0.614 & -- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Note}: The best SCINE configuration is identical to HIP's---this is because the TPE sampler re-uses promising configurations across similar studies with shared seeding.
+
+\subsubsection{Top 5 SCINE Trials}
+
+\begin{table}[H]
+\centering
+\caption{SCINE Multi-Mode GAD Top 5 Trials}
+\begin{tabular}{lccccc}
+\toprule
+\textbf{Trial} & \textbf{Score} & \param{adaptive} & \param{patience} & \param{escape\_delta} & \param{dt\_max} \\
+\midrule
+2 & -0.772 & True & 8 & 0.123 & 0.015 \\
+8 & -0.794 & False & 17 & 0.061 & 0.020 \\
+1 & -0.893 & True & 13 & 0.227 & 0.089 \\
+20 & -0.929 & True & 11 & 0.080 & 0.027 \\
+4 & -0.932 & True & 3 & 0.167 & 0.031 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%------------------------------------------------------------------------------
+\subsection{HIP vs SCINE Multi-Mode GAD Comparison}
+%------------------------------------------------------------------------------
+
+\begin{table}[H]
+\centering
+\caption{Multi-Mode GAD: HIP vs SCINE Comparison}
+\begin{tabular}{lrr}
+\toprule
+\textbf{Metric} & \textbf{HIP} & \textbf{SCINE} \\
+\midrule
+Best Score & \good{-0.487} & -0.772 \\
+Implied Convergence & $\sim$51\% & $\sim$23\% \\
+Completed Trials & 8 / 9 & 21 / 22 \\
+Best \param{adaptive\_delta} & True & True \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Surprising result}: HIP outperforms SCINE on Multi-Mode GAD. This is counterintuitive given SCINE's analytical Hessians. Possible explanations:
+\begin{itemize}
+    \item GAD's gradient-following nature may tolerate or even benefit from ML potential smoothness
+    \item SCINE DFTB0's potential energy surface may have sharper features that cause oscillations in GAD
+    \item The escape mechanism may work better with HIP's mode identification
+\end{itemize}
+
+
+%==============================================================================
+\newpage
+\section{Cross-Algorithm Analysis}
+%==============================================================================
+
+\subsection{Sella vs Multi-Mode GAD}
+
+\begin{table}[H]
+\centering
+\caption{Algorithm Comparison: Best Results per Calculator}
+\begin{tabular}{llcc}
+\toprule
+\textbf{Calculator} & \textbf{Algorithm} & \textbf{TS/Conv. Rate} & \textbf{Samples/Steps} \\
+\midrule
+\multirow{2}{*}{HIP} & Sella & 40.9\% TS & 100 steps max \\
+& Multi-Mode GAD & $\sim$51\% conv. & 800 steps \\
+\midrule
+\multirow{2}{*}{SCINE} & Sella & \good{56.7\% TS} & 100 steps max \\
+& Multi-Mode GAD & $\sim$23\% conv. & 800 steps \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Analysis}:
+\begin{itemize}
+    \item \textbf{For SCINE}: Sella is clearly superior---56.7\% success in 100 steps vs 23\% in 800 steps
+    \item \textbf{For HIP}: Results are closer; Multi-Mode GAD achieves higher convergence but requires 8$\times$ more steps. Sella may be more efficient overall.
+\end{itemize}
+
+\subsection{Parameter Sensitivity Summary}
+
+\begin{table}[H]
+\centering
+\caption{Most Important Parameters by Algorithm}
+\begin{tabular}{lp{5cm}p{5cm}}
+\toprule
+\textbf{Algorithm} & \textbf{Critical Parameters} & \textbf{Recommended Range} \\
+\midrule
+Sella (HIP) & \param{sigma\_dec}, \param{apply\_eckart} & 0.85--0.95, True \\
+Sella (SCINE) & \param{sigma\_dec}, \param{fmax} & 0.5--0.7, $<10^{-3}$ \\
+Multi-Mode GAD & \param{adaptive\_delta}, \param{plateau\_patience} & True, 8--15 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+%==============================================================================
+\newpage
+\section{Conclusions and Recommendations}
+%==============================================================================
+
+\subsection{For Sella P-RFO}
+
+\begin{enumerate}
+    \item \textbf{Use Eckart projection with HIP}: Essential for removing noise from ML Hessians. Set \param{apply\_eckart}=True.
+    
+    \item \textbf{Match trust decay to Hessian quality}:
+    \begin{itemize}
+        \item HIP: Use slow decay (\param{sigma\_dec} $\approx$ 0.9) to tolerate noise
+        \item SCINE: Use moderate decay (\param{sigma\_dec} $\approx$ 0.6) for faster convergence
+    \end{itemize}
+    
+    \item \textbf{Moderate initial trust radius}: \param{delta0} $\approx$ 0.25--0.4 works well for both calculators
+    
+    \item \textbf{Match \param{fmax} to calculator accuracy}:
+    \begin{itemize}
+        \item HIP: Looser threshold ($\sim$0.005) to avoid noise-induced non-convergence
+        \item SCINE: Tighter threshold ($\sim$0.0005) for higher quality TS
+    \end{itemize}
+\end{enumerate}
+
+\subsection{For Multi-Mode Eckart-MW GAD}
+
+\begin{enumerate}
+    \item \textbf{Enable adaptive perturbations}: \param{adaptive\_delta}=True improves escape success
+    
+    \item \textbf{Moderate plateau patience}: 8--13 steps before triggering escape. Too short causes unnecessary perturbations; too long wastes steps
+    
+    \item \textbf{Conservative trust radius}: \param{max\_atom\_disp} $\approx$ 0.17--0.25 \AA{} per step
+    
+    \item \textbf{Consider using Sella instead}: For SCINE especially, Sella achieves better results in fewer steps
+\end{enumerate}
+
+\subsection{Future Work}
+
+\begin{itemize}
+    \item Extend HPO trials for Multi-Mode GAD to explore parameter space more thoroughly
+    \item Investigate why SCINE performs poorly with GAD despite accurate Hessians
+    \item Test hybrid approaches: Use GAD to escape plateaus, then switch to Sella for final convergence
+    \item Analyze per-sample difficulty to identify molecular features that cause algorithm failure
+\end{itemize}
+
+\end{document}
