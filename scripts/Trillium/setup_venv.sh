@@ -130,6 +130,8 @@ echo ">>> Installing HIP dependencies (from HIP requirements)..."
 # Core scientific computing
 uv pip install scipy scikit-learn pandas
 
+uv pip install torch-geometric torchvision
+
 # Chemistry and molecular modeling
 uv pip install ase rdkit rmsd pyscf openbabel-wheel
 # dxtb[libcint] can be tricky, try without libcint first
