@@ -6,8 +6,6 @@
 # Creates a Python virtual environment with correct PyTorch/CUDA wheels for
 # Trillium's H100 GPUs (CUDA 12.x).
 #
-# Uses UV for faster, more reliable installs (handles dependency conflicts better)
-#
 # Usage:
 #   ./setup_venv.sh [venv_name]
 #
@@ -23,7 +21,7 @@ VENV_NAME="${1:-.venv}"
 PROJECT_ROOT="$( cd "$( dirname "${BASH_SOURCE[0]}" )/../.." && pwd )"
 
 echo "=============================================="
-echo "Trillium Virtual Environment Setup (UV)"
+echo "Trillium Virtual Environment Setup"
 echo "=============================================="
 echo "Project root: $PROJECT_ROOT"
 echo "Venv name: $VENV_NAME"
@@ -40,17 +38,9 @@ module load cuda/12.6
 echo "Loaded modules:"
 module list
 
-# Install UV if not present
-echo ""
-echo ">>> Installing/updating UV..."
-pip install --user --upgrade uv
-
-# Add user bin to PATH for uv
-export PATH="$HOME/.local/bin:$PATH"
-
 # Create virtual environment
 echo ""
-echo ">>> Creating virtual environment with UV..."
+echo ">>> Creating virtual environment..."
 cd "$PROJECT_ROOT"
 
 if [ -d "$VENV_NAME" ]; then
@@ -59,21 +49,26 @@ if [ -d "$VENV_NAME" ]; then
     echo
     if [[ $REPLY =~ ^[Yy]$ ]]; then
         rm -rf "$VENV_NAME"
-        uv venv "$VENV_NAME" --python python3.11
+        python -m venv "$VENV_NAME"
     fi
 else
-    uv venv "$VENV_NAME" --python python3.11
+    python -m venv "$VENV_NAME"
 fi
 
 # Activate the venv
 source "$VENV_NAME/bin/activate"
+
+# Upgrade pip first
+echo ""
+echo ">>> Upgrading pip..."
+pip install --upgrade pip
 
 # Install PyTorch with CUDA 12.4 support (compatible with CUDA 12.6)
 # H100 requires sm_90 architecture, supported in PyTorch 2.1+
 # Install PyTorch FIRST before anything else to avoid conflicts
 echo ""
 echo ">>> Installing PyTorch with CUDA 12.4 (FIRST, before other packages)..."
-uv pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
 
 # Verify CUDA availability
 echo ""
@@ -93,17 +88,17 @@ if torch.cuda.is_available():
 # Install common scientific packages
 echo ""
 echo ">>> Installing scientific packages..."
-uv pip install numpy scipy h5py ase
+pip install numpy scipy h5py ase
 
 # Install Optuna for HPO
 echo ""
 echo ">>> Installing Optuna..."
-uv pip install optuna optuna-dashboard
+pip install optuna optuna-dashboard
 
 # Install W&B (will run in offline mode on Trillium)
 echo ""
 echo ">>> Installing wandb..."
-uv pip install wandb==0.21.0
+pip install wandb==0.21.0
 
 # =============================================================================
 # Install HIP dependencies (based on HIP's requirements.txt)
@@ -113,50 +108,47 @@ echo ""
 echo ">>> Installing HIP dependencies (from HIP requirements)..."
 
 # Core scientific computing
-uv pip install scipy scikit-learn pandas
+pip install scipy scikit-learn pandas
 
 # Chemistry and molecular modeling
-uv pip install ase rdkit rmsd pyscf openbabel-wheel
+pip install ase rdkit rmsd pyscf openbabel-wheel
 # dxtb[libcint] can be tricky, try without libcint first
-uv pip install dxtb || echo "Warning: dxtb install failed, continuing..."
+pip install dxtb || echo "Warning: dxtb install failed, continuing..."
 
 # Visualization and plotting
-uv pip install plotly imageio seaborn kaleido nglview py3Dmol==2.5.0
+pip install plotly imageio seaborn kaleido nglview py3Dmol==2.5.0
 
 # Development and formatting
-uv pip install ruff pydantic==2.11.4
+pip install ruff pydantic==2.11.4
 
 # Progress and utilities
-uv pip install tqdm "progressbar==2.5"
+pip install tqdm "progressbar==2.5"
 
 # Machine learning (torch-dependent - install carefully)
-uv pip install einops torchmetrics pyarrow fastparquet pytorch_warmup
-uv pip install lightning==2.5.1.post0
-uv pip install triton==3.3.0 || echo "Warning: triton install failed, continuing..."
-uv pip install opt-einsum-fx==0.1.4
-uv pip install e3nn==0.5.1
+pip install einops torchmetrics pyarrow fastparquet pytorch_warmup
+pip install lightning==2.5.1.post0
+pip install triton==3.3.0 || echo "Warning: triton install failed, continuing..."
+pip install opt-einsum-fx==0.1.4
+pip install e3nn==0.5.1
 
 # Jupyter and notebook support
-uv pip install ipykernel nbformat
+pip install ipykernel nbformat
 
 # Configuration management
-uv pip install toml omegaconf pyyaml
-uv pip install hydra-core==1.* hydra-submitit-launcher
+pip install toml omegaconf pyyaml
+pip install "hydra-core>=1.0,<2.0" hydra-submitit-launcher
 
 # Experiment tracking and cloud
-uv pip install datasets huggingface_hub kagglehub
+pip install datasets huggingface_hub kagglehub
 
 # Job submission and distributed computing
-uv pip install submitit joblib==1.5.1 networkx==3.4.2
+pip install submitit joblib==1.5.1 networkx==3.4.2
 
 # Database and storage
-uv pip install lmdb==1.5.1 h5py
+pip install lmdb==1.5.1 h5py
 
-# Optuna for HPO
-uv pip install optuna optuna-dashboard
-
-# Muon optimizer
-uv pip install git+https://github.com/KellerJordan/Muon || echo "Warning: Muon install failed, continuing..."
+# Muon optimizer (skip on HPC - requires git access)
+# pip install git+https://github.com/KellerJordan/Muon || echo "Warning: Muon install failed, continuing..."
 
 # =============================================================================
 # Install local repositories in editable mode
@@ -166,7 +158,7 @@ uv pip install git+https://github.com/KellerJordan/Muon || echo "Warning: Muon i
 if [ -d "$PROJECT_ROOT/../transition1x" ]; then
     echo ""
     echo ">>> Installing transition1x repository (../transition1x)..."
-    uv pip install -e "$PROJECT_ROOT/../transition1x" --no-deps
+    pip install -e "$PROJECT_ROOT/../transition1x" --no-deps
 else
     echo "Warning: ../transition1x not found at $PROJECT_ROOT/../transition1x"
     echo "Expected structure:"
@@ -180,7 +172,7 @@ fi
 if [ -d "$PROJECT_ROOT/../hip" ]; then
     echo ""
     echo ">>> Installing HIP repository (../hip)..."
-    uv pip install -e "$PROJECT_ROOT/../hip" --no-deps
+    pip install -e "$PROJECT_ROOT/../hip" --no-deps
 else
     echo "Warning: ../hip not found at $PROJECT_ROOT/../hip"
     echo "Expected structure:"
@@ -194,13 +186,13 @@ fi
 if [ -d "$PROJECT_ROOT/sella_repository" ]; then
     echo ""
     echo ">>> Installing Sella repository..."
-    uv pip install -e "$PROJECT_ROOT/sella_repository"
+    pip install -e "$PROJECT_ROOT/sella_repository"
 fi
 
 # Install ts-tools in editable mode (LAST)
 echo ""
 echo ">>> Installing ts-tools in editable mode..."
-uv pip install -e . --no-deps
+pip install -e . --no-deps
 
 # Final verification
 echo ""
