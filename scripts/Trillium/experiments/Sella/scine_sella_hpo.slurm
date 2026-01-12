@@ -16,13 +16,18 @@
 #
 # TRILLIUM NOTES:
 #   - CPU-only job (gpus-per-node=0)
-#   - Full node gives 192 cores, but we request less for efficiency
+#   - Full node gives 192 cores
 #   - No internet access on compute nodes - W&B runs OFFLINE
 #   - Job output MUST go to $SCRATCH
 #   - Results saved to unified SQLite DB with user attributes
 #
-# CRASH RECOVERY: Progress saved to SQLite after each trial.
-#   To resume: RESUME=1 STUDY_NAME=<previous> sbatch ...
+# CRASH RECOVERY / RESUME:
+#   To resume from a previous SQLite database:
+#   
+#   RESUME=1 STUDY_NAME=scine_sella_hpo_job123456 sbatch scine_sella_hpo.slurm
+#
+#   The STUDY_NAME must match the original study name (usually includes job ID).
+#   The script will find the existing .db file and continue from where it left off.
 #
 # Hyperparameters being optimized (BROADER ranges than HIP):
 #   - delta0: Initial trust radius [0.03, 0.8] (log scale)
@@ -61,7 +66,6 @@ module load python/3.11.5
 source "$PROJECT_DIR/.venv/bin/activate"
 
 # Ensure CPU-side ops can use full node (192 cores on Trillium CPU nodes)
-# Note: For CPU jobs, we get the full node's 192 cores
 export OMP_NUM_THREADS=${SLURM_CPUS_ON_NODE:-192}
 export OPENBLAS_NUM_THREADS=${SLURM_CPUS_ON_NODE:-192}
 export MKL_NUM_THREADS=${SLURM_CPUS_ON_NODE:-192}
@@ -72,8 +76,10 @@ export MPLBACKEND=Agg
 # Data paths
 H5_PATH="/project/rrg-aspuru/memoozd/data/transition1x.h5"
 OUT_DIR="${SCRATCH_DIR}/hpo/scine_sella_${SLURM_JOB_ID}"
+DB_DIR="${SCRATCH_DIR}/dbs"
 
 mkdir -p "$OUT_DIR"
+mkdir -p "$DB_DIR"
 
 # =============================================================================
 # W&B OFFLINE MODE (Trillium has no internet on compute nodes)
@@ -148,6 +154,7 @@ RESUME_ARG=""
 if [[ "$RESUME_FLAG" == "1" ]]; then
     RESUME_ARG="--resume"
     echo "RESUME MODE ENABLED"
+    echo "Looking for existing study: $STUDY_NAME"
 fi
 
 # Run HPO
@@ -156,7 +163,7 @@ python -m src.experiments.Sella.scine_sella_hpo_bayesian \
     --max-steps "$MAX_STEPS" \
     --max-samples "$MAX_SAMPLES" \
     --h5-path "$H5_PATH" \
-    --out-dir "$OUT_DIR" \
+    --out-dir "$DB_DIR" \
     --start-from "$START_FROM" \
     --noise-seed "$NOISE_SEED" \
     --optuna-seed "$OPTUNA_SEED" \
@@ -182,7 +189,7 @@ fi
 echo "=============================================="
 echo "Results saved to: $OUT_DIR"
 echo ""
-echo "SQLite database: $OUT_DIR/${STUDY_NAME}.db"
+echo "SQLite database: $DB_DIR/${STUDY_NAME}.db"
 echo "To analyze: python scripts/analyze_hpo_results.py"
 echo ""
 echo "W&B offline run saved to: $WANDB_DIR"

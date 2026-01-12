@@ -73,8 +73,10 @@ export MPLBACKEND=Agg
 # Data paths
 H5_PATH="/project/rrg-aspuru/memoozd/data/transition1x.h5"
 OUT_DIR="${SCRATCH_DIR}/hpo/scine_multimode_${SLURM_JOB_ID}"
+DB_DIR="${SCRATCH_DIR}/dbs"
 
 mkdir -p "$OUT_DIR"
+mkdir -p "$DB_DIR"
 
 # =============================================================================
 # W&B OFFLINE MODE (Trillium has no internet on compute nodes)
@@ -165,7 +167,7 @@ fi
 # Run HPO
 python -m src.noisy.scine_multi_mode_eckartmw_hpo \
     --h5-path "$H5_PATH" \
-    --out-dir "$OUT_DIR" \
+    --out-dir "$DB_DIR" \
     --scine-functional "$SCINE_FUNCTIONAL" \
     --n-steps "$N_STEPS" \
     --max-samples "$MAX_SAMPLES" \
@@ -192,7 +194,7 @@ fi
 echo "=============================================="
 echo "Results saved to: $OUT_DIR"
 echo ""
-echo "SQLite database: $OUT_DIR/${STUDY_NAME}.db"
+echo "SQLite database: $DB_DIR/${STUDY_NAME}.db"
 echo "To analyze: python scripts/analyze_hpo_results.py"
 echo ""
 echo "W&B offline run saved to: $WANDB_DIR"
