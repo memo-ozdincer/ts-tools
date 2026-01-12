@@ -47,7 +47,7 @@ START_FROM="midpoint_rt_noise1.0A"
 NOISE_SEED=42
 
 # HPO configuration
-N_TRIALS=${N_TRIALS:-50}
+N_TRIALS=${N_TRIALS:-500}
 N_STARTUP_TRIALS=${N_STARTUP_TRIALS:-5}
 STUDY_NAME=${STUDY_NAME:-"hip_multi_mode_hpo_${SLURM_JOB_ID}"}
 
