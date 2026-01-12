@@ -64,6 +64,19 @@ module load python/3.11.5
 # Activate virtual environment
 source "$PROJECT_DIR/.venv/bin/activate"
 
+# =============================================================================
+# Cache directories - use scratch space (home is read-only on compute nodes)
+# =============================================================================
+export TMPDIR="${SCRATCH_DIR}/tmp"
+export XDG_CACHE_HOME="${SCRATCH_DIR}/.cache"
+export MPLCONFIGDIR="${SCRATCH_DIR}/.config/matplotlib"
+export FONTCONFIG_PATH=/etc/fonts
+export FONTCONFIG_FILE=/etc/fonts/fonts.conf
+
+mkdir -p "$TMPDIR"
+mkdir -p "$XDG_CACHE_HOME"
+mkdir -p "$MPLCONFIGDIR"
+
 # Ensure CPU-side ops can use full node (192 cores on Trillium CPU nodes)
 export OMP_NUM_THREADS=${SLURM_CPUS_ON_NODE:-192}
 export OPENBLAS_NUM_THREADS=${SLURM_CPUS_ON_NODE:-192}

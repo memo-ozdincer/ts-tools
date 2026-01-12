@@ -220,6 +220,15 @@ echo ">>> Final verification..."
 python -c "
 import torch
 print(f'PyTorch: {torch.__version__}, CUDA: {torch.cuda.is_available()}')
+
+# Verify scipy.special.sph_harm
+try:
+    from scipy.special import sph_harm
+    print('scipy.special.sph_harm: OK')
+except ImportError as e:
+    print(f'scipy.special.sph_harm: FAILED - {e}')
+    print('This is required by HIP. Try reinstalling scipy.')
+
 try:
     import hip
     print('HIP: OK')
