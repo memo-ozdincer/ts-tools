@@ -104,7 +104,7 @@ export WANDB_RUN_GROUP="hip-sella-hpo-trillium"
 # =============================================================================
 # HPO Configuration
 # =============================================================================
-N_TRIALS="${N_TRIALS:-50}"
+N_TRIALS="${N_TRIALS:-500}"
 MAX_STEPS="${MAX_STEPS:-100}"
 MAX_SAMPLES="${MAX_SAMPLES:-30}"
 START_FROM="${START_FROM:-midpoint_rt_noise1.0A}"

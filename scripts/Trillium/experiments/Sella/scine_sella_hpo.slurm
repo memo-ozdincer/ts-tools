@@ -4,7 +4,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=192
 #SBATCH --gpus-per-node=0
-#SBATCH --time=3:00:00
+#SBATCH --time=20:00:00
 #SBATCH --output=/scratch/memoozd/ts-tools-scratch/logs/scine_sella_hpo_%j.out
 #SBATCH --error=/scratch/memoozd/ts-tools-scratch/logs/scine_sella_hpo_%j.err
 #SBATCH --account=rrg-aspuru
@@ -108,7 +108,7 @@ export WANDB_RUN_GROUP="scine-sella-hpo-trillium"
 # =============================================================================
 # HPO Configuration
 # =============================================================================
-N_TRIALS="${N_TRIALS:-50}"
+N_TRIALS="${N_TRIALS:-500}"
 MAX_STEPS="${MAX_STEPS:-100}"
 MAX_SAMPLES="${MAX_SAMPLES:-30}"
 START_FROM="${START_FROM:-midpoint_rt_noise1.0A}"

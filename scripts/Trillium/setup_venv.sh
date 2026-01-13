@@ -106,9 +106,10 @@ if torch.cuda.is_available():
 "
 
 # Install common scientific packages
+# Note: scipy<1.14.0 required because sph_harm was removed in scipy 1.14
 echo ""
 echo ">>> Installing scientific packages..."
-uv pip install numpy scipy h5py ase
+uv pip install numpy "scipy<1.14.0" h5py ase
 
 # Install Optuna for HPO
 echo ""
@@ -127,8 +128,8 @@ uv pip install wandb==0.21.0
 echo ""
 echo ">>> Installing HIP dependencies (from HIP requirements)..."
 
-# Core scientific computing
-uv pip install scipy scikit-learn pandas
+# Core scientific computing (scipy<1.14 for sph_harm compatibility)
+uv pip install "scipy<1.14.0" scikit-learn pandas
 
 uv pip install torch-geometric torchvision
 
