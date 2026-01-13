@@ -107,7 +107,7 @@ export WANDB_RUN_GROUP="HPO-multi-mode-eckartmw-trillium"
 # Run Configuration
 # =============================================================================
 N_STEPS="${N_STEPS:-4000}"
-MAX_SAMPLES="${MAX_SAMPLES:-30}"
+MAX_SAMPLES="${MAX_SAMPLES:-5000}"
 START_FROM="${START_FROM:-midpoint_rt_noise1.0A}"
 NOISE_SEED="${NOISE_SEED:-42}"
 
