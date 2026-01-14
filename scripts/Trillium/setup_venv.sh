@@ -133,6 +133,12 @@ uv pip install "scipy<1.14.0" scikit-learn pandas
 
 uv pip install torch-geometric torchvision
 
+# PyTorch Geometric extensions (torch-cluster, torch-scatter, torch-sparse)
+# These must be installed from the PyG wheel index with matching CUDA version
+echo ""
+echo ">>> Installing PyTorch Geometric extensions (torch-cluster, torch-scatter, torch-sparse)..."
+uv pip install torch-scatter torch-sparse torch-cluster -f https://data.pyg.org/whl/torch-2.5.0+cu124.html
+
 # Chemistry and molecular modeling
 uv pip install ase rdkit rmsd pyscf openbabel-wheel
 # dxtb[libcint] can be tricky, try without libcint first

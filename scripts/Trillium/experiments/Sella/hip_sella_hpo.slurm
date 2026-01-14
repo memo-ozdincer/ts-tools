@@ -4,7 +4,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=24
 #SBATCH --gpus-per-node=1
-#SBATCH --time=1:00:00
+#SBATCH --time=11:00:00
 #SBATCH --output=/scratch/memoozd/ts-tools-scratch/logs/hip_sella_hpo_%j.out
 #SBATCH --error=/scratch/memoozd/ts-tools-scratch/logs/hip_sella_hpo_%j.err
 #SBATCH --account=rrg-aspuru
@@ -104,7 +104,7 @@ export WANDB_RUN_GROUP="hip-sella-hpo-trillium"
 # =============================================================================
 # HPO Configuration
 # =============================================================================
-N_TRIALS="${N_TRIALS:-20}"
+N_TRIALS="${N_TRIALS:-5000}"
 MAX_STEPS="${MAX_STEPS:-100}"
 MAX_SAMPLES="${MAX_SAMPLES:-30}"
 START_FROM="${START_FROM:-midpoint_rt_noise1.0A}"
@@ -146,7 +146,6 @@ echo "Pre-screening:"
 echo "  PRESCREEN: $PRESCREEN"
 echo "  PRESCREEN_SAMPLES: $PRESCREEN_SAMPLES"
 echo "  HARD_SAMPLES_FILE: ${HARD_SAMPLES_FILE:-<none>}"
-echo "  SKIP_VERIFY: $SKIP_VERIFY"
 echo "=============================================="
 echo "Hyperparameter ranges:"
 echo "  delta0: [0.15, 0.8] (log)"
@@ -194,12 +193,6 @@ if [[ -n "$HARD_SAMPLES_FILE" ]]; then
     echo "LOADING HARD SAMPLES FROM: $HARD_SAMPLES_FILE"
 fi
 
-SKIP_VERIFY_ARG=""
-if [[ "$SKIP_VERIFY" == "1" ]]; then
-    SKIP_VERIFY_ARG="--skip-verification"
-    echo "SKIPPING VERIFICATION RUN"
-fi
-
 # Run HPO
 python -m src.experiments.Sella.hip_sella_hpo \
     --n-trials "$N_TRIALS" \
@@ -215,7 +208,6 @@ python -m src.experiments.Sella.hip_sella_hpo \
     $RESUME_ARG \
     $PRESCREEN_ARG \
     $HARD_SAMPLES_ARG \
-    $SKIP_VERIFY_ARG \
     --verbose \
     --wandb \
     --wandb-project "sella-hpo" \

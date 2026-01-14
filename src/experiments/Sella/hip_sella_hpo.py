@@ -697,12 +697,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         default=None,
         help="Load hard sample indices from file (skip prescreening)",
     )
-    parser.add_argument(
-        "--skip-verification",
-        action="store_true",
-        help="Skip verification run with baseline parameters",
-    )
-
+    
     # W&B arguments
     parser.add_argument("--wandb", action="store_true")
     parser.add_argument("--wandb-project", type=str, default="sella-hpo")
@@ -823,36 +818,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         print(f"Loaded {n_existing} existing trials from {db_path}")
         n_remaining = max(0, args.n_trials - n_existing)
         print(f"Will run {n_remaining} more trials")
-
-    # =========================================================================
-    # VERIFICATION: Run baseline config to confirm setup is working
-    # =========================================================================
-    if not args.skip_verification:
-        verification_result = run_verification(
-            calculator=calculator,
-            dataloader=dataloader,
-            device=device,
-            config=HIP_GOOD_STARTING_CONFIG,
-            max_steps=args.max_steps,
-            max_samples=min(args.max_samples, 10),  # Use fewer samples for quick verification
-            start_from=args.start_from,
-            noise_seed=getattr(args, "noise_seed", None),
-        )
-
-        # Log verification results to W&B
-        if args.wandb:
-            log_sample(
-                -1,  # Use -1 to indicate verification run
-                {
-                    "verification/eigenvalue_ts_rate": verification_result.eigenvalue_ts_rate,
-                    "verification/sella_convergence_rate": verification_result.sella_convergence_rate,
-                    "verification/both_rate": verification_result.both_rate,
-                    "verification/n_samples": verification_result.n_samples,
-                    "verification/avg_steps": verification_result.avg_steps,
-                    "verification/avg_wall_time": verification_result.avg_wall_time,
-                },
-            )
-
+    
     # =========================================================================
     # PRE-SCREENING: Identify hard samples to focus HPO on
     # =========================================================================
@@ -898,19 +864,32 @@ def main(argv: Optional[List[str]] = None) -> None:
     if n_existing == 0:  # Only seed if this is a fresh study
         # Seed with known-good config: delta0=0.5, rho_dec=50.0, sigma_dec=0.9
         print("\nSeeding TPE with known-good starting configs...")
+
+        # Define search space explicitly to avoid serialization issues
+        from optuna.distributions import FloatDistribution, CategoricalDistribution
+        distributions = {
+            "delta0": FloatDistribution(0.15, 0.8, log=True),
+            "rho_dec": FloatDistribution(15.0, 80.0),
+            "rho_inc": FloatDistribution(1.01, 1.1),
+            "sigma_dec": FloatDistribution(0.75, 0.95),
+            "sigma_inc": FloatDistribution(1.1, 1.8),
+            "fmax": FloatDistribution(1e-4, 1e-2, log=True),
+            "apply_eckart": CategoricalDistribution([True, False]),
+        }
+
         good_configs = [
             # Best known config
-            {"delta0": 0.5, "rho_dec": 50.0, "rho_inc": 1.035, "sigma_dec": 0.9, 
+            {"delta0": 0.5, "rho_dec": 50.0, "rho_inc": 1.035, "sigma_dec": 0.9,
              "sigma_inc": 1.15, "fmax": 1e-3, "apply_eckart": False},
             # Same but with Eckart
-            {"delta0": 0.5, "rho_dec": 50.0, "rho_inc": 1.035, "sigma_dec": 0.9, 
+            {"delta0": 0.5, "rho_dec": 50.0, "rho_inc": 1.035, "sigma_dec": 0.9,
              "sigma_inc": 1.15, "fmax": 1e-3, "apply_eckart": True},
             # Slightly different
-            {"delta0": 0.4, "rho_dec": 40.0, "rho_inc": 1.05, "sigma_dec": 0.85, 
+            {"delta0": 0.4, "rho_dec": 40.0, "rho_inc": 1.05, "sigma_dec": 0.85,
              "sigma_inc": 1.2, "fmax": 1e-3, "apply_eckart": False},
         ]
         for cfg in good_configs:
-            study.enqueue_trial(cfg)
+            study.enqueue_trial(cfg, distributions=distributions)
         print(f"  Enqueued {len(good_configs)} seed trials")
     
     # =========================================================================

@@ -100,9 +100,6 @@ HARD_SAMPLES_FILE="${HARD_SAMPLES_FILE:-}"  # Optional: load hard samples from f
 STUDY_NAME="${STUDY_NAME:-hip_hpo_job${SLURM_JOB_ID}}"
 RESUME_FLAG="${RESUME:-}"
 
-# Skip verification (useful for resumed runs)
-SKIP_VERIFY="${SKIP_VERIFY:-0}"
-
 WANDB_NAME="hip-sella-hpo_${N_TRIALS}trials_${START_FROM}_job${SLURM_JOB_ID}"
 
 echo `date`: Job $SLURM_JOB_ID is allocated resources.
@@ -123,7 +120,6 @@ echo "Pre-screening config:"
 echo "  PRESCREEN: $PRESCREEN"
 echo "  PRESCREEN_SAMPLES: $PRESCREEN_SAMPLES"
 echo "  HARD_SAMPLES_FILE: ${HARD_SAMPLES_FILE:-<none>}"
-echo "  SKIP_VERIFY: $SKIP_VERIFY"
 echo "=============================================="
 echo "Hyperparameter ranges:"
 echo "  delta0: [0.15, 0.8] (log)"
@@ -171,12 +167,6 @@ if [[ -n "$HARD_SAMPLES_FILE" ]]; then
     echo "LOADING HARD SAMPLES FROM: $HARD_SAMPLES_FILE"
 fi
 
-SKIP_VERIFY_ARG=""
-if [[ "$SKIP_VERIFY" == "1" ]]; then
-    SKIP_VERIFY_ARG="--skip-verification"
-    echo "SKIPPING VERIFICATION RUN"
-fi
-
 python -m src.experiments.Sella.hip_sella_hpo \
     --n-trials "$N_TRIALS" \
     --max-steps "$MAX_STEPS" \
@@ -191,7 +181,6 @@ python -m src.experiments.Sella.hip_sella_hpo \
     $RESUME_ARG \
     $PRESCREEN_ARG \
     $HARD_SAMPLES_ARG \
-    $SKIP_VERIFY_ARG \
     --verbose \
     --wandb \
     --wandb-project "sella-hpo" \

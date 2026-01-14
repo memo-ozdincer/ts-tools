@@ -4,7 +4,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=24
 #SBATCH --gpus-per-node=1
-#SBATCH --time=1:00:00
+#SBATCH --time=11:00:00
 #SBATCH --output=/scratch/memoozd/ts-tools-scratch/logs/hip_multimode_hpo_%j.out
 #SBATCH --error=/scratch/memoozd/ts-tools-scratch/logs/hip_multimode_hpo_%j.err
 #SBATCH --account=rrg-aspuru
@@ -107,7 +107,7 @@ export WANDB_RUN_GROUP="HPO-multi-mode-eckartmw-trillium"
 # Run Configuration
 # =============================================================================
 N_STEPS="${N_STEPS:-4000}"
-MAX_SAMPLES="${MAX_SAMPLES:-20}"
+MAX_SAMPLES="${MAX_SAMPLES:-5000}"
 START_FROM="${START_FROM:-midpoint_rt_noise1.0A}"
 NOISE_SEED="${NOISE_SEED:-42}"
 
@@ -150,9 +150,9 @@ echo "  max_atom_disp: [0.1, 0.5]"
 echo "  plateau_patience: [3, 20]"
 echo "  plateau_boost: [1.2, 3.0]"
 echo "  plateau_shrink: [0.3, 0.7]"
-echo "  escape_disp_threshold: [1e-5, 1e-3] (log)"
+echo "  escape_disp_threshold: [1e-4, 1e-3] (log)"
 echo "  escape_window: [10, 50]"
-echo "  escape_neg_vib_std: [0.1, 1.0]"
+echo "  escape_neg_vib_std: [0.2, 1.0]"
 echo "  escape_delta: [0.05, 0.3]"
 echo "  adaptive_delta: [True, False]"
 echo "  min_interatomic_dist: [0.3, 0.7]"
