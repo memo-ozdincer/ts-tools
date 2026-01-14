@@ -32,9 +32,9 @@
 #   - plateau_patience: Steps before boost [3, 20]
 #   - plateau_boost: Boost factor [1.2, 3.0]
 #   - plateau_shrink: Shrink factor [0.3, 0.7]
-#   - escape_disp_threshold: Escape detection [1e-4, 1e-3] (log)
+#   - escape_disp_threshold: Escape detection [1e-5, 1e-3] (log)
 #   - escape_window: Window size [10, 50]
-#   - escape_neg_vib_std: Std threshold [0.2, 1.0]
+#   - escape_neg_vib_std: Std threshold [0.1, 1.0]
 #   - escape_delta: Perturbation size [0.05, 0.3]
 #   - adaptive_delta: [True, False]
 #   - min_interatomic_dist: Safety [0.3, 0.7]
@@ -150,9 +150,9 @@ echo "  max_atom_disp: [0.1, 0.5]"
 echo "  plateau_patience: [3, 20]"
 echo "  plateau_boost: [1.2, 3.0]"
 echo "  plateau_shrink: [0.3, 0.7]"
-echo "  escape_disp_threshold: [1e-4, 1e-3] (log)"
+echo "  escape_disp_threshold: [1e-5, 1e-3] (log)"
 echo "  escape_window: [10, 50]"
-echo "  escape_neg_vib_std: [0.2, 1.0]"
+echo "  escape_neg_vib_std: [0.1, 1.0]"
 echo "  escape_delta: [0.05, 0.3]"
 echo "  adaptive_delta: [True, False]"
 echo "  min_interatomic_dist: [0.3, 0.7]"
