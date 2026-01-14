@@ -452,23 +452,6 @@ def main():
     
     # Enqueue baseline as first trial if starting fresh
     if not args.resume and len(study.trials) == 0:
-        # Define search space explicitly to avoid serialization issues
-        from optuna.distributions import FloatDistribution, IntDistribution, CategoricalDistribution
-        distributions = {
-            "dt": FloatDistribution(0.0005, 0.005, log=True),
-            "dt_max": FloatDistribution(0.01, 0.1, log=True),
-            "max_atom_disp": FloatDistribution(0.1, 0.5),
-            "plateau_patience": IntDistribution(3, 20),
-            "plateau_boost": FloatDistribution(1.2, 3.0),
-            "plateau_shrink": FloatDistribution(0.3, 0.7),
-            "escape_disp_threshold": FloatDistribution(1e-5, 1e-3, log=True),
-            "escape_window": IntDistribution(10, 50),
-            "escape_neg_vib_std": FloatDistribution(0.1, 1.0),
-            "escape_delta": FloatDistribution(0.05, 0.3),
-            "adaptive_delta": CategoricalDistribution([True, False]),
-            "min_interatomic_dist": FloatDistribution(0.3, 0.7),
-        }
-
         baseline_trial_params = {
             "dt": BASELINE_PARAMS["dt"],
             "dt_max": BASELINE_PARAMS["dt_max"],
@@ -483,7 +466,7 @@ def main():
             "adaptive_delta": BASELINE_PARAMS["adaptive_delta"],
             "min_interatomic_dist": BASELINE_PARAMS["min_interatomic_dist"],
         }
-        study.enqueue_trial(baseline_trial_params, distributions=distributions)
+        study.enqueue_trial(baseline_trial_params)
     
     # Define objective function
     def objective(trial: optuna.Trial) -> float:

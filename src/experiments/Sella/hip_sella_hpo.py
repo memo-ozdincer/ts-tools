@@ -865,18 +865,6 @@ def main(argv: Optional[List[str]] = None) -> None:
         # Seed with known-good config: delta0=0.5, rho_dec=50.0, sigma_dec=0.9
         print("\nSeeding TPE with known-good starting configs...")
 
-        # Define search space explicitly to avoid serialization issues
-        from optuna.distributions import FloatDistribution, CategoricalDistribution
-        distributions = {
-            "delta0": FloatDistribution(0.15, 0.8, log=True),
-            "rho_dec": FloatDistribution(15.0, 80.0),
-            "rho_inc": FloatDistribution(1.01, 1.1),
-            "sigma_dec": FloatDistribution(0.75, 0.95),
-            "sigma_inc": FloatDistribution(1.1, 1.8),
-            "fmax": FloatDistribution(1e-4, 1e-2, log=True),
-            "apply_eckart": CategoricalDistribution([True, False]),
-        }
-
         good_configs = [
             # Best known config
             {"delta0": 0.5, "rho_dec": 50.0, "rho_inc": 1.035, "sigma_dec": 0.9,
@@ -889,7 +877,7 @@ def main(argv: Optional[List[str]] = None) -> None:
              "sigma_inc": 1.2, "fmax": 1e-3, "apply_eckart": False},
         ]
         for cfg in good_configs:
-            study.enqueue_trial(cfg, distributions=distributions)
+            study.enqueue_trial(cfg)
         print(f"  Enqueued {len(good_configs)} seed trials")
     
     # =========================================================================
