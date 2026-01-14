@@ -289,9 +289,9 @@ def sample_hyperparameters(trial: optuna.Trial) -> Dict[str, Any]:
     params["plateau_shrink"] = trial.suggest_float("plateau_shrink", 0.3, 0.7)
     
     # Escape detection parameters
-    params["escape_disp_threshold"] = trial.suggest_float("escape_disp_threshold", 1e-4, 1e-3, log=True)
+    params["escape_disp_threshold"] = trial.suggest_float("escape_disp_threshold", 1e-5, 1e-3, log=True)
     params["escape_window"] = trial.suggest_int("escape_window", 10, 50)
-    params["escape_neg_vib_std"] = trial.suggest_float("escape_neg_vib_std", 0.2, 1.0)
+    params["escape_neg_vib_std"] = trial.suggest_float("escape_neg_vib_std", 0.1, 1.0)
     
     # Escape perturbation parameters
     params["escape_delta"] = trial.suggest_float("escape_delta", 0.05, 0.3)

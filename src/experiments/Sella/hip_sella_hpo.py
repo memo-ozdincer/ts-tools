@@ -188,6 +188,57 @@ HIP_GOOD_STARTING_CONFIG = HPOConfig(
 )
 
 
+def run_verification(
+    calculator,
+    dataloader,
+    device: str,
+    config: HPOConfig,
+    max_steps: int,
+    max_samples: int,
+    start_from: str,
+    noise_seed: Optional[int],
+) -> HPOResult:
+    """Run verification with baseline parameters before HPO.
+
+    This confirms the setup is working correctly before starting HPO.
+    Returns the results for baseline comparison.
+    """
+    print("\n" + "=" * 70)
+    print("VERIFICATION RUN: Using baseline parameters")
+    print("=" * 70)
+    print(f"Config: {config.to_str()}")
+    print("=" * 70 + "\n")
+
+    result = run_trial_evaluation(
+        calculator=calculator,
+        dataloader=dataloader,
+        device=device,
+        config=config,
+        max_steps=max_steps,
+        max_samples=max_samples,
+        start_from=start_from,
+        noise_seed=noise_seed,
+        verbose=True,
+        trial=None,
+        prune_after_n=max_samples + 1,  # Never prune verification
+        sample_indices=None,
+    )
+
+    print("\n" + "=" * 70)
+    print("VERIFICATION RESULTS")
+    print("=" * 70)
+    print(f"  Samples: {result.n_samples}")
+    print(f"  Eigenvalue TS (1 neg): {result.n_eigenvalue_ts} ({result.eigenvalue_ts_rate*100:.1f}%)")
+    print(f"  Sella converged: {result.n_sella_converged} ({result.sella_convergence_rate*100:.1f}%)")
+    print(f"  Both: {result.n_both} ({result.both_rate*100:.1f}%)")
+    print(f"  Avg steps: {result.avg_steps:.1f}")
+    print(f"  Avg wall time: {result.avg_wall_time:.2f}s")
+    print(f"  Neg eigenvalue distribution: {dict(result.neg_eigval_counts)}")
+    print("=" * 70 + "\n")
+
+    return result
+
+
 def prescreen_samples(
     calculator,
     dataloader,
@@ -646,7 +697,12 @@ def main(argv: Optional[List[str]] = None) -> None:
         default=None,
         help="Load hard sample indices from file (skip prescreening)",
     )
-    
+    parser.add_argument(
+        "--skip-verification",
+        action="store_true",
+        help="Skip verification run with baseline parameters",
+    )
+
     # W&B arguments
     parser.add_argument("--wandb", action="store_true")
     parser.add_argument("--wandb-project", type=str, default="sella-hpo")
@@ -767,7 +823,36 @@ def main(argv: Optional[List[str]] = None) -> None:
         print(f"Loaded {n_existing} existing trials from {db_path}")
         n_remaining = max(0, args.n_trials - n_existing)
         print(f"Will run {n_remaining} more trials")
-    
+
+    # =========================================================================
+    # VERIFICATION: Run baseline config to confirm setup is working
+    # =========================================================================
+    if not args.skip_verification:
+        verification_result = run_verification(
+            calculator=calculator,
+            dataloader=dataloader,
+            device=device,
+            config=HIP_GOOD_STARTING_CONFIG,
+            max_steps=args.max_steps,
+            max_samples=min(args.max_samples, 10),  # Use fewer samples for quick verification
+            start_from=args.start_from,
+            noise_seed=getattr(args, "noise_seed", None),
+        )
+
+        # Log verification results to W&B
+        if args.wandb:
+            log_sample(
+                -1,  # Use -1 to indicate verification run
+                {
+                    "verification/eigenvalue_ts_rate": verification_result.eigenvalue_ts_rate,
+                    "verification/sella_convergence_rate": verification_result.sella_convergence_rate,
+                    "verification/both_rate": verification_result.both_rate,
+                    "verification/n_samples": verification_result.n_samples,
+                    "verification/avg_steps": verification_result.avg_steps,
+                    "verification/avg_wall_time": verification_result.avg_wall_time,
+                },
+            )
+
     # =========================================================================
     # PRE-SCREENING: Identify hard samples to focus HPO on
     # =========================================================================

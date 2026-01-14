@@ -94,11 +94,6 @@ class HipASECalculator(Calculator):
         with torch.no_grad():
             result = self.hip_calculator.predict(batch, do_hessian=True)
 
-        # Cache results for hessian_function to pick up without re-running inference
-        self.last_results = result
-        self.last_coords = coords
-        self.last_z = z
-
         # Extract energy and forces
         energy = result["energy"]
         forces = result["forces"]
@@ -337,22 +332,13 @@ def create_hessian_function(
             # Convert to torch tensors
             coords = torch.tensor(positions, dtype=torch.float32, device=torch_device)
             z = torch.tensor(atomic_numbers, dtype=torch.long, device=torch_device)
-            
-            # Check for cached results in atoms.calc (HipASECalculator)
-            # This avoids running the expensive model twice per step (energy+force then hessian)
-            result = None
-            if hasattr(atoms.calc, "last_coords") and hasattr(atoms.calc, "last_results"):
-                # Use torch.equal for exact match of coordinates
-                if torch.equal(coords, atoms.calc.last_coords) and torch.equal(z, atoms.calc.last_z):
-                    result = atoms.calc.last_results
 
-            if result is None:
-                # Create PyG batch for HIP
-                batch = coords_to_pyg_batch(coords, z, device=torch_device)
+            # Create PyG batch for HIP
+            batch = coords_to_pyg_batch(coords, z, device=torch_device)
 
-                # Get directly predicted Hessian from HIP
-                with torch.no_grad():
-                    result = calculator.predict(batch, do_hessian=True)
+            # Get directly predicted Hessian from HIP
+            with torch.no_grad():
+                result = calculator.predict(batch, do_hessian=True)
 
             # Extract Hessian
             hessian = result["hessian"]
