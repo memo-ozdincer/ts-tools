@@ -1,0 +1,13 @@
+{"time":"2026-01-15T15:55:48.221917202-05:00","level":"INFO","msg":"stream: starting","core version":"0.21.0"}
+{"time":"2026-01-15T15:55:48.493952383-05:00","level":"INFO","msg":"stream: created new stream","id":"nrck4zj5"}
+{"time":"2026-01-15T15:55:48.493997661-05:00","level":"INFO","msg":"stream: started","id":"nrck4zj5"}
+{"time":"2026-01-15T15:55:48.494008557-05:00","level":"INFO","msg":"writer: Do: started","stream_id":"nrck4zj5"}
+{"time":"2026-01-15T15:55:48.494024701-05:00","level":"INFO","msg":"sender: started","stream_id":"nrck4zj5"}
+{"time":"2026-01-15T15:55:48.49401048-05:00","level":"INFO","msg":"handler: started","stream_id":"nrck4zj5"}
+{"time":"2026-01-15T15:55:50.237289815-05:00","level":"INFO","msg":"handler: operation stats","stats":{"operations":[{"desc":"uploading artifact scine_sella_hpo_job825744","runtime_seconds":0.98896392}],"total_operations":1}}
+{"time":"2026-01-15T15:55:50.562943505-05:00","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2026-01-15T15:55:50.649394912-05:00","level":"INFO","msg":"stream: closing","id":"nrck4zj5"}
+{"time":"2026-01-15T15:55:50.649412708-05:00","level":"INFO","msg":"handler: closed","stream_id":"nrck4zj5"}
+{"time":"2026-01-15T15:55:50.649423004-05:00","level":"INFO","msg":"writer: Close: closed","stream_id":"nrck4zj5"}
+{"time":"2026-01-15T15:55:50.649430986-05:00","level":"INFO","msg":"sender: closed","stream_id":"nrck4zj5"}
+{"time":"2026-01-15T15:55:50.650133048-05:00","level":"INFO","msg":"stream: closed","id":"nrck4zj5"}

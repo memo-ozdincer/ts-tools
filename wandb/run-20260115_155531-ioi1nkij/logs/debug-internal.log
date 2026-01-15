@@ -1,0 +1,13 @@
+{"time":"2026-01-15T15:55:31.354840437-05:00","level":"INFO","msg":"stream: starting","core version":"0.21.0"}
+{"time":"2026-01-15T15:55:31.627660114-05:00","level":"INFO","msg":"stream: created new stream","id":"ioi1nkij"}
+{"time":"2026-01-15T15:55:31.627700344-05:00","level":"INFO","msg":"stream: started","id":"ioi1nkij"}
+{"time":"2026-01-15T15:55:31.627719553-05:00","level":"INFO","msg":"writer: Do: started","stream_id":"ioi1nkij"}
+{"time":"2026-01-15T15:55:31.627729488-05:00","level":"INFO","msg":"sender: started","stream_id":"ioi1nkij"}
+{"time":"2026-01-15T15:55:31.627747405-05:00","level":"INFO","msg":"handler: started","stream_id":"ioi1nkij"}
+{"time":"2026-01-15T15:55:33.112029805-05:00","level":"INFO","msg":"handler: operation stats","stats":{"operations":[{"desc":"uploading artifact hip_sella_hpo_job201476","runtime_seconds":0.973905016}],"total_operations":1}}
+{"time":"2026-01-15T15:55:33.385593567-05:00","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2026-01-15T15:55:33.517998802-05:00","level":"INFO","msg":"stream: closing","id":"ioi1nkij"}
+{"time":"2026-01-15T15:55:33.518013294-05:00","level":"INFO","msg":"handler: closed","stream_id":"ioi1nkij"}
+{"time":"2026-01-15T15:55:33.518023349-05:00","level":"INFO","msg":"writer: Close: closed","stream_id":"ioi1nkij"}
+{"time":"2026-01-15T15:55:33.51803077-05:00","level":"INFO","msg":"sender: closed","stream_id":"ioi1nkij"}
+{"time":"2026-01-15T15:55:33.51890424-05:00","level":"INFO","msg":"stream: closed","id":"ioi1nkij"}

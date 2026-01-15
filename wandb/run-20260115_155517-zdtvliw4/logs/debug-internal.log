@@ -1,0 +1,13 @@
+{"time":"2026-01-15T15:55:17.665922318-05:00","level":"INFO","msg":"stream: starting","core version":"0.21.0"}
+{"time":"2026-01-15T15:55:17.935341708-05:00","level":"INFO","msg":"stream: created new stream","id":"zdtvliw4"}
+{"time":"2026-01-15T15:55:17.935368078-05:00","level":"INFO","msg":"stream: started","id":"zdtvliw4"}
+{"time":"2026-01-15T15:55:17.93537646-05:00","level":"INFO","msg":"writer: Do: started","stream_id":"zdtvliw4"}
+{"time":"2026-01-15T15:55:17.935383391-05:00","level":"INFO","msg":"sender: started","stream_id":"zdtvliw4"}
+{"time":"2026-01-15T15:55:17.935421538-05:00","level":"INFO","msg":"handler: started","stream_id":"zdtvliw4"}
+{"time":"2026-01-15T15:55:19.619486447-05:00","level":"INFO","msg":"handler: operation stats","stats":{"operations":[{"desc":"uploading artifact hip_multi_mode_hpo_1835140","runtime_seconds":0.966113135}],"total_operations":1}}
+{"time":"2026-01-15T15:55:19.811305418-05:00","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2026-01-15T15:55:20.301664492-05:00","level":"INFO","msg":"stream: closing","id":"zdtvliw4"}
+{"time":"2026-01-15T15:55:20.301684002-05:00","level":"INFO","msg":"handler: closed","stream_id":"zdtvliw4"}
+{"time":"2026-01-15T15:55:20.301695619-05:00","level":"INFO","msg":"writer: Close: closed","stream_id":"zdtvliw4"}
+{"time":"2026-01-15T15:55:20.301701758-05:00","level":"INFO","msg":"sender: closed","stream_id":"zdtvliw4"}
+{"time":"2026-01-15T15:55:20.302696179-05:00","level":"INFO","msg":"stream: closed","id":"zdtvliw4"}

@@ -1,0 +1,13 @@
+torch>=2.0.0
+torch-geometric
+numpy
+scipy
+matplotlib
+h5py
+ase
+wandb
+
+[dev]
+pytest
+black
+isort

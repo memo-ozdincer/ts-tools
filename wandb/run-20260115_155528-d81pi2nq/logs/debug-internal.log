@@ -1,0 +1,13 @@
+{"time":"2026-01-15T15:55:28.376187103-05:00","level":"INFO","msg":"stream: starting","core version":"0.21.0"}
+{"time":"2026-01-15T15:55:28.654965122-05:00","level":"INFO","msg":"stream: created new stream","id":"d81pi2nq"}
+{"time":"2026-01-15T15:55:28.655002318-05:00","level":"INFO","msg":"stream: started","id":"d81pi2nq"}
+{"time":"2026-01-15T15:55:28.655013605-05:00","level":"INFO","msg":"writer: Do: started","stream_id":"d81pi2nq"}
+{"time":"2026-01-15T15:55:28.65501708-05:00","level":"INFO","msg":"sender: started","stream_id":"d81pi2nq"}
+{"time":"2026-01-15T15:55:28.655030941-05:00","level":"INFO","msg":"handler: started","stream_id":"d81pi2nq"}
+{"time":"2026-01-15T15:55:30.644814896-05:00","level":"INFO","msg":"handler: operation stats","stats":{"operations":[{"desc":"uploading artifact hip_sella_hpo_job199473","runtime_seconds":0.910477794}],"total_operations":1}}
+{"time":"2026-01-15T15:55:31.236546295-05:00","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2026-01-15T15:55:31.327508334-05:00","level":"INFO","msg":"stream: closing","id":"d81pi2nq"}
+{"time":"2026-01-15T15:55:31.327526741-05:00","level":"INFO","msg":"handler: closed","stream_id":"d81pi2nq"}
+{"time":"2026-01-15T15:55:31.32753891-05:00","level":"INFO","msg":"writer: Close: closed","stream_id":"d81pi2nq"}
+{"time":"2026-01-15T15:55:31.327548845-05:00","level":"INFO","msg":"sender: closed","stream_id":"d81pi2nq"}
+{"time":"2026-01-15T15:55:31.328492549-05:00","level":"INFO","msg":"stream: closed","id":"d81pi2nq"}
