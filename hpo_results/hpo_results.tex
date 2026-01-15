@@ -1,0 +1,199 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{siunitx}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{hyperref}
+
+\sisetup{
+    round-mode=places,
+    round-precision=4,
+    scientific-notation=true,
+}
+
+\title{Bayesian HPO Results: Sella vs Multi-Mode Optimizers}
+\author{Transition State Search Experiments}
+\date{January 2026}
+
+\begin{document}
+\maketitle
+
+\section{Experimental Setup}
+
+Four configurations tested:
+\begin{itemize}
+    \item \textbf{HIP + Sella}: GPU (H100), 0 trials completed
+    \item \textbf{SCINE + Sella}: CPU (DFTB0), 76 trials (24 complete, 51 pruned)
+    \item \textbf{HIP + Multi-Mode}: GPU (H100), 0 trials completed
+    \item \textbf{SCINE + Multi-Mode}: CPU (DFTB0), 2 trials (1 complete)
+\end{itemize}
+
+Starting geometry: \texttt{midpoint\_rt\_noise1.0A} (noisy midpoint between reactant/product).
+
+%==============================================================================
+\section{SCINE + Sella Results}
+%==============================================================================
+
+\subsection{Optimization Progress}
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=0.8\textwidth]{figures/scine_sella_history.pdf}
+    \caption{Objective maximization over 76 trials. Best: 0.607 (trial 67).}
+\end{figure}
+
+\subsection{Objective Function}
+
+Weighted sum (maximized):
+\[
+\text{Objective} = 1.0 \times \text{TS\_rate} + 0.01 \times \text{speed} + 0.001 \times \text{convergence\_rate}
+\]
+
+Key metrics for top performer (trial 67):
+\begin{itemize}
+    \item Eigenvalue TS rate: 60\%
+    \item Sella convergence rate: 70\%
+    \item Both satisfied: 46.7\%
+    \item Average steps: 179
+\end{itemize}
+
+\subsection{Parameter Importance}
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=0.6\textwidth]{figures/scine_sella_importance.pdf}
+    \caption{Absolute correlation with objective. Higher = more influential.}
+\end{figure}
+
+\subsection{Parameter Distributions}
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=\textwidth]{figures/scine_sella_params.pdf}
+    \caption{Parameter values vs objective for completed trials. Dashed lines show search bounds.}
+\end{figure}
+
+\subsection{Optimal Ranges (Top 25\%)}
+
+\begin{table}[h]
+\centering
+\caption{Parameter ranges for trials in top 25\% of objective values.}
+\begin{tabular}{lrrrrr}
+\toprule
+Parameter & Min & Max & Mean & Search Low & Search High \\
+\midrule
+delta0 & 0.070 & 0.785 & 0.199 & 0.03 & 0.80 \\
+fmax & \num{1.5e-4} & \num{8.7e-4} & \num{3.9e-4} & \num{1e-4} & \num{1e-2} \\
+rho\_dec & 20.6 & 79.7 & 51.8 & 3.0 & 80.0 \\
+sigma\_dec & 0.631 & 0.937 & 0.858 & 0.5 & 0.95 \\
+sigma\_inc & 1.30 & 1.80 & 1.50 & 1.1 & 1.8 \\
+apply\_eckart & 0 & 1 & 0.5 & -- & -- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Key observations:}
+\begin{itemize}
+    \item \texttt{fmax}: Tight convergence (\num{1.5e-4}--\num{8.7e-4}) outperforms loose
+    \item \texttt{sigma\_dec}: Higher values (0.85--0.94) preferred (conservative trust shrinking)
+    \item \texttt{apply\_eckart}: No clear winner (50/50 split in top trials)
+    \item \texttt{rho\_dec}: Full range explored, slight preference for mid-to-high values
+\end{itemize}
+
+\subsection{Metric Distributions}
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=\textwidth]{figures/scine_sella_metrics.pdf}
+    \caption{Distribution of key metrics across completed trials.}
+\end{figure}
+
+\subsection{Best Trial Parameters}
+
+\begin{table}[h]
+\centering
+\caption{Top 3 trial configurations.}
+\begin{tabular}{ccccccccc}
+\toprule
+Rank & Obj & delta0 & fmax & rho\_dec & rho\_inc & sigma\_dec & sigma\_inc & Eckart \\
+\midrule
+1 & 0.607 & 0.073 & \num{3.0e-4} & 79.7 & 1.016 & 0.937 & 1.47 & False \\
+2 & 0.607 & 0.785 & \num{5.0e-4} & 72.2 & 1.057 & 0.906 & 1.30 & True \\
+3 & 0.605 & 0.081 & \num{1.9e-4} & 43.4 & 1.049 & 0.631 & 1.53 & True \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%==============================================================================
+\section{SCINE + Multi-Mode Results}
+%==============================================================================
+
+Limited data (1 complete trial). Initial result:
+
+\begin{table}[h]
+\centering
+\caption{SCINE Multi-Mode trial result.}
+\begin{tabular}{lr}
+\toprule
+Metric & Value \\
+\midrule
+Success rate & 77\% \\
+Mean steps (success) & 1728 \\
+Mean escape cycles & 51.7 \\
+Mean wall time & 268 s \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Parameters used:
+\begin{itemize}
+    \item \texttt{dt}: \num{2.13e-3} (log range: \num{5e-4}--\num{5e-3})
+    \item \texttt{dt\_max}: \num{2.29e-2} (log range: \num{1e-2}--\num{1e-1})
+    \item \texttt{plateau\_patience}: 9 (range: 3--20)
+    \item \texttt{adaptive\_delta}: True
+    \item \texttt{escape\_delta}: 0.216 (range: 0.05--0.3)
+\end{itemize}
+
+%==============================================================================
+\section{Cross-Method Comparison}
+%==============================================================================
+
+\begin{table}[h]
+\centering
+\caption{Summary across all studies.}
+\begin{tabular}{lrrrr}
+\toprule
+Study & Trials & Complete & Pruned & Best Objective \\
+\midrule
+HIP + Sella & 0 & 0 & 0 & -- \\
+SCINE + Sella & 76 & 24 & 51 & 0.607 \\
+HIP + Multi-Mode & 0 & 0 & 0 & -- \\
+SCINE + Multi-Mode & 2 & 1 & 0 & -0.776 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Note:} Objective functions differ between Sella (TS rate + speed + convergence) and Multi-Mode (success rate + speed). Direct comparison requires normalization.
+
+%==============================================================================
+\section{Reproducibility}
+%==============================================================================
+
+Analysis script: \texttt{hpo\_results/analyze\_hpo\_results.py}
+
+\begin{verbatim}
+source .venv/bin/activate
+python hpo_results/analyze_hpo_results.py
+\end{verbatim}
+
+SQLite databases:
+\begin{itemize}
+    \item \texttt{hip\_sella\_hpo\_job201956.db}
+    \item \texttt{scine\_sella\_hpo\_job833394.db}
+    \item \texttt{hip\_multi\_mode\_hpo\_201955.db}
+    \item \texttt{scine\_multi\_mode\_hpo\_825749.db}
+\end{itemize}
+
+\end{document}

@@ -185,10 +185,67 @@ def log_summary(summary_dict: Dict[str, Any]) -> None:
           f"avg time={avg_time:.2f}s, TS found={ts_count}/{total} ({ts_rate:.1%})")
 
 
-def finish_wandb() -> None:
-    """Finish the W&B run. Call at the end of your experiment."""
+def log_artifact(
+    file_path: str,
+    artifact_name: str,
+    artifact_type: str = "optuna-study",
+    description: Optional[str] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """
+    Log a file as a W&B artifact (e.g., SQLite database).
+
+    Args:
+        file_path: Path to the file to upload
+        artifact_name: Name for the artifact
+        artifact_type: Type of artifact (default: "optuna-study")
+        description: Optional description
+        metadata: Optional metadata dict
+
+    Returns:
+        True if successful, False otherwise
+    """
+    if _wandb_run is None:
+        return False
+
+    try:
+        path = Path(file_path)
+        if not path.exists():
+            print(f"[W&B] Artifact file not found: {file_path}")
+            return False
+
+        artifact = wandb.Artifact(
+            name=artifact_name,
+            type=artifact_type,
+            description=description or f"Artifact: {artifact_name}",
+            metadata=metadata or {"file_size_mb": path.stat().st_size / (1024 * 1024)},
+        )
+        artifact.add_file(str(path))
+        _wandb_run.log_artifact(artifact)
+        print(f"[W&B] Logged artifact: {artifact_name} ({artifact_type})")
+        return True
+    except Exception as e:
+        print(f"[W&B] Failed to log artifact: {e}")
+        return False
+
+
+def finish_wandb(
+    artifact_path: Optional[str] = None,
+    artifact_name: Optional[str] = None,
+) -> None:
+    """
+    Finish the W&B run. Call at the end of your experiment.
+
+    Args:
+        artifact_path: Optional path to artifact (e.g., SQLite DB) to upload before finishing
+        artifact_name: Name for the artifact (required if artifact_path provided)
+    """
     global _wandb_run
     if _wandb_run is not None:
+        # Upload artifact if provided
+        if artifact_path and artifact_name:
+            log_artifact(artifact_path, artifact_name)
+
         wandb.finish()
         print("[W&B] Run finished")
         _wandb_run = None

@@ -78,7 +78,7 @@ from ...dependencies.hessian import (
     vibrational_eigvals,
     get_scine_elements_from_predict_output,
 )
-from ...logging import finish_wandb, init_wandb_run, log_sample, log_summary
+from ...logging import finish_wandb, init_wandb_run, log_artifact, log_sample, log_summary
 from ...runners._predict import make_predict_fn_from_calculator
 from .sella_ts import run_sella_ts
 
@@ -1035,8 +1035,23 @@ def main(argv: Optional[List[str]] = None) -> None:
             "aggregate/max_ts_rate": float(max(all_ts_rates)) if all_ts_rates else 0,
         }
         log_summary(summary)
+
+        # Log SQLite DB as artifact for sharing/syncing
+        log_artifact(
+            file_path=str(db_path),
+            artifact_name=study_name,
+            artifact_type="optuna-study",
+            description=f"HIP Sella HPO Optuna study: {study_name}",
+            metadata={
+                "n_trials": len(study.trials),
+                "n_completed": n_completed,
+                "n_pruned": n_pruned,
+                "best_score": study.best_trial.value,
+                "best_ts_rate": best_ts_rate,
+            },
+        )
         finish_wandb()
-    
+
     print(f"{'='*80}")
     print(f"Optuna study saved to: {db_path}")
     print(f"To resume: --resume --study-name {study_name}")

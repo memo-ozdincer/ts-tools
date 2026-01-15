@@ -574,6 +574,24 @@ def main():
             "best/score": -best_trial.value,
             **{f"best/{k}": v for k, v in best_trial.params.items()},
         })
+
+        # Log SQLite DB as artifact for sharing/syncing
+        try:
+            artifact = wandb.Artifact(
+                name=study_name,
+                type="optuna-study",
+                description=f"HIP Multi-Mode HPO Optuna study: {study_name}",
+                metadata={
+                    "n_trials": len(study.trials),
+                    "best_score": -best_trial.value,
+                },
+            )
+            artifact.add_file(str(db_path))
+            wandb.log_artifact(artifact)
+            print(f"[W&B] Logged artifact: {study_name}")
+        except Exception as e:
+            print(f"[W&B] Failed to log artifact: {e}")
+
         wandb.finish()
     
     print("\nHPO complete!")

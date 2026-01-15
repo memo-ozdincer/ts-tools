@@ -13,6 +13,7 @@ from ..dependencies.experiment_logger import (
     init_wandb_run,
     log_sample,
     log_summary,
+    log_artifact,
     finish_wandb,
     is_wandb_active,
 )
@@ -21,6 +22,7 @@ __all__ = [
     "init_wandb_run",
     "log_sample",
     "log_summary",
+    "log_artifact",
     "finish_wandb",
     "is_wandb_active",
 ]
