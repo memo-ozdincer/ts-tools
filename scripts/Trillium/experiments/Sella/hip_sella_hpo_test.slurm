@@ -1,21 +1,21 @@
 #!/bin/bash
-#SBATCH --job-name=hip_sella_test
+#SBATCH --job-name=hip_sella_hpo
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=24
 #SBATCH --gpus-per-node=1
-#SBATCH --time=00:30:00
-#SBATCH --output=/scratch/memoozd/ts-tools-scratch/logs/hip_sella_test_%j.out
-#SBATCH --error=/scratch/memoozd/ts-tools-scratch/logs/hip_sella_test_%j.err
+#SBATCH --time=11:00:00
+#SBATCH --output=/scratch/memoozd/ts-tools-scratch/logs/hip_sella_hpo_%j.out
+#SBATCH --error=/scratch/memoozd/ts-tools-scratch/logs/hip_sella_hpo_%j.err
 #SBATCH --account=rrg-aspuru
 
 # =============================================================================
-# HIP Sella HPO - LOW-SAMPLE TEST VERSION
+# HIP Sella HPO - FULL PRODUCTION RUN
 # =============================================================================
 # 
-# Quick test version with minimal samples to verify the pipeline works.
-# Uses: 5 samples, 3 trials, 50 max steps
-# Expected runtime: ~10-20 minutes
+# Full HPO run with production settings.
+# Uses: 30 samples, 5000 trials, 100 max steps, with prescreening
+# Expected runtime: ~10 hours
 # =============================================================================
 
 set -e
@@ -67,25 +67,26 @@ export WANDB_MODE=offline
 export WANDB_DIR="$OUT_DIR/wandb"
 mkdir -p "$WANDB_DIR"
 
-# ========== LOW-SAMPLE TEST CONFIG ==========
-N_TRIALS=3
-MAX_STEPS=50
-MAX_SAMPLES=5
-PRESCREEN=0  # Skip prescreening for test
+# ========== FULL PRODUCTION CONFIG ==========
+N_TRIALS=5000
+MAX_STEPS=100
+MAX_SAMPLES=30
+PRESCREEN=1
+PRESCREEN_SAMPLES=100
 START_FROM="midpoint_rt_noise1.0A"
 NOISE_SEED=42
 OPTUNA_SEED=42
-STUDY_NAME="hip_sella_TEST_${SLURM_JOB_ID}"
-# ============================================
+STUDY_NAME="hip_sella_hpo_${SLURM_JOB_ID}"
+# =============================================
 
 echo "=============================================="
-echo "HIP Sella HPO - LOW SAMPLE TEST"
-echo "=============================================="
+echo "HIP Sella HPO - FULL PRODUCTION RUN"
+echo "==============================================" 
 echo "Date: $(date)"
 echo "SLURM_JOB_ID: $SLURM_JOB_ID"
 echo "Node: $(hostname)"
-echo "=============================================="
-echo "TEST CONFIG (low-sample):"
+echo "==============================================" 
+echo "PRODUCTION CONFIG:"
 echo "  N_TRIALS: $N_TRIALS"
 echo "  MAX_STEPS: $MAX_STEPS"
 echo "  MAX_SAMPLES: $MAX_SAMPLES"
@@ -105,21 +106,24 @@ python -m src.experiments.Sella.hip_sella_hpo \
     --noise-seed "$NOISE_SEED" \
     --optuna-seed "$OPTUNA_SEED" \
     --study-name "$STUDY_NAME" \
+    --prescreen \
+    --prescreen-samples "$PRESCREEN_SAMPLES" \
     --verbose \
     --wandb \
-    --wandb-project "sella-hpo-test" \
+    --wandb-project "sella-hpo" \
     --wandb-entity "memo-ozdincer-university-of-toronto" \
-    --wandb-name "hip_sella_TEST_${SLURM_JOB_ID}"
+    --wandb-name "hip_sella_hpo_${SLURM_JOB_ID}"
 
 EXIT_CODE=$?
 
 echo ""
-echo "=============================================="
+echo "==============================================" 
 if [ $EXIT_CODE -eq 0 ]; then
-    echo "TEST PASSED at $(date)"
+    echo "HPO COMPLETED SUCCESSFULLY at $(date)"
 else
-    echo "TEST FAILED with code $EXIT_CODE at $(date)"
+    echo "HPO EXITED with code $EXIT_CODE at $(date)"
+    echo "Resume with: RESUME=1 STUDY_NAME=$STUDY_NAME sbatch ..."
 fi
-echo "=============================================="
-
-exit $EXIT_CODE
+echo "==============================================" 
+echo "SQLite database: $DB_DIR/${STUDY_NAME}.db"
+echo "W&B offline run: $WANDB_DIR"
