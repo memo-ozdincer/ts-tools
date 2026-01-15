@@ -474,7 +474,12 @@ def main():
             "adaptive_delta": BASELINE_PARAMS["adaptive_delta"],
             "min_interatomic_dist": BASELINE_PARAMS["min_interatomic_dist"],
         }
-        study.enqueue_trial(baseline_trial_params)
+        try:
+            study.enqueue_trial(baseline_trial_params)
+            print(">>> Enqueued baseline trial")
+        except TypeError as e:
+            print(f"WARNING: Could not enqueue baseline trial: {e}")
+            print("    (This is OK - TPE will sample the first trial)")
     
     # Define objective function
     def objective(trial: optuna.Trial) -> float:

@@ -876,9 +876,17 @@ def main(argv: Optional[List[str]] = None) -> None:
             {"delta0": 0.4, "rho_dec": 40.0, "rho_inc": 1.05, "sigma_dec": 0.85,
              "sigma_inc": 1.2, "fmax": 1e-3, "apply_eckart": False},
         ]
+        enqueued = 0
         for cfg in good_configs:
-            study.enqueue_trial(cfg)
-        print(f"  Enqueued {len(good_configs)} seed trials")
+            try:
+                study.enqueue_trial(cfg)
+                enqueued += 1
+            except TypeError as e:
+                print(f"WARNING: Could not enqueue seed trial: {e}")
+                print("    (This is OK - TPE will sample trials)")
+                break
+        if enqueued > 0:
+            print(f"  Enqueued {enqueued} seed trials")
     
     # =========================================================================
     # CREATE OBJECTIVE FUNCTION
