@@ -1,21 +1,21 @@
 #!/bin/bash
-#SBATCH --job-name=hip_multimode_hpo
+#SBATCH --job-name=hip_multimode_test
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=24
 #SBATCH --gpus-per-node=1
-#SBATCH --time=11:00:00
-#SBATCH --output=/scratch/memoozd/ts-tools-scratch/logs/hip_multimode_hpo_%j.out
-#SBATCH --error=/scratch/memoozd/ts-tools-scratch/logs/hip_multimode_hpo_%j.err
+#SBATCH --time=00:30:00
+#SBATCH --output=/scratch/memoozd/ts-tools-scratch/logs/hip_multimode_test_%j.out
+#SBATCH --error=/scratch/memoozd/ts-tools-scratch/logs/hip_multimode_test_%j.err
 #SBATCH --account=rrg-aspuru
 
 # =============================================================================
-# HIP Multi-Mode Eckart-MW HPO - FULL PRODUCTION RUN
+# HIP Multi-Mode Eckart-MW HPO - LOW-SAMPLE TEST VERSION
 # =============================================================================
 # 
-# Full HPO run with production settings.
-# Uses: 5000 samples, 500 trials, 4000 steps max
-# Expected runtime: ~10 hours
+# Quick test version with minimal samples to verify the pipeline works.
+# Uses: 10 samples, 3 trials, 500 steps max
+# Expected runtime: ~10-20 minutes
 # =============================================================================
 
 set -e
@@ -67,24 +67,24 @@ export WANDB_MODE=offline
 export WANDB_DIR="$OUT_DIR/wandb"
 mkdir -p "$WANDB_DIR"
 
-# ========== FULL PRODUCTION CONFIG ==========
-N_STEPS=4000
-MAX_SAMPLES=5000
-N_TRIALS=500
-N_STARTUP_TRIALS=5
+# ========== LOW-SAMPLE TEST CONFIG ==========
+N_STEPS=500
+MAX_SAMPLES=10
+N_TRIALS=3
+N_STARTUP_TRIALS=2
 START_FROM="midpoint_rt_noise1.0A"
 NOISE_SEED=42
-STUDY_NAME="hip_multimode_hpo_${SLURM_JOB_ID}"
-# =============================================
+STUDY_NAME="hip_multimode_TEST_${SLURM_JOB_ID}"
+# ============================================
 
 echo "=============================================="
-echo "HIP Multi-Mode HPO - FULL PRODUCTION RUN"
+echo "HIP Multi-Mode HPO - LOW SAMPLE TEST"
 echo "==============================================" 
 echo "Date: $(date)"
 echo "SLURM_JOB_ID: $SLURM_JOB_ID"
 echo "Node: $(hostname)"
 echo "==============================================" 
-echo "PRODUCTION CONFIG:"
+echo "TEST CONFIG (low-sample):"
 echo "  N_STEPS: $N_STEPS"
 echo "  MAX_SAMPLES: $MAX_SAMPLES"
 echo "  N_TRIALS: $N_TRIALS"
@@ -104,18 +104,18 @@ python -m src.noisy.hip_multi_mode_eckartmw_hpo \
     --n-trials "$N_TRIALS" \
     --n-startup-trials "$N_STARTUP_TRIALS" \
     --study-name "$STUDY_NAME" \
+    --skip-verification \
     --wandb \
-    --wandb-project "hip-multi-mode-hpo"
+    --wandb-project "hip-multi-mode-hpo-test"
 
 EXIT_CODE=$?
 
 echo ""
 echo "==============================================" 
 if [ $EXIT_CODE -eq 0 ]; then
-    echo "HPO COMPLETED SUCCESSFULLY at $(date)"
+    echo "TEST PASSED at $(date)"
 else
-    echo "HPO EXITED with code $EXIT_CODE at $(date)"
-    echo "Resume with: RESUME=1 STUDY_NAME=$STUDY_NAME sbatch ..."
+    echo "TEST FAILED with code $EXIT_CODE at $(date)"
 fi
 echo "==============================================" 
 echo "SQLite database: $DB_DIR/${STUDY_NAME}.db"
