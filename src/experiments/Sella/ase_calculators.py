@@ -94,6 +94,12 @@ class HipASECalculator(Calculator):
         with torch.no_grad():
             result = self.hip_calculator.predict(batch, do_hessian=True)
 
+        # Cache result for hip_hessian_function() to avoid recomputing Hessian
+        # (Sella calls calculate() for energy/forces, then hessian_function() for Hessian)
+        self.last_coords = coords.clone()
+        self.last_z = z.clone()
+        self.last_results = result
+
         # Extract energy and forces
         energy = result["energy"]
         forces = result["forces"]

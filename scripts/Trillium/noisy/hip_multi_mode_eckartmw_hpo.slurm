@@ -112,7 +112,9 @@ export WANDB_RUN_GROUP="HPO-multi-mode-eckartmw-trillium"
 # Run Configuration
 # =============================================================================
 N_STEPS="${N_STEPS:-4000}"
-MAX_SAMPLES="${MAX_SAMPLES:-5000}"
+# NOTE: For HPO, use fewer samples per trial to complete more trials
+# 30 samples is enough to get a signal, 5000 would take forever
+MAX_SAMPLES="${MAX_SAMPLES:-30}"
 START_FROM="${START_FROM:-midpoint_rt_noise1.0A}"
 NOISE_SEED="${NOISE_SEED:-42}"
 
@@ -136,7 +138,7 @@ echo "Node: $(hostname)"
 echo "=============================================="
 echo "Configuration:"
 echo "  N_STEPS: $N_STEPS"
-echo "  MAX_SAMPLES: $MAX_SAMPLES"
+echo "  MAX_SAMPLES: $MAX_SAMPLES (set higher with MAX_SAMPLES=N, but trials will be slower)"
 echo "  START_FROM: $START_FROM"
 echo "  NOISE_SEED: $NOISE_SEED"
 echo "=============================================="

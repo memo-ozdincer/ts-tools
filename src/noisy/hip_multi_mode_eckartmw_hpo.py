@@ -198,6 +198,10 @@ def run_batch(
     for i, batch in enumerate(dataloader):
         if i >= max_samples:
             break
+        
+        # Log progress every 10 samples to stderr
+        if i % 10 == 0:
+            print(f"    [Sample {i}/{max_samples}]", file=sys.stderr, end="\r")
             
         batch = batch.to(device)
         atomic_nums = batch.z.detach().to(device)
@@ -569,15 +573,29 @@ def main():
     print(f"    Database: {db_path}", file=sys.stderr)
     print(f"    Database exists before optimize: {db_path.exists()}", file=sys.stderr)
     
+    # Exception callback to log errors instead of silently swallowing them
+    def exception_callback(study, frozen_trial):
+        print(f"[ERROR] Trial {frozen_trial.number} failed with exception:", file=sys.stderr)
+        print(f"        {frozen_trial.user_attrs.get('exception', 'Unknown error')}", file=sys.stderr)
+        import traceback
+        exc_info = frozen_trial.system_attrs.get('fail_reason', 'No traceback available')
+        print(f"        {exc_info}", file=sys.stderr)
+    
     try:
         study.optimize(
             objective,
             n_trials=args.n_trials,
             show_progress_bar=True,
-            catch=(Exception,),
+            callbacks=[exception_callback],
+            # Don't use catch=(Exception,) - let errors propagate so we can see them
         )
     except KeyboardInterrupt:
         print("\n>>> HPO interrupted by user. Saving results...", file=sys.stderr)
+    except Exception as e:
+        print(f"\n[ERROR] HPO failed with exception: {e}", file=sys.stderr)
+        import traceback
+        traceback.print_exc(file=sys.stderr)
+        print("Attempting to save partial results...", file=sys.stderr)
     
     # Check database state after optimization
     print(f"\n[DB] After optimization:", file=sys.stderr)
