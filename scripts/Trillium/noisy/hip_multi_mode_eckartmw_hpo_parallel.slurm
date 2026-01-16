@@ -4,7 +4,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=24
 #SBATCH --gpus-per-node=1
-#SBATCH --time=11:00:00
+#SBATCH --time=00:50:00
 #SBATCH --output=/scratch/memoozd/ts-tools-scratch/logs/hip_multimode_hpo_parallel_%j.out
 #SBATCH --error=/scratch/memoozd/ts-tools-scratch/logs/hip_multimode_hpo_parallel_%j.err
 #SBATCH --account=rrg-aspuru
@@ -73,8 +73,8 @@ mkdir -p "$WANDB_DIR"
 
 export WANDB_RUN_GROUP="HPO-multi-mode-eckartmw-trillium"
 
-N_STEPS="${N_STEPS:-2000}"
-MAX_SAMPLES="${MAX_SAMPLES:-10}"
+N_STEPS="${N_STEPS:-20}"
+MAX_SAMPLES="${MAX_SAMPLES:-2}"
 START_FROM="${START_FROM:-midpoint_rt_noise1.0A}"
 NOISE_SEED="${NOISE_SEED:-42}"
 
