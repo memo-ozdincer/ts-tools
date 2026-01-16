@@ -11,6 +11,7 @@ import sys
 import time
 import warnings
 from pathlib import Path
+from threading import Event, Thread
 from typing import Any, Dict, Optional
 
 import numpy as np
@@ -185,12 +186,7 @@ def run_batch(
         payload = (i, batch, params, n_steps, start_from, noise_seed)
         samples.append((i, payload))
 
-    results = run_batch_parallel(
-        samples,
-        processor,
-        progress_every=5,
-        progress_label="HIP batch",
-    )
+    results = run_batch_parallel(samples, processor)
 
     n_samples = len(results)
     n_success = sum(1 for r in results if r["success"])
@@ -306,6 +302,60 @@ def create_dataloader(h5_path: str, split: str, max_samples: int):
     return DataLoader(dataset, batch_size=1, shuffle=False)
 
 
+def _get_cpu_stats() -> str:
+    try:
+        import psutil
+
+        cpu_pct = psutil.cpu_percent(interval=None)
+        mem_pct = psutil.virtual_memory().percent
+        return f"cpu={cpu_pct:.1f}% mem={mem_pct:.1f}%"
+    except Exception:
+        load1, load5, load15 = os.getloadavg()
+        cpu_count = os.cpu_count() or 1
+        return f"load1={load1:.2f} load5={load5:.2f} load15={load15:.2f} cores={cpu_count}"
+
+
+def _get_gpu_stats() -> str:
+    try:
+        import subprocess
+
+        output = subprocess.check_output(
+            [
+                "nvidia-smi",
+                "--query-gpu=utilization.gpu,utilization.memory,memory.used,memory.total",
+                "--format=csv,noheader,nounits",
+            ],
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+        if not output:
+            return "gpu=unknown"
+        parts = output.split(",")
+        gpu_util = parts[0].strip()
+        mem_util = parts[1].strip()
+        mem_used = parts[2].strip()
+        mem_total = parts[3].strip()
+        return f"gpu={gpu_util}% mem={mem_util}% vram={mem_used}/{mem_total}MiB"
+    except Exception:
+        return "gpu=unavailable"
+
+
+def start_util_logger(interval_s: int, stop_event: Event) -> Optional[Thread]:
+    if interval_s <= 0:
+        return None
+
+    def _loop() -> None:
+        while not stop_event.is_set():
+            cpu_stats = _get_cpu_stats()
+            gpu_stats = _get_gpu_stats()
+            print(f"[UTIL] {cpu_stats} | {gpu_stats}", file=sys.stderr)
+            stop_event.wait(interval_s)
+
+    thread = Thread(target=_loop, daemon=True)
+    thread.start()
+    return thread
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Bayesian HPO for HIP Multi-Mode Eckart-MW (parallel)"
@@ -322,6 +372,12 @@ def main():
     parser.add_argument("--split", type=str, default="test")
 
     parser.add_argument("--n-workers", type=int, default=4)
+    parser.add_argument(
+        "--util-log-every",
+        type=int,
+        default=0,
+        help="Log CPU/GPU utilization every N seconds (0 disables).",
+    )
 
     parser.add_argument("--n-trials", type=int, default=50)
     parser.add_argument("--n-startup-trials", type=int, default=5)
@@ -371,6 +427,8 @@ def main():
         worker_kwargs={"device": device},
     )
     processor.start()
+    util_stop_event = Event()
+    util_thread = start_util_logger(args.util_log_every, util_stop_event)
 
     try:
         VERIFICATION_SAMPLES = 5
@@ -519,6 +577,8 @@ def main():
         print(f"    Database: {db_path}", file=sys.stderr)
 
         def exception_callback(study, frozen_trial):
+            if frozen_trial.state != optuna.trial.TrialState.FAIL:
+                return
             print(
                 f"[ERROR] Trial {frozen_trial.number} failed with exception:",
                 file=sys.stderr,
@@ -607,6 +667,9 @@ def main():
 
         print("\nHPO complete!")
     finally:
+        util_stop_event.set()
+        if util_thread is not None:
+            util_thread.join(timeout=1.0)
         processor.close()
 
 

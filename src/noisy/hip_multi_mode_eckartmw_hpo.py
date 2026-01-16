@@ -575,10 +575,11 @@ def main():
     
     # Exception callback to log errors instead of silently swallowing them
     def exception_callback(study, frozen_trial):
+        if frozen_trial.state != optuna.trial.TrialState.FAIL:
+            return
         print(f"[ERROR] Trial {frozen_trial.number} failed with exception:", file=sys.stderr)
         print(f"        {frozen_trial.user_attrs.get('exception', 'Unknown error')}", file=sys.stderr)
-        import traceback
-        exc_info = frozen_trial.system_attrs.get('fail_reason', 'No traceback available')
+        exc_info = frozen_trial.system_attrs.get("fail_reason", "No traceback available")
         print(f"        {exc_info}", file=sys.stderr)
     
     try:

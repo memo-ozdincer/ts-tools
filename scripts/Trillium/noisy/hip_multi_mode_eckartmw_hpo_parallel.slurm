@@ -4,7 +4,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=24
 #SBATCH --gpus-per-node=1
-#SBATCH --time=00:50:00
+#SBATCH --time=11:00:00
 #SBATCH --output=/scratch/memoozd/ts-tools-scratch/logs/hip_multimode_hpo_parallel_%j.out
 #SBATCH --error=/scratch/memoozd/ts-tools-scratch/logs/hip_multimode_hpo_parallel_%j.err
 #SBATCH --account=rrg-aspuru
@@ -46,7 +46,7 @@ mkdir -p "$XDG_CACHE_HOME"
 mkdir -p "$MPLCONFIGDIR"
 
 TOTAL_CPUS="${SLURM_CPUS_PER_TASK:-24}"
-N_WORKERS="${N_WORKERS:-4}"
+N_WORKERS="${N_WORKERS:-6}"
 THREADS_PER_WORKER=$((TOTAL_CPUS / N_WORKERS))
 if [ "$THREADS_PER_WORKER" -lt 1 ]; then
     THREADS_PER_WORKER=1
@@ -73,8 +73,8 @@ mkdir -p "$WANDB_DIR"
 
 export WANDB_RUN_GROUP="HPO-multi-mode-eckartmw-trillium"
 
-N_STEPS="${N_STEPS:-20}"
-MAX_SAMPLES="${MAX_SAMPLES:-2}"
+N_STEPS="${N_STEPS:-4000}"
+MAX_SAMPLES="${MAX_SAMPLES:-15}"
 START_FROM="${START_FROM:-midpoint_rt_noise1.0A}"
 NOISE_SEED="${NOISE_SEED:-42}"
 
@@ -130,7 +130,8 @@ python -m src.noisy.hip_multi_mode_eckartmw_hpo_parallel \
     $RESUME_ARG \
     $SKIP_VERIFY_ARG \
     --wandb \
-    --wandb-project "hip-multi-mode-hpo"
+    --wandb-project "hip-multi-mode-hpo" \
+    --util-log-every 10 \
 
 EXIT_CODE=$?
 
