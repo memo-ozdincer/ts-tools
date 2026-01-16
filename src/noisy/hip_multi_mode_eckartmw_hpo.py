@@ -394,8 +394,26 @@ def main():
     # Generate study name and database path (after setup_experiment to use correct out_dir)
     job_id = os.environ.get("SLURM_JOB_ID", "local")
     study_name = args.study_name or f"hip_multi_mode_hpo_{job_id}"
-    db_path = Path(out_dir) / f"{study_name}.db"
+    
+    # Ensure absolute path for SQLite storage
+    db_path = Path(out_dir).resolve() / f"{study_name}.db"
     storage_url = f"sqlite:///{db_path}"
+    
+    # Debug: Print database path information
+    print(f"\n{'='*60}")
+    print(f"DATABASE CONFIGURATION DEBUG")
+    print(f"{'='*60}")
+    print(f"  args.out_dir:    {args.out_dir}")
+    print(f"  out_dir (setup): {out_dir}")
+    print(f"  db_path:         {db_path}")
+    print(f"  db_path.parent:  {db_path.parent}")
+    print(f"  parent exists:   {db_path.parent.exists()}")
+    print(f"  storage_url:     {storage_url}")
+    print(f"{'='*60}\n")
+    
+    # Ensure the database directory exists
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    print(f"[DB] Directory ensured: {db_path.parent}")
     
     # Initialize W&B
     if args.wandb and WANDB_AVAILABLE:
@@ -415,11 +433,14 @@ def main():
             tags=["hpo", "hip", "multi-mode-eckartmw"],
         )
     
-    # Run verification (unless skipped)
+    # Run verification on a SMALL subset (unless skipped)
+    # Verification just confirms the setup works - HPO uses full max_samples
+    VERIFICATION_SAMPLES = 5
     if not args.skip_verification:
+        print(f"\n[Verification] Running on {VERIFICATION_SAMPLES} samples (HPO will use {args.max_samples})")
         verification_metrics = run_verification(
             predict_fn, dataloader, device,
-            args.n_steps, args.max_samples,
+            args.n_steps, VERIFICATION_SAMPLES,
             args.start_from, args.noise_seed
         )
         
@@ -438,13 +459,24 @@ def main():
         seed=42,
     )
     
-    study = optuna.create_study(
-        study_name=study_name,
-        storage=storage_url,
-        load_if_exists=args.resume,
-        direction="minimize",
-        sampler=sampler,
-    )
+    print(f"[DB] Creating Optuna study with storage: {storage_url}")
+    try:
+        study = optuna.create_study(
+            study_name=study_name,
+            storage=storage_url,
+            load_if_exists=args.resume,
+            direction="minimize",
+            sampler=sampler,
+        )
+        print(f"[DB] Study created successfully!")
+        print(f"[DB] Database file exists: {db_path.exists()}")
+        if db_path.exists():
+            print(f"[DB] Database file size: {db_path.stat().st_size} bytes")
+    except Exception as e:
+        print(f"[DB] ERROR creating study: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
     
     # Enqueue baseline as first trial if starting fresh
     if not args.resume and len(study.trials) == 0:
@@ -529,6 +561,7 @@ def main():
     print(f"\n>>> Starting HPO with {args.n_trials} trials...")
     print(f"    Study: {study_name}")
     print(f"    Database: {db_path}")
+    print(f"    Database exists before optimize: {db_path.exists()}")
     
     try:
         study.optimize(
@@ -539,6 +572,13 @@ def main():
         )
     except KeyboardInterrupt:
         print("\n>>> HPO interrupted by user. Saving results...")
+    
+    # Check database state after optimization
+    print(f"\n[DB] After optimization:")
+    print(f"[DB]   Database exists: {db_path.exists()}")
+    if db_path.exists():
+        print(f"[DB]   Database size: {db_path.stat().st_size} bytes")
+    print(f"[DB]   Number of trials in study: {len(study.trials)}")
     
     # Print best results
     print("\n" + "=" * 70)

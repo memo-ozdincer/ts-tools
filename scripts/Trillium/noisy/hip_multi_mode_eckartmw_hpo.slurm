@@ -119,7 +119,7 @@ STUDY_NAME="${STUDY_NAME:-hip_multi_mode_hpo_${SLURM_JOB_ID}}"
 # Resume flag
 RESUME_FLAG="${RESUME:-0}"
 
-# Skip verification flag
+# Skip verification flag - verification now only runs on 5 samples (quick sanity check)
 SKIP_VERIFY="${SKIP_VERIFY:-0}"
 
 echo "=============================================="
