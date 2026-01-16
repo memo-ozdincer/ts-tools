@@ -370,16 +370,6 @@ def main():
     
     args = parser.parse_args()
     
-    # Create output directory
-    out_dir = Path(args.out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Generate study name
-    job_id = os.environ.get("SLURM_JOB_ID", "local")
-    study_name = args.study_name or f"hip_multi_mode_hpo_{job_id}"
-    db_path = out_dir / f"{study_name}.db"
-    storage_url = f"sqlite:///{db_path}"
-    
     # Setup calculator and dataloader
     # Create a minimal args namespace for setup_experiment
     class SetupArgs:
@@ -398,8 +388,14 @@ def main():
             self.split = "test"
     
     setup_args = SetupArgs(args)
-    calculator, dataloader, device, _ = setup_experiment(setup_args, shuffle=False)
+    calculator, dataloader, device, out_dir = setup_experiment(setup_args, shuffle=False)
     predict_fn = make_predict_fn_from_calculator(calculator, "hip")
+    
+    # Generate study name and database path (after setup_experiment to use correct out_dir)
+    job_id = os.environ.get("SLURM_JOB_ID", "local")
+    study_name = args.study_name or f"hip_multi_mode_hpo_{job_id}"
+    db_path = Path(out_dir) / f"{study_name}.db"
+    storage_url = f"sqlite:///{db_path}"
     
     # Initialize W&B
     if args.wandb and WANDB_AVAILABLE:
