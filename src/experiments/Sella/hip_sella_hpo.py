@@ -586,6 +586,9 @@ def create_objective(
                   f"Avg steps: {result.avg_steps:.1f}, "
                   f"Score: {score:.4f}")
         
+        # Log trial completion to stderr for visibility
+        print(f"[DB] Trial {trial_count[0]} completed: score={score:.4f}, ts_rate={result.eigenvalue_ts_rate:.1%}", file=sys.stderr)
+        
         # Store detailed user attrs on trial for later analysis
         trial.set_user_attr("eigenvalue_ts_rate", result.eigenvalue_ts_rate)
         trial.set_user_attr("sella_convergence_rate", result.sella_convergence_rate)

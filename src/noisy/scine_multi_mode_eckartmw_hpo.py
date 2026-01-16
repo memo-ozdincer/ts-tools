@@ -427,11 +427,17 @@ def main():
             tags=["hpo", "scine", "multi-mode-eckartmw"],
         )
     
-    # Run verification (unless skipped)
+    # Run verification on a SMALL subset (unless skipped)
+    # Verification just confirms the setup works - HPO uses full max_samples
+    # CRITICAL: Only use 5 samples for verification to avoid exhausting the dataloader
+    VERIFICATION_SAMPLES = 5
     if not args.skip_verification:
+        print(f"\n[Verification] Running on {VERIFICATION_SAMPLES} samples (HPO will use {args.max_samples})", file=sys.stderr)
+        # Create a fresh dataloader for verification to avoid affecting HPO
+        _, verification_dataloader, _, _ = setup_experiment(setup_args, shuffle=False)
         verification_metrics = run_verification(
-            predict_fn, dataloader, device,
-            args.n_steps, args.max_samples,
+            predict_fn, verification_dataloader, device,
+            args.n_steps, VERIFICATION_SAMPLES,
             args.start_from, args.noise_seed
         )
         
@@ -505,6 +511,9 @@ def main():
         print(f"    Mean steps: {metrics['mean_steps_when_success']:.1f}")
         print(f"    Score: {-score:.4f}")
         
+        # Log trial completion to stderr for visibility
+        print(f"[DB] Trial {trial.number} completed: score={-score:.4f}, success_rate={metrics['success_rate']*100:.1f}%", file=sys.stderr)
+        
         # Store detailed user attributes on trial for later analysis
         # (These are saved to the SQLite database's trial_user_attributes table)
         trial.set_user_attr("success_rate", metrics["success_rate"])
@@ -538,9 +547,9 @@ def main():
         return score
     
     # Run optimization
-    print(f"\n>>> Starting HPO with {args.n_trials} trials...")
-    print(f"    Study: {study_name}")
-    print(f"    Database: {db_path}")
+    print(f"\n>>> Starting HPO with {args.n_trials} trials...", file=sys.stderr)
+    print(f"    Study: {study_name}", file=sys.stderr)
+    print(f"    Database: {db_path}", file=sys.stderr)
     
     try:
         study.optimize(
@@ -550,7 +559,14 @@ def main():
             catch=(Exception,),
         )
     except KeyboardInterrupt:
-        print("\n>>> HPO interrupted by user. Saving results...")
+        print("\n>>> HPO interrupted by user. Saving results...", file=sys.stderr)
+    
+    # Check database state after optimization
+    print(f"\n[DB] After optimization:", file=sys.stderr)
+    print(f"[DB]   Database exists: {db_path.exists()}", file=sys.stderr)
+    if db_path.exists():
+        print(f"[DB]   Database size: {db_path.stat().st_size} bytes", file=sys.stderr)
+    print(f"[DB]   Number of trials in study: {len(study.trials)}", file=sys.stderr)
     
     # Print best results
     print("\n" + "=" * 70)
