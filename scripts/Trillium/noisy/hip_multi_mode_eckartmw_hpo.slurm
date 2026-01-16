@@ -55,6 +55,11 @@ SCRATCH_DIR="/scratch/memoozd/ts-tools-scratch"
 # Change to scratch for job execution (required by Trillium)
 cd "$SCRATCH_DIR"
 
+# Clear pycache to avoid stale bytecode issues
+echo "Clearing Python bytecode cache..."
+find "$PROJECT_DIR" -name "*.pyc" -delete 2>/dev/null || true
+find "$PROJECT_DIR" -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
+
 # Load modules
 module purge
 module load StdEnv/2023
