@@ -73,8 +73,8 @@ mkdir -p "$WANDB_DIR"
 
 export WANDB_RUN_GROUP="HPO-multi-mode-eckartmw-trillium"
 
-N_STEPS="${N_STEPS:-4000}"
-MAX_SAMPLES="${MAX_SAMPLES:-30}"
+N_STEPS="${N_STEPS:-2000}"
+MAX_SAMPLES="${MAX_SAMPLES:-10}"
 START_FROM="${START_FROM:-midpoint_rt_noise1.0A}"
 NOISE_SEED="${NOISE_SEED:-42}"
 

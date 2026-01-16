@@ -185,7 +185,12 @@ def run_batch(
         payload = (i, batch, params, n_steps, start_from, noise_seed)
         samples.append((i, payload))
 
-    results = run_batch_parallel(samples, processor)
+    results = run_batch_parallel(
+        samples,
+        processor,
+        progress_every=5,
+        progress_label="HIP batch",
+    )
 
     n_samples = len(results)
     n_success = sum(1 for r in results if r["success"])

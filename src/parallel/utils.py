@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from typing import Any, Callable, Iterable, List, Optional, Tuple
 
 import optuna
@@ -22,6 +23,8 @@ def run_batch_parallel(
     trial: Optional[optuna.Trial] = None,
     prune_after_n: int = 10,
     intermediate_score_fn: Optional[Callable[[List[ResultItem]], float]] = None,
+    progress_every: Optional[int] = None,
+    progress_label: Optional[str] = None,
 ) -> List[Any]:
     """Submit work to a processor and collect results.
 
@@ -37,9 +40,14 @@ def run_batch_parallel(
         processor.submit(idx, payload)
 
     results: List[ResultItem] = []
-    for _ in range(len(sample_list)):
+    total = len(sample_list)
+    for _ in range(total):
         idx, result = processor.result_queue.get()
         results.append((idx, result))
+
+        if progress_every and len(results) % progress_every == 0:
+            label = progress_label or "Progress"
+            print(f"[{label}] {len(results)}/{total} results", file=sys.stderr)
 
         if (
             trial is not None
@@ -50,5 +58,9 @@ def run_batch_parallel(
             trial.report(score, step=prune_after_n)
             if trial.should_prune():
                 raise optuna.TrialPruned()
+
+    if progress_every and len(results) % progress_every != 0:
+        label = progress_label or "Progress"
+        print(f"[{label}] {len(results)}/{total} results", file=sys.stderr)
 
     return aggregate_results(results)
