@@ -1,0 +1,13 @@
+{"time":"2026-01-16T14:55:33.902302377-05:00","level":"INFO","msg":"stream: starting","core version":"0.21.0"}
+{"time":"2026-01-16T14:55:34.181397935-05:00","level":"INFO","msg":"stream: created new stream","id":"wpfrplfw"}
+{"time":"2026-01-16T14:55:34.181442622-05:00","level":"INFO","msg":"stream: started","id":"wpfrplfw"}
+{"time":"2026-01-16T14:55:34.181458766-05:00","level":"INFO","msg":"writer: Do: started","stream_id":"wpfrplfw"}
+{"time":"2026-01-16T14:55:34.181477304-05:00","level":"INFO","msg":"sender: started","stream_id":"wpfrplfw"}
+{"time":"2026-01-16T14:55:34.181492827-05:00","level":"INFO","msg":"handler: started","stream_id":"wpfrplfw"}
+{"time":"2026-01-16T14:55:35.101022562-05:00","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2026-01-16T14:55:35.201701527-05:00","level":"INFO","msg":"handler: operation stats","stats":{}}
+{"time":"2026-01-16T14:55:35.204888988-05:00","level":"INFO","msg":"stream: closing","id":"wpfrplfw"}
+{"time":"2026-01-16T14:55:35.204904661-05:00","level":"INFO","msg":"handler: closed","stream_id":"wpfrplfw"}
+{"time":"2026-01-16T14:55:35.204914856-05:00","level":"INFO","msg":"writer: Close: closed","stream_id":"wpfrplfw"}
+{"time":"2026-01-16T14:55:35.204926624-05:00","level":"INFO","msg":"sender: closed","stream_id":"wpfrplfw"}
+{"time":"2026-01-16T14:55:35.206191036-05:00","level":"INFO","msg":"stream: closed","id":"wpfrplfw"}

@@ -1,0 +1,13 @@
+{"time":"2026-01-16T14:54:21.876375792-05:00","level":"INFO","msg":"stream: starting","core version":"0.21.0"}
+{"time":"2026-01-16T14:54:22.149053176-05:00","level":"INFO","msg":"stream: created new stream","id":"rivaytrs"}
+{"time":"2026-01-16T14:54:22.149094218-05:00","level":"INFO","msg":"stream: started","id":"rivaytrs"}
+{"time":"2026-01-16T14:54:22.149107638-05:00","level":"INFO","msg":"writer: Do: started","stream_id":"rivaytrs"}
+{"time":"2026-01-16T14:54:22.149121789-05:00","level":"INFO","msg":"handler: started","stream_id":"rivaytrs"}
+{"time":"2026-01-16T14:54:22.149130973-05:00","level":"INFO","msg":"sender: started","stream_id":"rivaytrs"}
+{"time":"2026-01-16T14:54:23.624904369-05:00","level":"INFO","msg":"handler: operation stats","stats":{"operations":[{"desc":"uploading artifact hip_sella_TEST_204300","runtime_seconds":0.963033956}],"total_operations":1}}
+{"time":"2026-01-16T14:54:23.897725899-05:00","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2026-01-16T14:54:24.060304772-05:00","level":"INFO","msg":"stream: closing","id":"rivaytrs"}
+{"time":"2026-01-16T14:54:24.060323349-05:00","level":"INFO","msg":"handler: closed","stream_id":"rivaytrs"}
+{"time":"2026-01-16T14:54:24.060335067-05:00","level":"INFO","msg":"writer: Close: closed","stream_id":"rivaytrs"}
+{"time":"2026-01-16T14:54:24.060348247-05:00","level":"INFO","msg":"sender: closed","stream_id":"rivaytrs"}
+{"time":"2026-01-16T14:54:24.061230728-05:00","level":"INFO","msg":"stream: closed","id":"rivaytrs"}

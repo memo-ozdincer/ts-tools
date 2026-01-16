@@ -1,0 +1,13 @@
+{"time":"2026-01-16T14:57:15.800071945-05:00","level":"INFO","msg":"stream: starting","core version":"0.21.0"}
+{"time":"2026-01-16T14:57:16.071539293-05:00","level":"INFO","msg":"stream: created new stream","id":"77ep2kas"}
+{"time":"2026-01-16T14:57:16.071576278-05:00","level":"INFO","msg":"stream: started","id":"77ep2kas"}
+{"time":"2026-01-16T14:57:16.071593854-05:00","level":"INFO","msg":"writer: Do: started","stream_id":"77ep2kas"}
+{"time":"2026-01-16T14:57:16.071626824-05:00","level":"INFO","msg":"handler: started","stream_id":"77ep2kas"}
+{"time":"2026-01-16T14:57:16.071598832-05:00","level":"INFO","msg":"sender: started","stream_id":"77ep2kas"}
+{"time":"2026-01-16T14:57:17.149161573-05:00","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2026-01-16T14:57:17.364191507-05:00","level":"INFO","msg":"handler: operation stats","stats":{}}
+{"time":"2026-01-16T14:57:17.366358292-05:00","level":"INFO","msg":"stream: closing","id":"77ep2kas"}
+{"time":"2026-01-16T14:57:17.366370881-05:00","level":"INFO","msg":"handler: closed","stream_id":"77ep2kas"}
+{"time":"2026-01-16T14:57:17.366380145-05:00","level":"INFO","msg":"writer: Close: closed","stream_id":"77ep2kas"}
+{"time":"2026-01-16T14:57:17.366386434-05:00","level":"INFO","msg":"sender: closed","stream_id":"77ep2kas"}
+{"time":"2026-01-16T14:57:17.367268125-05:00","level":"INFO","msg":"stream: closed","id":"77ep2kas"}

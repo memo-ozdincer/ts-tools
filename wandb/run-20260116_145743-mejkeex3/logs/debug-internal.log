@@ -1,0 +1,13 @@
+{"time":"2026-01-16T14:57:43.238126236-05:00","level":"INFO","msg":"stream: starting","core version":"0.21.0"}
+{"time":"2026-01-16T14:57:43.514430529-05:00","level":"INFO","msg":"stream: created new stream","id":"mejkeex3"}
+{"time":"2026-01-16T14:57:43.514483738-05:00","level":"INFO","msg":"stream: started","id":"mejkeex3"}
+{"time":"2026-01-16T14:57:43.514506793-05:00","level":"INFO","msg":"writer: Do: started","stream_id":"mejkeex3"}
+{"time":"2026-01-16T14:57:43.514512411-05:00","level":"INFO","msg":"handler: started","stream_id":"mejkeex3"}
+{"time":"2026-01-16T14:57:43.514521625-05:00","level":"INFO","msg":"sender: started","stream_id":"mejkeex3"}
+{"time":"2026-01-16T14:57:44.763288924-05:00","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2026-01-16T14:57:44.867105787-05:00","level":"INFO","msg":"handler: operation stats","stats":{}}
+{"time":"2026-01-16T14:57:44.870251729-05:00","level":"INFO","msg":"stream: closing","id":"mejkeex3"}
+{"time":"2026-01-16T14:57:44.870265429-05:00","level":"INFO","msg":"handler: closed","stream_id":"mejkeex3"}
+{"time":"2026-01-16T14:57:44.870274673-05:00","level":"INFO","msg":"writer: Close: closed","stream_id":"mejkeex3"}
+{"time":"2026-01-16T14:57:44.870279991-05:00","level":"INFO","msg":"sender: closed","stream_id":"mejkeex3"}
+{"time":"2026-01-16T14:57:44.871396884-05:00","level":"INFO","msg":"stream: closed","id":"mejkeex3"}
