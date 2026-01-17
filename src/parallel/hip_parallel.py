@@ -17,6 +17,7 @@ def hip_worker_fn(
     rank: int,
     checkpoint_path: str,
     device: str,
+    device_ids,
     work_queue,
     result_queue,
     done_event,
@@ -25,8 +26,14 @@ def hip_worker_fn(
 ) -> None:
     """Worker loop: load HIP calculator and process samples."""
     torch.set_grad_enabled(False)
+    worker_device = device
     if device.startswith("cuda") and torch.cuda.is_available():
-        torch.cuda.set_device(0)
+        if device_ids:
+            gpu_id = device_ids[rank % len(device_ids)]
+        else:
+            gpu_id = 0
+        torch.cuda.set_device(gpu_id)
+        worker_device = f"cuda:{gpu_id}"
 
     calculator = EquiformerTorchCalculator(
         checkpoint_path=checkpoint_path,
@@ -34,7 +41,9 @@ def hip_worker_fn(
     )
     predict_fn = make_predict_fn_from_calculator(calculator, "hip")
 
-    kwargs = worker_kwargs or {}
+    kwargs = dict(worker_kwargs or {})
+    if "device" in kwargs:
+        kwargs["device"] = worker_device
     signature = inspect.signature(worker_fn)
     use_calculator = "calculator" in signature.parameters
     while not done_event.is_set():
@@ -65,12 +74,14 @@ class ParallelHIPProcessor:
         n_workers: int,
         worker_fn: Callable[..., Any],
         worker_kwargs: Optional[Dict[str, Any]] = None,
+        device_ids: Optional[list[int]] = None,
     ) -> None:
         self.checkpoint_path = checkpoint_path
         self.device = device
         self.n_workers = n_workers
         self.worker_fn = worker_fn
         self.worker_kwargs = worker_kwargs or {}
+        self.device_ids = device_ids or []
 
         self.ctx = mp.get_context("spawn")
         self.work_queue = self.ctx.Queue()
@@ -88,6 +99,7 @@ class ParallelHIPProcessor:
                     rank,
                     self.checkpoint_path,
                     self.device,
+                    self.device_ids,
                     self.work_queue,
                     self.result_queue,
                     self.done_event,

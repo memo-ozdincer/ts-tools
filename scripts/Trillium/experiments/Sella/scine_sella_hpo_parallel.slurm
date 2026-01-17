@@ -125,7 +125,8 @@ python -m src.experiments.Sella.scine_sella_hpo_parallel \
     --wandb \
     --wandb-project "sella-hpo" \
     --wandb-entity "memo-ozdincer-university-of-toronto" \
-    --wandb-name "$WANDB_NAME"
+    --wandb-name "$WANDB_NAME" \
+    --util-log-every 10
 
 EXIT_CODE=$?
 

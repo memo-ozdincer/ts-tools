@@ -373,6 +373,12 @@ def main():
 
     parser.add_argument("--n-workers", type=int, default=4)
     parser.add_argument(
+        "--device-ids",
+        type=str,
+        default=None,
+        help="Comma-separated CUDA device IDs to use (e.g. 0,1,2,3).",
+    )
+    parser.add_argument(
         "--util-log-every",
         type=int,
         default=0,
@@ -392,6 +398,9 @@ def main():
     args = parser.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    device_ids = None
+    if args.device_ids:
+        device_ids = [int(item) for item in args.device_ids.split(",") if item.strip()]
     os.makedirs(args.out_dir, exist_ok=True)
 
     job_id = os.environ.get("SLURM_JOB_ID", "local")
@@ -425,6 +434,7 @@ def main():
         n_workers=args.n_workers,
         worker_fn=hip_worker_sample,
         worker_kwargs={"device": device},
+        device_ids=device_ids,
     )
     processor.start()
     util_stop_event = Event()

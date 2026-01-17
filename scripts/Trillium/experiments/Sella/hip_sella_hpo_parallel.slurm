@@ -2,8 +2,8 @@
 #SBATCH --job-name=hip_sella_hpo_parallel
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=24
-#SBATCH --gpus-per-node=1
+#SBATCH --cpus-per-task=96
+#SBATCH --gpus-per-node=4
 #SBATCH --time=11:00:00
 #SBATCH --output=/scratch/memoozd/ts-tools-scratch/logs/hip_sella_hpo_parallel_%j.out
 #SBATCH --error=/scratch/memoozd/ts-tools-scratch/logs/hip_sella_hpo_parallel_%j.err
@@ -39,7 +39,7 @@ mkdir -p "$TMPDIR"
 mkdir -p "$XDG_CACHE_HOME"
 mkdir -p "$MPLCONFIGDIR"
 
-TOTAL_CPUS="${SLURM_CPUS_PER_TASK:-24}"
+TOTAL_CPUS="${SLURM_CPUS_PER_TASK:-96}"
 N_WORKERS="${N_WORKERS:-4}"
 THREADS_PER_WORKER=$((TOTAL_CPUS / N_WORKERS))
 if [ "$THREADS_PER_WORKER" -lt 1 ]; then
@@ -136,6 +136,7 @@ python -m src.experiments.Sella.hip_sella_hpo_parallel \
     --optuna-seed "$OPTUNA_SEED" \
     --study-name "$STUDY_NAME" \
     --n-workers "$N_WORKERS" \
+    --device-ids "0,1,2,3" \
     $RESUME_ARG \
     $PRESCREEN_ARG \
     $HARD_SAMPLES_ARG \
@@ -143,7 +144,8 @@ python -m src.experiments.Sella.hip_sella_hpo_parallel \
     --wandb \
     --wandb-project "sella-hpo" \
     --wandb-entity "memo-ozdincer-university-of-toronto" \
-    --wandb-name "$WANDB_NAME"
+    --wandb-name "$WANDB_NAME" \
+    --util-log-every 30
 
 EXIT_CODE=$?
 

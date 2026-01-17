@@ -12,6 +12,7 @@ import warnings
 from collections import defaultdict
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
+from threading import Event, Thread
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -432,6 +433,60 @@ def create_objective(
     return objective
 
 
+def _get_cpu_stats() -> str:
+    try:
+        import psutil
+
+        cpu_pct = psutil.cpu_percent(interval=None)
+        mem_pct = psutil.virtual_memory().percent
+        return f"cpu={cpu_pct:.1f}% mem={mem_pct:.1f}%"
+    except Exception:
+        load1, load5, load15 = os.getloadavg()
+        cpu_count = os.cpu_count() or 1
+        return f"load1={load1:.2f} load5={load5:.2f} load15={load15:.2f} cores={cpu_count}"
+
+
+def _get_gpu_stats() -> str:
+    try:
+        import subprocess
+
+        output = subprocess.check_output(
+            [
+                "nvidia-smi",
+                "--query-gpu=utilization.gpu,utilization.memory,memory.used,memory.total",
+                "--format=csv,noheader,nounits",
+            ],
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+        if not output:
+            return "gpu=none"
+        parts = output.split(",")
+        gpu_util = parts[0].strip()
+        mem_util = parts[1].strip()
+        mem_used = parts[2].strip()
+        mem_total = parts[3].strip()
+        return f"gpu={gpu_util}% mem={mem_util}% vram={mem_used}/{mem_total}MiB"
+    except Exception:
+        return "gpu=unavailable"
+
+
+def start_util_logger(interval_s: int, stop_event: Event) -> Optional[Thread]:
+    if interval_s <= 0:
+        return None
+
+    def _loop() -> None:
+        while not stop_event.is_set():
+            cpu_stats = _get_cpu_stats()
+            gpu_stats = _get_gpu_stats()
+            print(f"[UTIL] {cpu_stats} | {gpu_stats}", file=sys.stderr)
+            stop_event.wait(interval_s)
+
+    thread = Thread(target=_loop, daemon=True)
+    thread.start()
+    return thread
+
+
 def main(argv: Optional[List[str]] = None) -> None:
     parser = argparse.ArgumentParser(
         description="Bayesian HPO for Sella TS search with SCINE calculator (parallel)."
@@ -447,6 +502,12 @@ def main(argv: Optional[List[str]] = None) -> None:
     parser.add_argument("--optuna-seed", type=int, default=42)
     parser.add_argument("--n-workers", type=int, default=16)
     parser.add_argument("--threads-per-worker", type=int, default=None)
+    parser.add_argument(
+        "--util-log-every",
+        type=int,
+        default=0,
+        help="Log CPU/GPU utilization every N seconds (0 disables).",
+    )
 
     parser.add_argument("--wandb", action="store_true")
     parser.add_argument("--wandb-project", type=str, default="sella-hpo")
@@ -559,6 +620,8 @@ def main(argv: Optional[List[str]] = None) -> None:
         worker_fn=scine_sella_worker_sample,
     )
     processor.start()
+    util_stop_event = Event()
+    util_thread = start_util_logger(args.util_log_every, util_stop_event)
 
     try:
         objective = create_objective(
@@ -722,6 +785,9 @@ def main(argv: Optional[List[str]] = None) -> None:
         print(f"Optuna study saved to: {db_path}")
         print(f"To resume: --resume --study-name {study_name}")
     finally:
+        util_stop_event.set()
+        if util_thread is not None:
+            util_thread.join(timeout=1.0)
         processor.close()
 
 

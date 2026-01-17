@@ -2,8 +2,8 @@
 #SBATCH --job-name=hip_multimode_hpo_parallel
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=24
-#SBATCH --gpus-per-node=1
+#SBATCH --cpus-per-task=96
+#SBATCH --gpus-per-node=4
 #SBATCH --time=11:00:00
 #SBATCH --output=/scratch/memoozd/ts-tools-scratch/logs/hip_multimode_hpo_parallel_%j.out
 #SBATCH --error=/scratch/memoozd/ts-tools-scratch/logs/hip_multimode_hpo_parallel_%j.err
@@ -45,8 +45,8 @@ mkdir -p "$TMPDIR"
 mkdir -p "$XDG_CACHE_HOME"
 mkdir -p "$MPLCONFIGDIR"
 
-TOTAL_CPUS="${SLURM_CPUS_PER_TASK:-24}"
-N_WORKERS="${N_WORKERS:-6}"
+TOTAL_CPUS="${SLURM_CPUS_PER_TASK:-96}"
+N_WORKERS="${N_WORKERS:-4}"
 THREADS_PER_WORKER=$((TOTAL_CPUS / N_WORKERS))
 if [ "$THREADS_PER_WORKER" -lt 1 ]; then
     THREADS_PER_WORKER=1
@@ -127,11 +127,12 @@ python -m src.noisy.hip_multi_mode_eckartmw_hpo_parallel \
     --n-startup-trials "$N_STARTUP_TRIALS" \
     --study-name "$STUDY_NAME" \
     --n-workers "$N_WORKERS" \
+    --device-ids "0,1,2,3" \
     $RESUME_ARG \
     $SKIP_VERIFY_ARG \
     --wandb \
     --wandb-project "hip-multi-mode-hpo" \
-    --util-log-every 10 \
+    --util-log-every 30 \
 
 EXIT_CODE=$?
 

@@ -124,7 +124,8 @@ python -m src.noisy.scine_multi_mode_eckartmw_hpo_parallel \
     $RESUME_ARG \
     $SKIP_VERIFY_ARG \
     --wandb \
-    --wandb-project "scine-multi-mode-hpo"
+    --wandb-project "scine-multi-mode-hpo" \
+    --util-log-every 10
 
 EXIT_CODE=$?
 
