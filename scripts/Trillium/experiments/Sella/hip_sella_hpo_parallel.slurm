@@ -68,7 +68,7 @@ mkdir -p "$WANDB_DIR"
 export WANDB_RUN_GROUP="hip-sella-hpo-trillium"
 
 N_TRIALS="${N_TRIALS:-5000}"
-MAX_STEPS="${MAX_STEPS:-5000}"  # Increased from 300 based on HPO analysis
+MAX_STEPS="${MAX_STEPS:-1000}"  # Increased from 300 (3.3x headroom, ~7.5x avg usage)
 MAX_SAMPLES="${MAX_SAMPLES:-30}"
 START_FROM="${START_FROM:-midpoint_rt_noise1.0A}"
 NOISE_SEED="${NOISE_SEED:-42}"
