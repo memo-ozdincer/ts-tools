@@ -322,7 +322,7 @@ def _get_gpu_stats() -> str:
         output = subprocess.check_output(
             [
                 "nvidia-smi",
-                "--query-gpu=utilization.gpu,utilization.memory,memory.used,memory.total",
+                "--query-gpu=index,utilization.gpu,utilization.memory,memory.used,memory.total",
                 "--format=csv,noheader,nounits",
             ],
             stderr=subprocess.DEVNULL,
@@ -330,12 +330,16 @@ def _get_gpu_stats() -> str:
         ).strip()
         if not output:
             return "gpu=unknown"
-        parts = output.split(",")
-        gpu_util = parts[0].strip()
-        mem_util = parts[1].strip()
-        mem_used = parts[2].strip()
-        mem_total = parts[3].strip()
-        return f"gpu={gpu_util}% mem={mem_util}% vram={mem_used}/{mem_total}MiB"
+        lines = []
+        for line in output.splitlines():
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) < 5:
+                continue
+            idx, gpu_util, mem_util, mem_used, mem_total = parts[:5]
+            lines.append(
+                f"gpu{idx}={gpu_util}% mem={mem_util}% vram={mem_used}/{mem_total}MiB"
+            )
+        return " | ".join(lines) if lines else "gpu=unknown"
     except Exception:
         return "gpu=unavailable"
 

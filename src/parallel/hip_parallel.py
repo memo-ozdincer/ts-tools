@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import os
 import queue
 from typing import Any, Callable, Dict, Optional
 
@@ -30,10 +31,13 @@ def hip_worker_fn(
     if device.startswith("cuda") and torch.cuda.is_available():
         if device_ids:
             gpu_id = device_ids[rank % len(device_ids)]
+            # Restrict visibility so cuda:0 maps to the assigned GPU.
+            os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+            torch.cuda.set_device(0)
+            worker_device = "cuda:0"
         else:
-            gpu_id = 0
-        torch.cuda.set_device(gpu_id)
-        worker_device = f"cuda:{gpu_id}"
+            torch.cuda.set_device(0)
+            worker_device = "cuda:0"
 
     calculator = EquiformerTorchCalculator(
         checkpoint_path=checkpoint_path,

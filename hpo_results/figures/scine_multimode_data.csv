@@ -1,2 +1,0 @@
-trial_id,number,state,objective_value,adaptive_delta,dt,dt_max,escape_delta,escape_disp_threshold,escape_neg_vib_std,escape_window,max_atom_disp,min_interatomic_dist,plateau_boost,plateau_patience,plateau_shrink
-1,0,COMPLETE,-0.7757884915647969,1.0,0.0021305320115760995,0.02292394234778395,0.2155875777745253,0.00019284383743673793,0.8596534261919356,27.0,0.43218830360353944,0.4121103074412086,1.8080728236469248,9.0,0.4359629239850771

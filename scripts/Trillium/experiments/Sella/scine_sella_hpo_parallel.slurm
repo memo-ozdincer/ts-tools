@@ -66,7 +66,7 @@ mkdir -p "$WANDB_DIR"
 export WANDB_RUN_GROUP="scine-sella-hpo-trillium"
 
 N_TRIALS="${N_TRIALS:-500}"
-MAX_STEPS="${MAX_STEPS:-500}"
+MAX_STEPS="${MAX_STEPS:-5000}"  # Increased from 500 based on HPO analysis
 MAX_SAMPLES="${MAX_SAMPLES:-30}"
 START_FROM="${START_FROM:-midpoint_rt_noise1.0A}"
 NOISE_SEED="${NOISE_SEED:-42}"

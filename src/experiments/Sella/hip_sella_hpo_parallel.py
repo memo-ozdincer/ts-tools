@@ -493,12 +493,14 @@ def create_objective(
     def objective(trial: optuna.Trial) -> float:
         trial_count[0] += 1
 
-        delta0 = trial.suggest_float("delta0", 0.15, 0.8, log=True)
-        rho_dec = trial.suggest_float("rho_dec", 15.0, 80.0)
-        rho_inc = trial.suggest_float("rho_inc", 1.01, 1.1)
-        sigma_dec = trial.suggest_float("sigma_dec", 0.75, 0.95)
-        sigma_inc = trial.suggest_float("sigma_inc", 1.1, 1.8)
-        fmax = trial.suggest_float("fmax", 1e-4, 1e-2, log=True)
+        # Expanded ranges based on HPO analysis - explore beyond previous boundaries
+        delta0 = trial.suggest_float("delta0", 0.1, 1.5, log=True)  # HIP likes higher delta0, explore more
+        rho_dec = trial.suggest_float("rho_dec", 15.0, 100.0)  # Expand upper bound
+        rho_inc = trial.suggest_float("rho_inc", 1.005, 1.15)  # Slightly expanded
+        sigma_dec = trial.suggest_float("sigma_dec", 0.6, 0.98)  # Explore more aggressive decay
+        sigma_inc = trial.suggest_float("sigma_inc", 1.05, 2.0)  # Explore higher values
+        fmax = trial.suggest_float("fmax", 1e-4, 2e-2, log=True)  # Expand upper bound
+        # Keep as variable - no clear winner in HPO analysis (slight edge for False)
         apply_eckart = trial.suggest_categorical("apply_eckart", [True, False])
 
         config = HPOConfig(
@@ -613,7 +615,7 @@ def _get_gpu_stats() -> str:
         output = subprocess.check_output(
             [
                 "nvidia-smi",
-                "--query-gpu=utilization.gpu,utilization.memory,memory.used,memory.total",
+                "--query-gpu=index,utilization.gpu,utilization.memory,memory.used,memory.total",
                 "--format=csv,noheader,nounits",
             ],
             stderr=subprocess.DEVNULL,
@@ -621,12 +623,16 @@ def _get_gpu_stats() -> str:
         ).strip()
         if not output:
             return "gpu=unknown"
-        parts = output.split(",")
-        gpu_util = parts[0].strip()
-        mem_util = parts[1].strip()
-        mem_used = parts[2].strip()
-        mem_total = parts[3].strip()
-        return f"gpu={gpu_util}% mem={mem_util}% vram={mem_used}/{mem_total}MiB"
+        lines = []
+        for line in output.splitlines():
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) < 5:
+                continue
+            idx, gpu_util, mem_util, mem_used, mem_total = parts[:5]
+            lines.append(
+                f"gpu{idx}={gpu_util}% mem={mem_util}% vram={mem_used}/{mem_total}MiB"
+            )
+        return " | ".join(lines) if lines else "gpu=unknown"
     except Exception:
         return "gpu=unavailable"
 
@@ -732,15 +738,16 @@ def main(argv: Optional[List[str]] = None) -> None:
                 "use_exact_hessian": True,
                 "diag_every_n": 1,
                 "order": 1,
-                "hpo/delta0_range": [0.15, 0.8],
+                "hpo/delta0_range": [0.1, 1.5],
                 "hpo/delta0_log_scale": True,
-                "hpo/rho_dec_range": [15.0, 80.0],
-                "hpo/rho_inc_range": [1.01, 1.1],
-                "hpo/sigma_dec_range": [0.75, 0.95],
-                "hpo/sigma_inc_range": [1.1, 1.8],
-                "hpo/fmax_range": [1e-4, 1e-2],
+                "hpo/rho_dec_range": [15.0, 100.0],
+                "hpo/rho_inc_range": [1.005, 1.15],
+                "hpo/sigma_dec_range": [0.6, 0.98],
+                "hpo/sigma_inc_range": [1.05, 2.0],
+                "hpo/fmax_range": [1e-4, 2e-2],
                 "hpo/fmax_log_scale": True,
                 "hpo/apply_eckart_options": [True, False],
+                "hpo/pruner": "NopPruner",  # Pruning disabled
                 "objective/ts_rate_weight": 1.0,
                 "objective/speed_weight": 0.01,
                 "objective/sella_conv_weight": 0.001,
@@ -751,10 +758,8 @@ def main(argv: Optional[List[str]] = None) -> None:
         )
 
     sampler = TPESampler(seed=args.optuna_seed)
-    pruner = optuna.pruners.MedianPruner(
-        n_startup_trials=5,
-        n_warmup_steps=0,
-    )
+    # Disabled pruning - previous study showed pruner was too aggressive (88% pruning rate)
+    pruner = optuna.pruners.NopPruner()
 
     study = optuna.create_study(
         study_name=study_name,
