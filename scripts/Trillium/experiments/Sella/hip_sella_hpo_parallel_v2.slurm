@@ -125,7 +125,7 @@ if [[ "$RESUME_FLAG" == "1" ]]; then
     echo "RESUME MODE ENABLED"
 fi
 
-python -m src.experiments.Sella.hip_sella_hpo_v2 \
+python -m src.experiments.Sella.hip_sella_hpo_parallel_v2 \
     --n-trials "$N_TRIALS" \
     --max-steps "$MAX_STEPS" \
     --max-samples "$MAX_SAMPLES" \
