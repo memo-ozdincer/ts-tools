@@ -66,7 +66,7 @@ mkdir -p "$WANDB_DIR"
 
 export WANDB_RUN_GROUP="Noisy-multi-mode-eckartmw-trillium"
 
-N_STEPS="${N_STEPS:-4000}"
+N_STEPS="${N_STEPS:-15000}"
 MAX_SAMPLES="${MAX_SAMPLES:-15}"
 START_FROM="${START_FROM:-midpoint_rt_noise1.0A}"
 NOISE_SEED="${NOISE_SEED:-42}"
