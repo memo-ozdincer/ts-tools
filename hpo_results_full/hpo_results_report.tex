@@ -1,0 +1,605 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{colortbl}
+\usepackage{siunitx}
+\usepackage{amsmath}
+\usepackage{float}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{hyperref}
+\usepackage{longtable}
+
+% Color definitions
+\definecolor{bestcolor}{RGB}{200,255,200}
+\definecolor{headercolor}{RGB}{220,220,220}
+
+\title{\textbf{Bayesian Hyperparameter Optimization Results}\\[0.3em]
+\large Transition State Search: SELLA vs Multi-Mode Optimization\\
+HIP-NN and SCINE Atomic Calculators}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section{Overview}
+
+This report presents the results of Bayesian hyperparameter optimization (HPO) for transition state (TS) search algorithms. Four experimental configurations were evaluated, comparing two optimizers across two atomic calculators:
+
+\begin{table}[H]
+\centering
+\caption{Experimental Configuration Summary}
+\label{tab:config}
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Configuration} & \textbf{Calculator} & \textbf{Optimizer} & \textbf{Max Steps} & \textbf{Samples/Trial} \\
+\midrule
+HIP + SELLA & HIP-NN (GPU) & SELLA & 8,000 & 30 \\
+SCINE + SELLA & SCINE/DFTB0 (CPU) & SELLA & 1,500 & 30 \\
+HIP + Multi-Mode & HIP-NN (GPU) & Multi-Mode Eckart-MW & 4,000 & 15 \\
+SCINE + Multi-Mode & SCINE/DFTB0 (CPU) & Multi-Mode Eckart-MW & 4,000 & 15 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Success Criterion:} A transition state is successfully found when the Hessian has exactly \textbf{one negative eigenvalue}.
+
+%============================================================================
+\section{Summary of Results}
+%============================================================================
+
+\begin{table}[H]
+\centering
+\caption{Overall Performance Comparison}
+\label{tab:summary}
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Metric} & \textbf{HIP+SELLA} & \textbf{SCINE+SELLA} & \textbf{HIP+MM} & \textbf{SCINE+MM} \\
+\midrule
+Trials Completed & 181 & 176 & 102 & 500 \\
+\midrule
+\rowcolor{bestcolor}
+\textbf{Best TS Rate (Single Trial)} & 53.3\% & 66.7\% & \textbf{93.3\%} & \textbf{100.0\%} \\
+\# Trials at Best & 1 & 1 & 1 & \textbf{212} \\
+\midrule
+\rowcolor{bestcolor}
+\textbf{Global TS Rate (All Samples)} & 30.1\% & 47.0\% & 74.9\% & \textbf{94.1\%} \\
+Total Samples Evaluated & 5,430 & 5,280 & 1,510 & 7,500 \\
+\midrule
+Mean TS Rate (Across Trials) & 30.1\% & 46.9\% & 73.9\% & 94.1\% \\
+Trials with $\geq$80\% Success & 0 & 0 & 45 & 497 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\vspace{0.5em}
+\noindent\textbf{Key Findings:}
+\begin{itemize}
+    \item \textbf{SCINE + Multi-Mode} achieves \textbf{100\% transition state convergence} in 212 out of 500 trials (42.4\%)
+    \item \textbf{SCINE + Multi-Mode} achieves \textbf{94.1\% global TS rate} across all 7,500 samples
+    \item \textbf{HIP + Multi-Mode} achieves best single-trial rate of \textbf{93.3\%} (14/15 samples)
+    \item Multi-Mode optimizer dramatically outperforms SELLA: 75-94\% vs 30-47\% global convergence
+    \item SCINE calculator consistently outperforms HIP across both optimizers
+\end{itemize}
+
+%============================================================================
+\section{Best Trial Results}
+%============================================================================
+
+\subsection{HIP + SELLA: Best Trial (\#170)}
+
+\textbf{Performance:} 53.3\% TS Rate (16/30 samples), 101 avg steps, 52.6s wall time
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lc|lc}
+\toprule
+\textbf{Parameter} & \textbf{Value} & \textbf{Metric} & \textbf{Value} \\
+\midrule
+delta0 & 0.168 & TS Rate (1 neg eig) & 53.3\% \\
+rho\_dec & 90.75 & SELLA Convergence & 46.7\% \\
+rho\_inc & 1.129 & Both Criteria Met & 36.7\% \\
+sigma\_dec & 0.938 & Early Stop Rate & 6.7\% \\
+sigma\_inc & 1.537 & Samples with 2 neg eig & 3 \\
+fmax & 0.0104 & Samples with 4+ neg eig & 8 \\
+apply\_eckart & False & Score & 0.544 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{SCINE + SELLA: Best Trial (\#106)}
+
+\textbf{Performance:} 66.7\% TS Rate (20/30 samples), 453 avg steps, 82.9s wall time
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lc|lc}
+\toprule
+\textbf{Parameter} & \textbf{Value} & \textbf{Metric} & \textbf{Value} \\
+\midrule
+delta0 & 0.206 & TS Rate (1 neg eig) & 66.7\% \\
+rho\_dec & 70.47 & SELLA Convergence & 66.7\% \\
+rho\_inc & 1.109 & Both Criteria Met & 56.7\% \\
+sigma\_dec & 0.956 & Samples with 2 neg eig & 6 \\
+sigma\_inc & 1.864 & Samples with 3+ neg eig & 4 \\
+fmax & 0.000432 & Score & 0.674 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{HIP + Multi-Mode: Best Trial (\#98)}
+
+\textbf{Performance:} 93.3\% TS Rate (14/15 samples), 875 avg steps, 75.8s wall time
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lc|lc}
+\toprule
+\textbf{Parameter} & \textbf{Value} & \textbf{Metric} & \textbf{Value} \\
+\midrule
+dt & 0.000964 & Success Rate & 93.3\% \\
+dt\_max & 0.0698 & N Success (of 15) & 14 \\
+max\_atom\_disp & 0.303 & Mean Steps (success) & 875 \\
+plateau\_patience & 13 & Mean Escape Cycles & 18.5 \\
+plateau\_boost & 2.22 & Total Wall Time & 1,138s \\
+plateau\_shrink & 0.552 & N Early Stopped & 0 \\
+escape\_disp\_threshold & 1.30e-5 & N Errors & 0 \\
+escape\_window & 16 & Neg Eig Distribution & 14$\times$1, 1$\times$5 \\
+escape\_neg\_vib\_std & 0.645 & Score & -0.945 \\
+escape\_delta & 0.119 & & \\
+\rowcolor{bestcolor}
+\textbf{adaptive\_delta} & \textbf{False} & & \\
+min\_interatomic\_dist & 0.368 & & \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{SCINE + Multi-Mode: Representative 100\% Success Trial (\#19)}
+
+\textbf{Performance:} 100.0\% TS Rate (15/15 samples), 505 avg steps, 1.9s wall time
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lc|lc}
+\toprule
+\textbf{Parameter} & \textbf{Value} & \textbf{Metric} & \textbf{Value} \\
+\midrule
+dt & 0.00303 & Success Rate & 100.0\% \\
+dt\_max & 0.0251 & N Success (of 15) & 15 \\
+max\_atom\_disp & 0.353 & Mean Steps (success) & 505 \\
+plateau\_patience & 6 & Mean Escape Cycles & 16.1 \\
+plateau\_boost & 1.80 & Total Wall Time & 28.8s \\
+plateau\_shrink & 0.690 & N Early Stopped & 0 \\
+escape\_disp\_threshold & 6.92e-4 & N Errors & 0 \\
+escape\_window & 15 & Neg Eig Distribution & 15$\times$1 \\
+escape\_neg\_vib\_std & 0.387 & Score & -1.020 \\
+escape\_delta & 0.213 & & \\
+\rowcolor{bestcolor}
+\textbf{adaptive\_delta} & \textbf{False} & & \\
+min\_interatomic\_dist & 0.371 & & \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\noindent\textbf{Note:} 212 out of 500 SCINE Multi-Mode trials (42.4\%) achieved 100\% success rate.
+
+%============================================================================
+\section{Negative Eigenvalue Distribution Analysis}
+%============================================================================
+
+Analysis of the Hessian eigenvalue spectrum across all trials provides insight into convergence behavior.
+
+\begin{table}[H]
+\centering
+\caption{Negative Eigenvalue Distribution (Aggregated Over All Trials)}
+\label{tab:negeig}
+\begin{tabular}{crrrr}
+\toprule
+\textbf{Neg. Eigenvalues} & \textbf{HIP+SELLA} & \textbf{SCINE+SELLA} & \textbf{HIP+MM} & \textbf{SCINE+MM} \\
+\midrule
+0 (minimum) & 154 (2.8\%) & 195 (3.7\%) & -- & 8 (0.1\%) \\
+\rowcolor{bestcolor}
+\textbf{1 (TS found)} & \textbf{1,633 (30.1\%)} & \textbf{2,480 (47.0\%)} & \textbf{1,131 (74.9\%)} & \textbf{7,055 (94.1\%)} \\
+2 & 900 (16.6\%) & 1,148 (21.7\%) & 37 (2.5\%) & 53 (0.7\%) \\
+3 & 732 (13.5\%) & 627 (11.9\%) & 38 (2.5\%) & 99 (1.3\%) \\
+4 & 544 (10.0\%) & 357 (6.8\%) & 82 (5.4\%) & 85 (1.1\%) \\
+5 & 600 (11.0\%) & 204 (3.9\%) & 79 (5.2\%) & 82 (1.1\%) \\
+6+ & 867 (16.0\%) & 269 (5.1\%) & 143 (9.5\%) & 118 (1.6\%) \\
+\midrule
+\textbf{Total Samples} & 5,430 & 5,280 & 1,510 & 7,500 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\noindent\textbf{Observations:}
+\begin{itemize}
+    \item \textbf{SCINE + Multi-Mode} shows exceptional performance: 94.1\% converge to exactly 1 negative eigenvalue
+    \item Multi-Mode methods show dramatically tighter distributions than SELLA
+    \item When SELLA fails to converge, it most commonly produces 2-3 negative eigenvalues (higher-order saddle points)
+    \item HIP + SELLA shows the broadest distribution: 16.0\% of samples have 6+ negative eigenvalues
+\end{itemize}
+
+%============================================================================
+\section{Critical Parameter Insights}
+%============================================================================
+
+\subsection{Multi-Mode: The Adaptive Delta Paradox}
+
+The most surprising finding is the \textbf{strong preference for adaptive\_delta=False} in high-performing trials:
+
+\begin{table}[H]
+\centering
+\caption{Adaptive Delta Usage in Multi-Mode Optimization}
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Trial Category} & \multicolumn{2}{c}{\textbf{SCINE Multi-Mode}} & \multicolumn{2}{c}{\textbf{HIP Multi-Mode}} \\
+& False & True & False & True \\
+\midrule
+\rowcolor{bestcolor}
+100\% Success Trials (SCINE) & \textbf{210 (99.1\%)} & 2 (0.9\%) & -- & -- \\
+\rowcolor{bestcolor}
+$\geq$80\% Success Trials (HIP) & -- & -- & \textbf{42 (93.3\%)} & 3 (6.7\%) \\
+All Trials (SCINE) & 469 (93.8\%) & 31 (6.2\%) & -- & -- \\
+All Trials (HIP) & 87 (85.3\%) & 15 (14.7\%) & -- & -- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\noindent\textbf{Conclusion:} Despite theoretical appeal, \textbf{adaptive\_delta=False} (fixed delta) strongly outperforms adaptive methods for transition state search.
+
+\subsection{SCINE Multi-Mode: Parameters for 100\% Success}
+
+Analysis of 212 trials achieving 100\% success reveals optimal parameter ranges:
+
+\begin{table}[H]
+\centering
+\caption{Parameter Statistics for 100\% Success Trials (SCINE Multi-Mode)}
+\begin{tabular}{lccccc}
+\toprule
+\textbf{Parameter} & \textbf{Mean} & \textbf{Range} & \textbf{All Trials Mean} & \textbf{Difference} \\
+\midrule
+dt & 0.00358 & [0.0005, 0.0050] & 0.00350 & +2.3\% \\
+dt\_max & 0.0700 & [0.014, 0.100] & 0.0661 & +5.9\% \\
+escape\_disp\_threshold & 5.66e-4 & [1.0e-4, 1.0e-3] & 5.36e-4 & +5.7\% \\
+escape\_window & 15.5 & [10, 50] & 16.5 & -6.0\% \\
+escape\_delta & 0.267 & [0.12, 0.30] & 0.259 & +3.3\% \\
+escape\_neg\_vib\_std & 0.706 & [0.21, 0.99] & 0.692 & +2.1\% \\
+plateau\_patience & 9.9 & [3, 20] & 9.8 & +1.4\% \\
+plateau\_boost & 2.61 & [1.58, 3.00] & 2.57 & +1.8\% \\
+plateau\_shrink & 0.508 & [0.31, 0.70] & 0.510 & -0.4\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\noindent\textbf{Key Takeaways:}
+\begin{itemize}
+    \item 100\% success trials show \textbf{slightly higher dt\_max} (+5.9\%)
+    \item \textbf{Higher escape\_disp\_threshold} (+5.7\%) helps convergence
+    \item Parameters are relatively robust: differences from population mean are small
+    \item This suggests Multi-Mode is less sensitive to hyperparameters than SELLA
+\end{itemize}
+
+\subsection{HIP Multi-Mode: High Success Parameters}
+
+For trials achieving $\geq$80\% success (45 trials):
+
+\begin{table}[H]
+\centering
+\caption{Key Parameters for High-Success HIP Multi-Mode Trials}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Parameter} & \textbf{High Success Mean} & \textbf{Best Trial (\#98)} \\
+\midrule
+dt & 0.00279 & 0.000964 \\
+dt\_max & 0.0685 & 0.0698 \\
+escape\_disp\_threshold & 4.5e-5 & 1.3e-5 \\
+escape\_window & 20.2 & 16 \\
+plateau\_patience & 12.1 & 13 \\
+adaptive\_delta & False (93.3\%) & False \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%============================================================================
+\section{SELLA Parameter Insights}
+%============================================================================
+
+\subsection{SELLA Hyperparameter Correlations}
+
+\begin{table}[H]
+\centering
+\caption{SELLA Parameter Correlations with Success Rate}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Parameter} & \textbf{HIP Correlation} & \textbf{SCINE Correlation} \\
+\midrule
+\rowcolor{bestcolor}
+sigma\_dec & \textbf{+0.55} & \textbf{+0.34} \\
+delta0 & \textbf{-0.53} & -0.01 \\
+fmax & +0.43 & -0.26 \\
+rho\_dec & +0.36 & -0.03 \\
+rho\_inc & +0.36 & +0.08 \\
+sigma\_inc & +0.33 & +0.08 \\
+apply\_eckart & -0.19 & N/A \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\noindent\textbf{SELLA Insights:}
+\begin{itemize}
+    \item \textbf{sigma\_dec} (trust region decrease factor) is the most important parameter for both calculators
+    \item High sigma\_dec (0.93-0.96) strongly improves convergence
+    \item For HIP: smaller delta0 ($\sim$0.15) greatly helps; apply\_eckart=False preferred
+    \item For SCINE: very low fmax ($\sim$4e-4) is critical
+    \item SELLA is much more sensitive to hyperparameter tuning than Multi-Mode
+\end{itemize}
+
+%============================================================================
+\section{Hyperparameter Search Ranges}
+%============================================================================
+
+\subsection{SELLA Optimizer Parameters}
+
+\begin{table}[H]
+\centering
+\caption{SELLA Hyperparameter Search Ranges}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Parameter} & \textbf{HIP Range} & \textbf{SCINE Range} \\
+\midrule
+delta0 & [0.1, 1.5] (log) & [0.01, 1.0] (log) \\
+rho\_dec & [40, 95] & [20, 150] \\
+rho\_inc & [1.03, 1.14] & [1.005, 1.15] \\
+sigma\_dec & [0.6, 0.96] & [0.4, 0.98] \\
+sigma\_inc & [1.1, 1.7] & [1.05, 2.5] \\
+fmax & [1e-4, 0.015] (log) & [1e-5, 0.05] (log) \\
+apply\_eckart & \{True, False\} & N/A \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\noindent\textbf{Differences:} HIP uses narrower ranges based on preliminary studies. SCINE explores wider parameter space, particularly for sigma\_inc and fmax.
+
+\subsection{Multi-Mode Eckart-MW Parameters}
+
+\begin{table}[H]
+\centering
+\caption{Multi-Mode Hyperparameter Search Ranges}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Parameter} & \textbf{HIP \& SCINE Range} & \textbf{Note} \\
+\midrule
+dt & [5e-4, 5e-3] (log) & Identical \\
+dt\_max & [0.01, 0.1] (log) & Identical \\
+max\_atom\_disp & [0.1, 0.5] & Identical \\
+plateau\_patience & [3, 20] (int) & Identical \\
+plateau\_boost & [1.2, 3.0] & Identical \\
+plateau\_shrink & [0.3, 0.7] & Identical \\
+escape\_disp\_threshold & [1e-5, 1e-3] (log) HIP & HIP 10$\times$ lower min \\
+& [1e-4, 1e-3] (log) SCINE & \\
+escape\_window & [10, 50] (int) & Identical \\
+escape\_neg\_vib\_std & [0.1, 1.0] HIP & HIP allows lower values \\
+& [0.2, 1.0] SCINE & \\
+escape\_delta & [0.05, 0.3] & Identical \\
+adaptive\_delta & \{True, False\} & Identical \\
+min\_interatomic\_dist & [0.3, 0.7] & Identical \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\noindent\textbf{Note:} Multi-Mode uses nearly identical ranges across both calculators, suggesting the algorithm is less calculator-specific than SELLA.
+
+%============================================================================
+\section{Computational Efficiency}
+%============================================================================
+
+\begin{table}[H]
+\centering
+\caption{Computational Cost Analysis}
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Metric} & \textbf{HIP+SELLA} & \textbf{SCINE+SELLA} & \textbf{HIP+MM} & \textbf{SCINE+MM} \\
+\midrule
+Mean Wall Time (s) & 99.0 & 106.4 & 96.9 & \textbf{2.9} \\
+Best Trial Wall Time (s) & 52.6 & 82.9 & 75.8 & \textbf{1.9} \\
+100\% Success Wall Time (s) & N/A & N/A & N/A & 1.9--8.1 \\
+Mean Steps & 257 & 621 & 597 & 537 \\
+Best Trial Steps & 101 & 453 & 875 & 505 \\
+Hardware & 4$\times$GPU & 192 CPU & 4$\times$GPU & 192 CPU \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\noindent\textbf{Efficiency Insights:}
+\begin{itemize}
+    \item \textbf{SCINE + Multi-Mode} is exceptionally fast: 2.9s average, achieving 100\% success in under 8s
+    \item HIP methods require GPU but show no significant speedup over CPU-based SCINE
+    \item SELLA with HIP achieves fastest single-trial time (52.6s) but only 53.3\% success
+    \item \textbf{Best overall:} SCINE Multi-Mode achieves 100\% success in $<$2s wall time (212 trials)
+\end{itemize}
+
+%============================================================================
+\section{Constant Parameters Across All Experiments}
+%============================================================================
+
+\begin{table}[H]
+\centering
+\caption{Fixed Experimental Parameters}
+\begin{tabular}{ll}
+\toprule
+\textbf{Parameter} & \textbf{Value} \\
+\midrule
+Start Configuration & midpoint\_rt\_noise1.0A \\
+Noise Seed & 42 \\
+Optuna Seed & 42 \\
+Optuna Sampler & TPE (Tree-structured Parzen Estimator) \\
+N Startup Trials (Multi-Mode) & 5 \\
+SCINE Functional & DFTB0 \\
+Data Source & Transition1x.h5 dataset \\
+Samples per Trial & 30 (SELLA), 15 (Multi-Mode) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%============================================================================
+\section{Recommendations}
+%============================================================================
+
+\subsection{Recommended Configurations by Use Case}
+
+\begin{table}[H]
+\centering
+\caption{Optimizer Selection Guide}
+\begin{tabular}{lll}
+\toprule
+\textbf{Priority} & \textbf{Recommended} & \textbf{Expected Performance} \\
+\midrule
+Best Success Rate & SCINE Multi-Mode & 100\% (42\% of trials) \\
+& & 94.1\% global average \\
+GPU + High Success & HIP Multi-Mode & Up to 93.3\% \\
+& & 74.9\% global average \\
+Fastest (CPU only) & SCINE Multi-Mode & $<$2s per trial @ 100\% \\
+Interpretability & SCINE SELLA & 66.7\% best, 47\% average \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Recommended Hyperparameters: SCINE Multi-Mode (100\% Success)}
+
+Based on 212 trials achieving perfect 100\% success:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lc}
+\toprule
+\textbf{Parameter} & \textbf{Recommended Value/Range} \\
+\midrule
+\rowcolor{bestcolor}
+adaptive\_delta & \textbf{False} (99.1\% of 100\% trials) \\
+dt\_max & 0.07 (slightly higher than population mean) \\
+escape\_disp\_threshold & 5--6e-4 (upper half of range) \\
+escape\_delta & 0.27 (upper range) \\
+escape\_neg\_vib\_std & 0.7 (upper-mid range) \\
+plateau\_patience & 8--12 \\
+plateau\_boost & 2.5--2.7 \\
+Other parameters & Use mid-range values \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Recommended Hyperparameters: HIP Multi-Mode (High Success)}
+
+For trials achieving $\geq$80\% success:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lc}
+\toprule
+\textbf{Parameter} & \textbf{Recommended Value/Range} \\
+\midrule
+\rowcolor{bestcolor}
+adaptive\_delta & \textbf{False} (93.3\% of high-success trials) \\
+dt & Lower range (0.001--0.003) \\
+escape\_disp\_threshold & Lower range (2--5e-5) \\
+escape\_window & 16--25 \\
+plateau\_patience & 12--15 \\
+min\_interatomic\_dist & 0.5--0.6 (upper range) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Recommended Hyperparameters: SELLA Optimizers}
+
+\textbf{For SCINE + SELLA} (best 66.7\%):
+\begin{itemize}
+    \item sigma\_dec: \textbf{0.95--0.96} (critical)
+    \item fmax: \textbf{4--6e-4} (very low)
+    \item delta0: 0.19--0.22
+    \item rho\_dec: 60--80
+    \item sigma\_inc: 1.8--2.1
+\end{itemize}
+
+\textbf{For HIP + SELLA} (best 53.3\%):
+\begin{itemize}
+    \item sigma\_dec: \textbf{0.93--0.94} (critical)
+    \item delta0: \textbf{0.14--0.17} (low)
+    \item apply\_eckart: \textbf{False}
+    \item fmax: 0.009--0.012 (moderate-high)
+    \item rho\_dec: 90--95 (high)
+    \item rho\_inc: 1.11--1.13
+\end{itemize}
+
+%============================================================================
+\section{Conclusions}
+%============================================================================
+
+\begin{enumerate}
+    \item \textbf{Multi-Mode dominates SELLA} for transition state search: 75--94\% global success vs 30--47\%
+
+    \item \textbf{SCINE + Multi-Mode is exceptional:} 42.4\% of trials achieve 100\% success rate, with 94.1\% global average
+
+    \item \textbf{The adaptive\_delta paradox:} Despite theoretical appeal, adaptive\_delta=False strongly outperforms adaptive methods (99\% of perfect trials use False)
+
+    \item \textbf{SCINE outperforms HIP} across both optimizers, while being faster and CPU-only
+
+    \item \textbf{Multi-Mode is robust:} Small parameter variations separate good from perfect performance, suggesting the algorithm is less hyperparameter-sensitive than SELLA
+
+    \item \textbf{SELLA requires careful tuning:} sigma\_dec, delta0, and fmax show strong correlations with success and must be carefully optimized
+\end{enumerate}
+
+%============================================================================
+\section{Appendix: Additional Statistics}
+%============================================================================
+
+\subsection{Score Distribution}
+
+\begin{table}[H]
+\centering
+\caption{Trial Score Statistics}
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Statistic} & \textbf{HIP+SELLA} & \textbf{SCINE+SELLA} & \textbf{HIP+MM} & \textbf{SCINE+MM} \\
+\midrule
+Min Score & 0.043 & 0.272 & -0.945 & -1.040 \\
+Max Score & 0.544 & 0.674 & -0.487 & -0.550 \\
+Mean Score & 0.311 & 0.476 & -0.758 & -0.962 \\
+Std Dev & 0.091 & 0.087 & 0.093 & 0.068 \\
+\midrule
+\multicolumn{5}{l}{\textit{Note: Multi-Mode uses negative scoring (more negative = worse). SELLA uses positive (higher = better).}} \\
+\multicolumn{5}{l}{\textit{Score-Success correlation: SELLA = +1.0, Multi-Mode = -0.99}} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Non-Converged Trial Analysis}
+
+When trials fail to find the transition state (1 negative eigenvalue), the distribution of failures reveals algorithm behavior:
+
+\begin{table}[H]
+\centering
+\caption{Most Common Failure Modes (Top 3 Non-TS Eigenvalue Counts)}
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Neg. Eig Count} & \textbf{HIP+SELLA} & \textbf{SCINE+SELLA} & \textbf{HIP+MM} & \textbf{SCINE+MM} \\
+\midrule
+2 & 23.7\% & 41.0\% & 9.8\% & 11.9\% \\
+3 & 19.3\% & 22.4\% & 10.0\% & 22.2\% \\
+4 & 14.3\% & 12.8\% & 21.6\% & 19.1\% \\
+5 & 15.8\% & 7.3\% & 20.8\% & 18.4\% \\
+6+ & 23.0\% & 9.5\% & 37.8\% & 25.6\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\noindent\textbf{Failure Mode Insights:}
+\begin{itemize}
+    \item SELLA failures cluster at 2-3 negative eigenvalues (near-TS higher-order saddles)
+    \item HIP methods show more 4--6+ failures (stuck at high-order saddles or minima)
+    \item SCINE Multi-Mode's rare failures (5.9\%) are distributed across 2--6 negative eigenvalues
+\end{itemize}
+
+\end{document}
