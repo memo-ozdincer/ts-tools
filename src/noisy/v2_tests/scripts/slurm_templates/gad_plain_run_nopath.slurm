@@ -81,7 +81,7 @@ THREADS_PER_WORKER="${THREADS_PER_WORKER:-4}"
 N_WORKERS=$((TOTAL_CPUS / THREADS_PER_WORKER))
 if [ "$N_WORKERS" -lt 1 ]; then N_WORKERS=1; fi
 
-python "$PROJECT_DIR/src/noisy/v2_tests/runners/run_gad_baselines_parallel_nopath.py" \
+python "$PROJECT_DIR/src/noisy/v2_tests/runners/run_gad_baselines_parallel.py" \
     --h5-path "$H5_PATH" \
     --out-dir "$OUT_DIR" \
     --scine-functional "$SCINE_FUNCTIONAL" \
