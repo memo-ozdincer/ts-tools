@@ -85,7 +85,6 @@ class ExtendedMetrics:
     grad_norm: float           # ‖∇E‖
     step_size_eff: float       # effective dt after capping
     x_disp_step: float         # ‖x(t) - x(t-dt)‖
-    x_disp_window: float = float("nan")  # mean displacement over last N steps
 
     # Position/Energy
     energy: float
@@ -93,6 +92,8 @@ class ExtendedMetrics:
 
     # Optional: distance to known TS (for validation)
     dist_to_ts: Optional[float] = None
+    # Optional: displacement window (mean over last N steps)
+    x_disp_window: float = float("nan")
 
     def to_dict(self) -> dict:
         """Convert to dictionary for logging."""
