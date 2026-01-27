@@ -22,7 +22,7 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import torch
 
-from .metrics import ExtendedMetrics, compute_extended_metrics
+from .metrics_nopath import ExtendedMetrics, compute_extended_metrics
 from .escape_logger import EscapeEvent, summarize_escape_events
 
 
