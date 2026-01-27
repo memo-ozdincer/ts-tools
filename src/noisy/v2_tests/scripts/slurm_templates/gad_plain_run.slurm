@@ -54,13 +54,13 @@ mkdir -p "$OUT_DIR"
 # =============================================================================
 # Configuration
 # =============================================================================
-N_STEPS="${N_STEPS:-30000}"
-MAX_SAMPLES="${MAX_SAMPLES:-20}"
+N_STEPS="${N_STEPS:-300000}"
+MAX_SAMPLES="${MAX_SAMPLES:-100}"
 START_FROM="${START_FROM:-midpoint_rt_noise1.0A}"
 NOISE_SEED="${NOISE_SEED:-42}"
 SCINE_FUNCTIONAL="${SCINE_FUNCTIONAL:-DFTB0}"
 
-DT="${DT:-0.00005}"
+DT="${DT:-0.000005}"
 DT_CONTROL="${DT_CONTROL:-adaptive}"
 DT_MIN="${DT_MIN:-1e-6}"
 DT_MAX="${DT_MAX:-0.08}"
