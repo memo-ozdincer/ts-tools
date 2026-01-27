@@ -490,3 +490,192 @@ def scine_vibrational_eigvals(
     )
     eigvals, _ = torch.linalg.eigh(proj_hess)
     return eigvals
+
+
+# ============================================================================
+# Vector projection functions for GAD (SCINE implementation)
+# ============================================================================
+
+def scine_get_vibrational_projector_full(
+    coords: torch.Tensor,
+    elements: list,
+) -> torch.Tensor:
+    """
+    Get the full 3N x 3N vibrational projector P for SCINE.
+
+    Unlike the reduced projector (3N-k, 3N), this returns a square projector
+    that can be used to project vectors in 3N space.
+
+    P = V V^T where V is (3N, 3N-k) vibrational basis
+
+    Args:
+        coords: (N, 3) coordinates in Angstrom
+        elements: List of scine_utilities.ElementType
+
+    Returns:
+        P: (3N, 3N) vibrational projector
+    """
+    coords_np = coords.detach().cpu().numpy().reshape(-1, 3)
+    masses_amu = get_scine_masses(elements)
+
+    analyzer = ScineFrequencyAnalyzer()
+    P_reduced = analyzer._get_vibrational_projector(coords_np, masses_amu)  # (3N-k, 3N)
+
+    # P_full = P_reduced.T @ P_reduced gives us the full 3N x 3N vibrational projector
+    P_full = P_reduced.T @ P_reduced  # (3N, 3N)
+
+    return torch.from_numpy(P_full).to(device=coords.device, dtype=torch.float64)
+
+
+def scine_project_vector_to_vibrational(
+    vec: torch.Tensor,
+    coords: torch.Tensor,
+    elements: list,
+    is_mass_weighted: bool = False,
+) -> torch.Tensor:
+    """
+    Project a vector to remove translation/rotation components (SCINE version).
+
+    For GAD, the gradient and guide vector v must be projected to prevent
+    the dynamics from drifting into the null space.
+
+    Args:
+        vec: (3N,) or (N, 3) vector to project
+        coords: (N, 3) coordinates in Angstrom
+        elements: List of scine_utilities.ElementType
+        is_mass_weighted: If True, vec is already in mass-weighted space.
+                          If False, vec will be mass-weighted, projected, then un-weighted.
+
+    Returns:
+        vec_proj: Projected vector (3N,)
+    """
+    device = vec.device
+    original_dtype = vec.dtype
+
+    vec_flat = vec.reshape(-1).to(torch.float64)
+    masses_amu = get_scine_masses(elements)
+
+    sqrt_m = np.sqrt(masses_amu)
+    sqrt_m_3n = np.repeat(sqrt_m, 3)
+
+    # Get the full vibrational projector
+    P = scine_get_vibrational_projector_full(coords, elements)  # (3N, 3N)
+
+    vec_np = vec_flat.cpu().numpy()
+
+    if is_mass_weighted:
+        # vec is already in MW space, just project
+        vec_proj_np = P.cpu().numpy() @ vec_np
+    else:
+        # Transform to MW space, project, transform back
+        vec_mw = vec_np / sqrt_m_3n
+        vec_mw_proj = P.cpu().numpy() @ vec_mw
+        vec_proj_np = vec_mw_proj * sqrt_m_3n
+
+    return torch.from_numpy(vec_proj_np).to(device=device, dtype=original_dtype)
+
+
+def scine_project_guide_vector(
+    v: torch.Tensor,
+    coords: torch.Tensor,
+    elements: list,
+    normalize: bool = True,
+) -> torch.Tensor:
+    """
+    Project and optionally normalize the GAD guide vector v (SCINE version).
+
+    The guide vector v should live in the mass-weighted vibrational subspace.
+
+    Args:
+        v: (3N,) guide vector (assumed to be in mass-weighted space)
+        coords: (N, 3) coordinates in Angstrom
+        elements: List of scine_utilities.ElementType
+        normalize: If True, renormalize v after projection
+
+    Returns:
+        v_proj: Projected (and optionally normalized) guide vector (3N,)
+    """
+    # Guide vectors from eigenvector decomposition are already in MW space
+    v_proj = scine_project_vector_to_vibrational(v, coords, elements, is_mass_weighted=True)
+
+    if normalize:
+        v_proj = v_proj / (v_proj.norm() + 1e-12)
+
+    return v_proj
+
+
+def scine_gad_dynamics_projected(
+    coords: torch.Tensor,
+    forces: torch.Tensor,
+    v: torch.Tensor,
+    elements: list,
+) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, Any]]:
+    """
+    Compute GAD dynamics with consistent Eckart projection (SCINE version).
+
+    This function ensures that:
+    1. The gradient (forces) is projected to remove TR components
+    2. The guide vector v is projected to remove TR components
+    3. The output dq/dt is projected to stay in vibrational space
+
+    Args:
+        coords: (N, 3) Cartesian coordinates
+        forces: (N, 3) or (3N,) forces (negative gradient)
+        v: (3N,) guide vector (eigenvector of projected Hessian)
+        elements: List of scine_utilities.ElementType
+
+    Returns:
+        gad_vec: (N, 3) GAD direction in Cartesian space
+        v_proj: (3N,) projected/normalized guide vector for tracking
+        info: dict with diagnostic info
+    """
+    device = coords.device
+    original_dtype = forces.dtype
+
+    num_atoms = len(elements)
+    f_flat = forces.reshape(-1).to(torch.float64)
+    v_flat = v.reshape(-1).to(torch.float64)
+
+    masses_amu = get_scine_masses(elements)
+    sqrt_m = np.sqrt(masses_amu)
+    sqrt_m_3n = np.repeat(sqrt_m, 3)
+    sqrt_m_t = torch.from_numpy(sqrt_m_3n).to(device=device, dtype=torch.float64)
+
+    # Get full projector
+    P = scine_get_vibrational_projector_full(coords, elements)
+
+    # ---- Project gradient (forces = -gradient) ----
+    # Transform to MW space: grad_mw = M^{-1/2} @ (-forces)
+    grad_mw = (-f_flat.cpu().numpy()) / sqrt_m_3n
+    grad_mw_proj = P.cpu().numpy() @ grad_mw
+    grad_mw_proj_t = torch.from_numpy(grad_mw_proj).to(device=device, dtype=torch.float64)
+
+    # ---- Project guide vector v ----
+    v_np = v_flat.cpu().numpy()
+    v_proj_np = P.cpu().numpy() @ v_np
+    v_proj_np = v_proj_np / (np.linalg.norm(v_proj_np) + 1e-12)
+    v_proj_t = torch.from_numpy(v_proj_np).to(device=device, dtype=torch.float64)
+
+    # ---- Compute GAD direction ----
+    v_dot_grad = torch.dot(v_proj_t, grad_mw_proj_t)
+    v_dot_v = torch.dot(v_proj_t, v_proj_t)
+
+    dq_dt_mw = -grad_mw_proj_t + 2.0 * (v_dot_grad / (v_dot_v + 1e-12)) * v_proj_t
+
+    # Project output
+    dq_dt_mw_np = dq_dt_mw.cpu().numpy()
+    dq_dt_mw_proj = P.cpu().numpy() @ dq_dt_mw_np
+    dq_dt_mw_proj_t = torch.from_numpy(dq_dt_mw_proj).to(device=device, dtype=torch.float64)
+
+    # Convert back to Cartesian space
+    dq_dt_cart = sqrt_m_t * dq_dt_mw_proj_t
+
+    gad_vec = dq_dt_cart.reshape(num_atoms, 3).to(original_dtype)
+
+    info = {
+        "v_dot_grad": float(v_dot_grad.item()),
+        "grad_norm_mw": float(np.linalg.norm(grad_mw_proj)),
+        "v_norm": float(np.linalg.norm(v_proj_np)),
+    }
+
+    return gad_vec, v_proj_t.to(v.dtype), info

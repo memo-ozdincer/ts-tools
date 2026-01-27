@@ -4,6 +4,11 @@
 Baselines:
 - plain: no mode tracking (always lowest eigenvector)
 - mode_tracked: track v1 across steps
+
+Adaptive dt strategies (state-based only, no path information):
+- none: fixed timestep
+- gradient: dt_eff = clamp(dt_base * scale_factor / (grad_norm + eps), dt_min, dt_max)
+- eigenvalue: dt_eff = clamp(dt_base * scale_factor / (|eig_0| + eps), dt_min, dt_max)
 """
 
 from __future__ import annotations
@@ -13,7 +18,7 @@ import json
 import os
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 import numpy as np
 import torch
@@ -21,9 +26,8 @@ from torch_geometric.loader import DataLoader
 
 from src.core_algos.gad import pick_tracked_mode
 from src.dependencies.common_utils import Transition1xDataset, UsePos, parse_starting_geometry
-from src.dependencies.differentiable_projection import gad_dynamics_projected_torch
 from src.dependencies.hessian import get_scine_elements_from_predict_output, prepare_hessian
-from src.noisy.multi_mode_eckartmw import get_projected_hessian, _min_interatomic_distance, _atomic_nums_to_symbols
+from src.noisy.multi_mode_eckartmw import get_projected_hessian, _min_interatomic_distance
 from src.noisy.v2_tests.logging import TrajectoryLogger
 from src.parallel.scine_parallel import ParallelSCINEProcessor
 from src.parallel.utils import run_batch_parallel
@@ -45,6 +49,46 @@ def _vib_mask_from_evals(evals: torch.Tensor, tr_threshold: float) -> torch.Tens
     return evals.abs() > float(tr_threshold)
 
 
+def compute_state_based_dt(
+    dt_base: float,
+    dt_min: float,
+    dt_max: float,
+    dt_adaptation: str,
+    grad_norm: float,
+    eig_0: float,
+    dt_scale_factor: float = 1.0,
+    eps: float = 1e-8,
+) -> float:
+    """Compute adaptive dt using only state-based information (no path history).
+
+    Args:
+        dt_base: Base timestep
+        dt_min: Minimum allowed timestep
+        dt_max: Maximum allowed timestep
+        dt_adaptation: Adaptation method ('none', 'gradient', 'eigenvalue')
+        grad_norm: Current gradient norm (||-∇E||)
+        eig_0: Lowest vibrational eigenvalue
+        dt_scale_factor: Scaling factor for adaptation
+        eps: Small constant to prevent division by zero
+
+    Returns:
+        Effective timestep
+    """
+    if dt_adaptation == "none":
+        return dt_base
+
+    if dt_adaptation == "gradient":
+        # Smaller steps when gradient is large
+        dt_eff = dt_base * dt_scale_factor / (grad_norm + eps)
+    elif dt_adaptation == "eigenvalue":
+        # Smaller steps when curvature (|λ₀|) is large
+        dt_eff = dt_base * dt_scale_factor / (abs(eig_0) + eps)
+    else:
+        dt_eff = dt_base
+
+    return float(np.clip(dt_eff, dt_min, dt_max))
+
+
 def run_gad_baseline(
     predict_fn,
     coords0: torch.Tensor,
@@ -52,31 +96,34 @@ def run_gad_baseline(
     *,
     n_steps: int,
     dt: float,
-    dt_control: str,
+    dt_adaptation: str,
     dt_min: float,
     dt_max: float,
+    dt_scale_factor: float,
     max_atom_disp: float,
     ts_eps: float,
     stop_at_ts: bool,
     min_interatomic_dist: float,
     tr_threshold: float,
     track_mode: bool,
-    project_gradient_and_v: bool,
     log_dir: Optional[str],
     sample_id: str,
     formula: str,
 ) -> Dict[str, Any]:
+    """Run GAD baseline with state-based adaptive dt (no path information).
+
+    The adaptive dt uses only current-state information:
+    - 'none': fixed timestep
+    - 'gradient': scale by 1/grad_norm
+    - 'eigenvalue': scale by 1/|λ₀|
+    """
     coords = coords0.detach().clone().to(torch.float32)
     if coords.dim() == 3 and coords.shape[0] == 1:
         coords = coords[0]
     coords = coords.reshape(-1, 3)
 
     v_prev = None
-    dt_eff = float(dt)
     logger = TrajectoryLogger(sample_id=sample_id, formula=formula) if log_dir else None
-    disp_history: List[float] = []
-    prev_pos = coords.clone()
-    prev_energy: Optional[float] = None
 
     for step in range(n_steps):
         out = predict_fn(coords, atomic_nums, do_hessian=True, require_grad=False)
@@ -109,51 +156,47 @@ def run_gad_baseline(
         v_new, mode_index, _overlap = pick_tracked_mode(V, v_prev_local, k=int(V.shape[1]))
         v = v_new
 
-        # Compute GAD direction with optional vector projection
-        if project_gradient_and_v:
-            atomsymbols = _atomic_nums_to_symbols(atomic_nums)
-            gad_vec, v_proj, _proj_info = gad_dynamics_projected_torch(
-                coords=coords,
-                forces=forces,
-                v=v,
-                atomsymbols=atomsymbols,
-            )
-            v = v_proj.reshape(-1)  # Update v with projected version
-        else:
-            f_flat = forces.reshape(-1)
-            gad_flat = f_flat + 2.0 * torch.dot(-f_flat, v) * v
-            gad_vec = gad_flat.view(num_atoms, 3)
+        f_flat = forces.reshape(-1)
+        gad_flat = f_flat + 2.0 * torch.dot(-f_flat, v) * v
+        gad_vec = gad_flat.view(num_atoms, 3)
 
         if track_mode:
             v_prev = v.detach().clone().reshape(-1)
         else:
             v_prev = None
 
+        # State-based quantities for adaptive dt and convergence check
+        grad_norm = float(f_flat.norm().item())
+        eig_0 = float(evals_vib[0].item()) if int(evals_vib.numel()) > 0 else 0.0
+
         if int(evals_vib.numel()) >= 2:
-            eig0 = float(evals_vib[0].item())
-            eig1 = float(evals_vib[1].item())
-            eig_product = eig0 * eig1
+            eig_1 = float(evals_vib[1].item())
+            eig_product = eig_0 * eig_1
         else:
             eig_product = float("inf")
 
-        disp_from_last = float((coords - prev_pos).norm(dim=1).mean().item()) if step > 0 else 0.0
-        if step > 0:
-            disp_history.append(disp_from_last)
-        x_disp_window = float(np.mean(disp_history[-10:])) if disp_history else float("nan")
+        # Compute state-based adaptive dt (no path history)
+        dt_eff = compute_state_based_dt(
+            dt_base=dt,
+            dt_min=dt_min,
+            dt_max=dt_max,
+            dt_adaptation=dt_adaptation,
+            grad_norm=grad_norm,
+            eig_0=eig_0,
+            dt_scale_factor=dt_scale_factor,
+        )
 
         if logger is not None:
+            energy = float(out["energy"].detach().reshape(-1)[0].item()) if isinstance(out["energy"], torch.Tensor) else float(out["energy"])
             logger.log_step(
                 step=step,
                 coords=coords,
-                energy=float(out["energy"].detach().reshape(-1)[0].item()) if isinstance(out["energy"], torch.Tensor) else float(out["energy"]),
+                energy=energy,
                 forces=forces,
                 hessian_proj=hess_proj,
                 gad_vec=gad_vec,
                 dt_eff=dt_eff,
-                coords_prev=prev_pos if step > 0 else None,
-                energy_prev=prev_energy,
                 mode_index=mode_index,
-                x_disp_window=x_disp_window,
             )
 
         if stop_at_ts and np.isfinite(eig_product) and eig_product < -abs(ts_eps):
@@ -173,26 +216,18 @@ def run_gad_baseline(
                 logger.save(log_dir)
             return result
 
+        # Take step with displacement capping (state-based, no dt history update)
         step_disp = dt_eff * gad_vec
         max_disp = float(step_disp.norm(dim=1).max().item())
         if max_disp > max_atom_disp and max_disp > 0:
             scale = max_atom_disp / max_disp
             step_disp = scale * step_disp
-            if dt_control == "adaptive":
-                dt_eff = max(dt_eff * 0.8, dt_min)
-        else:
-            if dt_control == "adaptive":
-                dt_eff = min(dt_eff * 1.05, dt_max)
 
         new_coords = coords + step_disp
         if _min_interatomic_distance(new_coords) < min_interatomic_dist:
             step_disp = step_disp * 0.5
             new_coords = coords + step_disp
-            if dt_control == "adaptive":
-                dt_eff = max(dt_eff * 0.5, dt_min)
 
-        prev_pos = coords.clone()
-        prev_energy = float(out["energy"].detach().reshape(-1)[0].item()) if isinstance(out["energy"], torch.Tensor) else float(out["energy"])
         coords = new_coords.detach()
 
     result = {
@@ -229,16 +264,16 @@ def run_single_sample(
             atomic_nums,
             n_steps=n_steps,
             dt=params["dt"],
-            dt_control=params["dt_control"],
+            dt_adaptation=params["dt_adaptation"],
             dt_min=params["dt_min"],
             dt_max=params["dt_max"],
+            dt_scale_factor=params["dt_scale_factor"],
             max_atom_disp=params["max_atom_disp"],
             ts_eps=params["ts_eps"],
             stop_at_ts=params["stop_at_ts"],
             min_interatomic_dist=params["min_interatomic_dist"],
             tr_threshold=params["tr_threshold"],
             track_mode=params["track_mode"],
-            project_gradient_and_v=params["project_gradient_and_v"],
             log_dir=params.get("log_dir"),
             sample_id=sample_id,
             formula=formula,
@@ -348,20 +383,25 @@ def main() -> None:
     parser.add_argument("--baseline", type=str, default="plain", choices=["plain", "mode_tracked"])
 
     parser.add_argument("--dt", type=float, default=0.005)
-    parser.add_argument("--dt-control", type=str, default="adaptive", choices=["adaptive", "fixed"])
+    parser.add_argument(
+        "--dt-adaptation",
+        type=str,
+        default="gradient",
+        choices=["none", "gradient", "eigenvalue"],
+        help="State-based adaptive dt method: none (fixed), gradient (1/grad_norm), eigenvalue (1/|λ₀|)",
+    )
     parser.add_argument("--dt-min", type=float, default=1e-6)
     parser.add_argument("--dt-max", type=float, default=0.08)
+    parser.add_argument(
+        "--dt-scale-factor",
+        type=float,
+        default=1.0,
+        help="Scaling factor for adaptive dt (dt_eff = dt_base * scale_factor / denominator)",
+    )
     parser.add_argument("--max-atom-disp", type=float, default=0.35)
     parser.add_argument("--min-interatomic-dist", type=float, default=0.5)
     parser.add_argument("--ts-eps", type=float, default=1e-5)
     parser.add_argument("--tr-threshold", type=float, default=1e-6)
-
-    parser.add_argument(
-        "--project-gradient-and-v",
-        action="store_true",
-        default=False,
-        help="Project gradient and guide vector to prevent TR leakage (recommended for stability)",
-    )
 
     parser.add_argument("--stop-at-ts", action="store_true")
     parser.add_argument("--no-stop-at-ts", dest="stop_at_ts", action="store_false")
@@ -377,15 +417,15 @@ def main() -> None:
 
     params = {
         "dt": args.dt,
-        "dt_control": args.dt_control,
+        "dt_adaptation": args.dt_adaptation,
         "dt_min": args.dt_min,
         "dt_max": args.dt_max,
+        "dt_scale_factor": args.dt_scale_factor,
         "max_atom_disp": args.max_atom_disp,
         "min_interatomic_dist": args.min_interatomic_dist,
         "ts_eps": args.ts_eps,
         "tr_threshold": args.tr_threshold,
         "track_mode": track_mode,
-        "project_gradient_and_v": args.project_gradient_and_v,
         "stop_at_ts": args.stop_at_ts,
         "log_dir": str(diag_dir),
     }

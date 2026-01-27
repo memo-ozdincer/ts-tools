@@ -96,6 +96,211 @@ def eckartprojection_torch(cart_coords, masses, eps=1e-10):
     return P
 
 
+# ---- vector projection functions for GAD ----------------------------------------
+
+def get_mass_weights_torch(atomsymbols: list[str], device=None, dtype=torch.float64):
+    """
+    Get mass-weighting factors for a molecule.
+
+    Args:
+        atomsymbols: List of atom symbols ['C', 'H', 'O', ...]
+        device: Torch device
+        dtype: Torch dtype (default float64)
+
+    Returns:
+        masses: (N,) atomic masses in AMU
+        masses3d: (3N,) masses repeated for each coordinate
+        sqrt_m: (3N,) sqrt(masses) for mass-weighting
+        sqrt_m_inv: (3N,) 1/sqrt(masses) for inverse mass-weighting
+    """
+    masses_t = torch.tensor([MASS_DICT[atom.lower()] for atom in atomsymbols],
+                            dtype=dtype, device=device)
+    masses3d_t = masses_t.repeat_interleave(3)
+    sqrt_m = torch.sqrt(masses3d_t)
+    sqrt_m_inv = 1.0 / sqrt_m
+    return masses_t, masses3d_t, sqrt_m, sqrt_m_inv
+
+
+def project_vector_to_vibrational_torch(
+    vec: torch.Tensor,
+    cart_coords: torch.Tensor,
+    atomsymbols: list[str],
+    eps: float = 1e-10,
+    is_mass_weighted: bool = False,
+) -> torch.Tensor:
+    """
+    Project a vector to remove translation/rotation components.
+
+    For GAD, this is CRITICAL: the gradient and guide vector v must be projected
+    to prevent the dynamics from drifting into the null space (eq. 7-9 in GAD paper).
+
+    Args:
+        vec: (3N,) or (N, 3) vector to project (gradient, guide vector, etc.)
+        cart_coords: (N, 3) Cartesian coordinates
+        atomsymbols: List of atom symbols
+        eps: Regularization for projector construction
+        is_mass_weighted: If True, vec is already in mass-weighted space.
+                          If False, vec will be mass-weighted, projected, then un-weighted.
+
+    Returns:
+        vec_proj: Projected vector in the same space as input (3N,)
+    """
+    device = vec.device
+    dtype = torch.float64
+
+    vec_flat = vec.reshape(-1).to(dtype)
+    coords_3d = cart_coords.reshape(-1, 3)
+
+    masses_t, _, sqrt_m, sqrt_m_inv = get_mass_weights_torch(
+        atomsymbols, device=device, dtype=dtype
+    )
+
+    # Build projector in mass-weighted space
+    P = eckartprojection_torch(coords_3d, masses_t, eps=eps)
+
+    if is_mass_weighted:
+        # vec is already in MW space, just project
+        vec_proj = P @ vec_flat
+    else:
+        # Transform to MW space, project, transform back
+        # v_mw = M^{-1/2} @ v (for gradients: "raise index")
+        vec_mw = sqrt_m_inv * vec_flat
+        vec_mw_proj = P @ vec_mw
+        # Transform back: v_proj = M^{1/2} @ v_mw_proj
+        vec_proj = sqrt_m * vec_mw_proj
+
+    return vec_proj.to(vec.dtype)
+
+
+def project_guide_vector_torch(
+    v: torch.Tensor,
+    cart_coords: torch.Tensor,
+    atomsymbols: list[str],
+    eps: float = 1e-10,
+    normalize: bool = True,
+) -> torch.Tensor:
+    """
+    Project and optionally normalize the GAD guide vector v.
+
+    The guide vector v should live in the mass-weighted vibrational subspace.
+    This function ensures v has no translation/rotation components.
+
+    Args:
+        v: (3N,) guide vector (assumed to be in mass-weighted space)
+        cart_coords: (N, 3) Cartesian coordinates
+        atomsymbols: List of atom symbols
+        eps: Regularization for projector construction
+        normalize: If True, renormalize v after projection
+
+    Returns:
+        v_proj: Projected (and optionally normalized) guide vector (3N,)
+    """
+    device = v.device
+    dtype = torch.float64
+
+    v_flat = v.reshape(-1).to(dtype)
+    coords_3d = cart_coords.reshape(-1, 3)
+
+    masses_t, _, _, _ = get_mass_weights_torch(
+        atomsymbols, device=device, dtype=dtype
+    )
+
+    # Build projector in mass-weighted space
+    P = eckartprojection_torch(coords_3d, masses_t, eps=eps)
+
+    # Project v (already in MW space since it's an eigenvector of MW Hessian)
+    v_proj = P @ v_flat
+
+    # Renormalize
+    if normalize:
+        v_proj = v_proj / (v_proj.norm() + 1e-12)
+
+    return v_proj.to(v.dtype)
+
+
+def gad_dynamics_projected_torch(
+    coords: torch.Tensor,
+    forces: torch.Tensor,
+    v: torch.Tensor,
+    atomsymbols: list[str],
+    eps: float = 1e-10,
+) -> tuple[torch.Tensor, torch.Tensor, dict]:
+    """
+    Compute GAD dynamics (eqs 1-2) with consistent Eckart projection.
+
+    This function ensures that:
+    1. The gradient (forces) is projected to remove TR components
+    2. The guide vector v is projected to remove TR components
+    3. The output dq/dt is projected to stay in vibrational space
+
+    This prevents "leakage" of the dynamics into the null space.
+
+    Args:
+        coords: (N, 3) Cartesian coordinates
+        forces: (N, 3) or (3N,) forces (negative gradient)
+        v: (3N,) guide vector (eigenvector of projected Hessian)
+        atomsymbols: List of atom symbols
+        eps: Regularization for projector construction
+
+    Returns:
+        gad_vec: (N, 3) GAD direction in Cartesian space
+        v_proj: (3N,) projected/normalized guide vector for tracking
+        info: dict with diagnostic info
+    """
+    device = coords.device
+    dtype = torch.float64
+
+    coords_3d = coords.reshape(-1, 3).to(dtype)
+    f_flat = forces.reshape(-1).to(dtype)
+    v_flat = v.reshape(-1).to(dtype)
+    num_atoms = coords_3d.shape[0]
+
+    masses_t, _, sqrt_m, sqrt_m_inv = get_mass_weights_torch(
+        atomsymbols, device=device, dtype=dtype
+    )
+
+    # Build projector at current geometry
+    P = eckartprojection_torch(coords_3d, masses_t, eps=eps)
+
+    # ---- Project gradient (forces = -gradient) ----
+    # Forces are in Cartesian space (eV/Angstrom), so we mass-weight, project, un-weight
+    # grad_mw = M^{-1/2} @ (-forces)
+    grad_mw = -sqrt_m_inv * f_flat
+    grad_mw_proj = P @ grad_mw
+
+    # ---- Project guide vector v ----
+    # v is already in MW space (eigenvector of MW Hessian)
+    v_proj = P @ v_flat
+    v_proj = v_proj / (v_proj.norm() + 1e-12)
+
+    # ---- Compute GAD direction (eq 1): dq/dt = -grad + 2(v·grad)/(v·v) * v ----
+    v_dot_grad = torch.dot(v_proj, grad_mw_proj)
+    v_dot_v = torch.dot(v_proj, v_proj)  # ~1 after normalization
+
+    dq_dt_mw = -grad_mw_proj + 2.0 * (v_dot_grad / (v_dot_v + 1e-12)) * v_proj
+
+    # ---- Project output to ensure it stays in vibrational space ----
+    dq_dt_mw = P @ dq_dt_mw
+
+    # ---- Convert back to Cartesian space ----
+    # dq_cart = M^{1/2} @ dq_mw
+    dq_dt_cart = sqrt_m * dq_dt_mw
+
+    # Note: The standard GAD formulation uses forces directly (f + 2(v·(-f))v)
+    # which is equivalent but avoids the mass-weighting in force space.
+    # Here we implement the more rigorous version that works in MW space.
+
+    gad_vec = dq_dt_cart.reshape(num_atoms, 3).to(forces.dtype)
+
+    info = {
+        "v_dot_grad": float(v_dot_grad.item()),
+        "grad_norm_mw": float(grad_mw_proj.norm().item()),
+        "v_norm": float(v_proj.norm().item()),
+    }
+
+    return gad_vec, v_proj.to(v.dtype), info
+
+
 # ---- use this function ----------------------------
 
 def differentiable_massweigh_and_eckartprojection_torch(

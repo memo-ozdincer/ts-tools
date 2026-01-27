@@ -32,7 +32,7 @@ This module computes comprehensive metrics informed by the Levitt-Ortner and iHi
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
 import numpy as np
@@ -45,6 +45,10 @@ class ExtendedMetrics:
 
     These metrics are designed to diagnose WHY GAD gets stuck, informed by
     the Levitt-Ortner (singularities, cycling) and iHiSD (adaptive k) papers.
+
+    NOTE: All metrics are state-based (computed from current geometry only).
+    Path-dependent metrics (x_disp_step, energy_delta, mode_overlap, etc.)
+    have been removed to enable state-function-only analysis.
     """
 
     # Step identification
@@ -70,25 +74,21 @@ class ExtendedMetrics:
     # Singularity proximity (minimum gap between adjacent pairs)
     singularity_metric: float
 
-    # GAD direction quality
+    # GAD direction quality (all state-based)
     rayleigh_v1: float         # ⟨v₁, Gv₁⟩ (should equal λ₁)
     grad_proj_v1: float        # |⟨∇E, v₁⟩| / ‖∇E‖
     grad_proj_v2: float        # |⟨∇E, v₂⟩| / ‖∇E‖
     gad_grad_angle: float      # angle (degrees) between GAD vector and -∇E
 
-    # Mode tracking diagnostics
-    mode_overlap: float        # existing: ⟨v₁(t), v₁(t-dt)⟩
-    mode_index: int            # existing: which eigenvector was tracked
-    v1_v2_overlap: float       # |⟨v₁(t), v₂(t-dt)⟩| (mode swap detection)
+    # Mode index (which eigenvector is being tracked)
+    mode_index: int
 
-    # Convergence diagnostics
-    grad_norm: float           # ‖∇E‖
-    step_size_eff: float       # effective dt after capping
-    x_disp_step: float         # ‖x(t) - x(t-dt)‖
+    # Convergence diagnostics (state-based)
+    grad_norm: float           # ‖∇E‖ (state function)
+    step_size_eff: float       # effective dt used
 
-    # Position/Energy
+    # Energy (state function)
     energy: float
-    energy_delta: float        # E(x) - E(x_prev)
 
     # TR mode verification (near-zero eigenvalue diagnostics)
     # These track whether translation/rotation modes are properly projected out
@@ -97,10 +97,8 @@ class ExtendedMetrics:
     tr_eig_mean: float         # Mean absolute value of TR eigenvalues (should be ~0)
     tr_eig_std: float          # Std dev of TR eigenvalues (monitors drift)
 
-    # Optional: distance to known TS (for validation)
+    # Optional: distance to known TS (for validation, state-based)
     dist_to_ts: Optional[float] = None
-    # Optional: displacement window (mean over last N steps)
-    x_disp_window: float = float("nan")
 
     def to_dict(self) -> dict:
         """Convert to dictionary for logging."""
@@ -122,15 +120,10 @@ class ExtendedMetrics:
             "grad_proj_v1": self.grad_proj_v1,
             "grad_proj_v2": self.grad_proj_v2,
             "gad_grad_angle": self.gad_grad_angle,
-            "mode_overlap": self.mode_overlap,
             "mode_index": self.mode_index,
-            "v1_v2_overlap": self.v1_v2_overlap,
             "grad_norm": self.grad_norm,
             "step_size_eff": self.step_size_eff,
-            "x_disp_step": self.x_disp_step,
-            "x_disp_window": self.x_disp_window,
             "energy": self.energy,
-            "energy_delta": self.energy_delta,
             "n_tr_modes": self.n_tr_modes,
             "tr_eig_max": self.tr_eig_max,
             "tr_eig_mean": self.tr_eig_mean,
@@ -168,42 +161,37 @@ def _safe_angle_deg(v1: torch.Tensor, v2: torch.Tensor) -> float:
 def compute_extended_metrics(
     step: int,
     coords: torch.Tensor,
-    coords_prev: Optional[torch.Tensor],
     energy: float,
-    energy_prev: Optional[float],
     forces: torch.Tensor,
     hessian_proj: torch.Tensor,
     gad_vec: torch.Tensor,
-    v_prev: Optional[torch.Tensor],
     dt_eff: float,
     mode_index: Optional[int] = None,
-    x_disp_window: Optional[float] = None,
     *,
     tr_threshold: float = 1e-6,
     n_eigs_to_compute: int = 6,
     known_ts_coords: Optional[torch.Tensor] = None,
-) -> Tuple[ExtendedMetrics, torch.Tensor, torch.Tensor]:
-    """Compute extended metrics for a single GAD step.
+) -> ExtendedMetrics:
+    """Compute extended metrics for a single GAD step (state-based only).
+
+    All metrics are computed from the current state only, with no path information
+    (no previous coordinates, energies, or eigenvectors).
 
     Args:
         step: Current step number
         coords: Current coordinates (N, 3)
-        coords_prev: Previous coordinates (N, 3) or None if first step
         energy: Current energy
-        energy_prev: Previous energy or None if first step
         forces: Current forces (N, 3) - note: forces = -∇E
         hessian_proj: Projected Hessian (3N, 3N) with TR modes zeroed
         gad_vec: GAD direction vector (N, 3)
-        v_prev: Previous tracked eigenvector (3N,) or None
         dt_eff: Effective timestep used
+        mode_index: Which eigenvector is being tracked (optional)
         tr_threshold: Threshold for TR mode filtering
         n_eigs_to_compute: Number of eigenvalues to include in spectrum
         known_ts_coords: Known TS coordinates for distance computation (optional)
 
     Returns:
-        metrics: ExtendedMetrics dataclass
-        v1_new: New tracked eigenvector (3N,) for mode tracking
-        v2_new: Second eigenvector (3N,) for mode swap detection
+        metrics: ExtendedMetrics dataclass with state-based metrics only
     """
     if coords.dim() == 3 and coords.shape[0] == 1:
         coords = coords[0]
@@ -268,7 +256,7 @@ def compute_extended_metrics(
 
     # Morse index (count negative vibrational eigenvalues)
     neg_mask = vib_evals < -tr_threshold
-    morse_index = int(neg_mask.sum().item())
+    morse_index_computed = int(neg_mask.sum().item())
     neg_eig_sum = float(vib_evals[neg_mask].sum().item()) if neg_mask.any() else 0.0
 
     # Singularity metric: minimum gap between adjacent eigenvalue pairs
@@ -289,7 +277,7 @@ def compute_extended_metrics(
     # Rayleigh quotient: ⟨v₁, Gv₁⟩ (should equal λ₁)
     rayleigh_v1 = float(torch.dot(v1, hessian_proj @ v1).item())
 
-    # Gradient projections
+    # Gradient projections (state-based)
     grad_norm = float(grad_flat.norm().item())
     if grad_norm > 1e-12:
         grad_proj_v1 = float(torch.abs(torch.dot(grad_flat, v1)).item() / grad_norm)
@@ -298,38 +286,14 @@ def compute_extended_metrics(
         grad_proj_v1 = float("nan")
         grad_proj_v2 = float("nan")
 
-    # GAD-gradient angle
+    # GAD-gradient angle (state-based)
     gad_flat = gad_vec.reshape(-1)
     gad_grad_angle = _safe_angle_deg(gad_flat, -grad_flat)  # angle between GAD and -∇E
 
-    # Mode tracking diagnostics
-    if v_prev is not None:
-        v_prev_flat = v_prev.reshape(-1).to(v1.device, v1.dtype)
-        mode_overlap = float(torch.abs(torch.dot(v1, v_prev_flat)).item())
-        v1_v2_overlap = float(torch.abs(torch.dot(v1, v_prev_flat)).item())  # overlap of current v1 with prev
+    # Mode index (which eigenvector is being tracked)
+    mode_index_final = int(mode_index) if mode_index is not None else 0
 
-        # Also check if current v1 aligns with previous v2 (mode swap)
-        # This requires storing v2_prev, which we'll handle in trajectory logger
-        v1_v2_overlap = float("nan")  # Will be computed by trajectory logger
-    else:
-        mode_overlap = 1.0
-        v1_v2_overlap = float("nan")
-
-    # Find which mode index v1 corresponds to (for mode_index tracking)
-    # This is the index within the vibrational subspace
-    mode_index = 0  # Always tracking lowest vibrational mode
-    mode_index = int(mode_index) if mode_index is not None else 0
-
-    # Displacement
-    if coords_prev is not None:
-        x_disp_step = float((coords - coords_prev.reshape(-1, 3)).norm().item())
-    else:
-        x_disp_step = 0.0
-
-    # Energy delta
-    energy_delta = energy - energy_prev if energy_prev is not None else 0.0
-
-    # Distance to known TS
+    # Distance to known TS (state-based)
     dist_to_ts = None
     if known_ts_coords is not None:
         if known_ts_coords.dim() == 3 and known_ts_coords.shape[0] == 1:
@@ -347,21 +311,17 @@ def compute_extended_metrics(
         eig_gap_01=eig_gap_01,
         eig_gap_01_rel=eig_gap_01_rel,
         eig_gap_12=eig_gap_12,
-        morse_index=morse_index,
+        morse_index=morse_index_computed,
         neg_eig_sum=neg_eig_sum,
         singularity_metric=singularity_metric,
         rayleigh_v1=rayleigh_v1,
         grad_proj_v1=grad_proj_v1,
         grad_proj_v2=grad_proj_v2,
         gad_grad_angle=gad_grad_angle,
-        mode_overlap=mode_overlap,
-        mode_index=mode_index,
-        v1_v2_overlap=v1_v2_overlap,
+        mode_index=mode_index_final,
         grad_norm=grad_norm,
         step_size_eff=dt_eff,
-        x_disp_step=x_disp_step,
         energy=energy,
-        energy_delta=energy_delta,
         n_tr_modes=n_tr_modes,
         tr_eig_max=tr_eig_max,
         tr_eig_mean=tr_eig_mean,
@@ -369,7 +329,7 @@ def compute_extended_metrics(
         dist_to_ts=dist_to_ts,
     )
 
-    return metrics, v1.detach().clone(), v2.detach().clone()
+    return metrics
 
 
 def compute_eigenvalue_spectrum(

@@ -30,6 +30,9 @@ from .escape_logger import EscapeEvent, summarize_escape_events
 class TrajectoryLogger:
     """Accumulates extended metrics and escape events for a full GAD trajectory.
 
+    All metrics are state-based (computed from current geometry only).
+    Path-dependent tracking has been removed.
+
     Usage:
         logger = TrajectoryLogger(sample_id="mol_001")
 
@@ -52,10 +55,6 @@ class TrajectoryLogger:
 
     # Escape events
     escape_events: List[EscapeEvent] = field(default_factory=list)
-
-    # Mode tracking state
-    v1_prev: Optional[torch.Tensor] = None
-    v2_prev: Optional[torch.Tensor] = None
 
     # Running statistics
     _step_count: int = 0
@@ -80,12 +79,9 @@ class TrajectoryLogger:
         gad_vec: torch.Tensor,
         dt_eff: float,
         *,
-        coords_prev: Optional[torch.Tensor] = None,
-        energy_prev: Optional[float] = None,
         mode_index: Optional[int] = None,
-        x_disp_window: Optional[float] = None,
     ) -> ExtendedMetrics:
-        """Log a single GAD step with extended metrics.
+        """Log a single GAD step with extended metrics (state-based only).
 
         Args:
             step: Current step number
@@ -95,40 +91,22 @@ class TrajectoryLogger:
             hessian_proj: Projected Hessian (3N, 3N)
             gad_vec: GAD direction (N, 3)
             dt_eff: Effective timestep
-            coords_prev: Previous coordinates (optional, for displacement)
-            energy_prev: Previous energy (optional, for energy delta)
+            mode_index: Which eigenvector is being tracked (optional)
 
         Returns:
-            ExtendedMetrics for this step
+            ExtendedMetrics for this step (state-based only)
         """
-        metrics, v1_new, v2_new = compute_extended_metrics(
+        metrics = compute_extended_metrics(
             step=step,
             coords=coords,
-            coords_prev=coords_prev,
             energy=energy,
-            energy_prev=energy_prev,
             forces=forces,
             hessian_proj=hessian_proj,
             gad_vec=gad_vec,
-            v_prev=self.v1_prev,
             dt_eff=dt_eff,
             mode_index=mode_index,
-            x_disp_window=x_disp_window,
             known_ts_coords=self.known_ts_coords,
         )
-
-        # Compute v1-v2 overlap for mode swap detection
-        if self.v2_prev is not None:
-            v2_prev_flat = self.v2_prev.reshape(-1).to(v1_new.device, v1_new.dtype)
-            v1_v2_overlap = float(torch.abs(torch.dot(v1_new, v2_prev_flat)).item())
-            # Update the metrics with this value (need to create a new dataclass instance)
-            metrics = ExtendedMetrics(
-                **{k: v if k != "v1_v2_overlap" else v1_v2_overlap for k, v in metrics.to_dict().items()}
-            )
-
-        # Update tracking state
-        self.v1_prev = v1_new.detach().clone()
-        self.v2_prev = v2_new.detach().clone()
 
         self.metrics.append(metrics)
         self._step_count = step + 1
@@ -192,6 +170,9 @@ class TrajectoryLogger:
     def get_failure_analysis(self) -> Dict[str, Any]:
         """Analyze failure patterns if trajectory didn't converge to TS.
 
+        All analysis is based on state-based metrics (eigenvalues, gradient norm, etc.)
+        with no path-dependent information.
+
         Returns:
             Dictionary with failure analysis metrics
         """
@@ -218,14 +199,7 @@ class TrajectoryLogger:
             "morse_index_stable": float(np.std(indices)) < 0.5 if indices else False,
         }
 
-        # Displacement statistics (stalling detection)
-        disps = [m.x_disp_step for m in recent if np.isfinite(m.x_disp_step)]
-        disp_stats = {
-            "mean_displacement": float(np.mean(disps)) if disps else float("nan"),
-            "min_displacement": float(np.min(disps)) if disps else float("nan"),
-        }
-
-        # Gradient statistics
+        # Gradient statistics (state-based)
         grads = [m.grad_norm for m in recent if np.isfinite(m.grad_norm)]
         grad_stats = {
             "mean_grad_norm": float(np.mean(grads)) if grads else float("nan"),
@@ -239,7 +213,7 @@ class TrajectoryLogger:
             "min_singularity_metric": float(np.min(sing_metrics)) if sing_metrics else float("nan"),
         }
 
-        # Diagnose failure mode
+        # Diagnose failure mode based on state-based metrics
         failure_mode = "unknown"
         if index_stats["final_morse_index"] > 1:
             if gap_stats["min_eig_gap_01"] < 0.01:
@@ -258,7 +232,6 @@ class TrajectoryLogger:
             "failure_mode": failure_mode,
             **gap_stats,
             **index_stats,
-            **disp_stats,
             **grad_stats,
             **sing_stats,
             "n_analyzed_steps": n_analyze,
@@ -345,7 +318,7 @@ class TrajectoryLogger:
             print(f"    Failure mode: {fa['failure_mode']}")
             print(f"    Final Morse index: {fa['final_morse_index']}")
             print(f"    Min eigenvalue gap: {fa['min_eig_gap_01']:.2e}")
-            print(f"    Mean displacement: {fa['mean_displacement']:.2e}")
+            print(f"    Final grad norm: {fa['final_grad_norm']:.2e}")
 
         print(f"{'='*60}\n")
 

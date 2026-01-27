@@ -50,6 +50,9 @@ from ..dependencies.hessian import (
     project_hessian_remove_rigid_modes,
     prepare_hessian,
 )
+from ..dependencies.differentiable_projection import (
+    gad_dynamics_projected_torch,
+)
 from ..logging import finish_wandb, init_wandb_run, log_sample, log_summary
 from ..logging.plotly_utils import plot_gad_trajectory_interactive
 from ..runners._predict import make_predict_fn_from_calculator
@@ -129,6 +132,26 @@ def _vib_mask_from_evals(evals: torch.Tensor, *, tr_threshold: float) -> torch.T
     return evals.abs() > float(tr_threshold)
 
 
+# Atomic number to symbol mapping (for HIP projection)
+Z_TO_SYMBOL = {
+    1: "H", 2: "He", 3: "Li", 4: "Be", 5: "B", 6: "C", 7: "N", 8: "O", 9: "F", 10: "Ne",
+    11: "Na", 12: "Mg", 13: "Al", 14: "Si", 15: "P", 16: "S", 17: "Cl", 18: "Ar",
+    19: "K", 20: "Ca", 21: "Sc", 22: "Ti", 23: "V", 24: "Cr", 25: "Mn", 26: "Fe",
+    27: "Co", 28: "Ni", 29: "Cu", 30: "Zn", 31: "Ga", 32: "Ge", 33: "As", 34: "Se",
+    35: "Br", 36: "Kr", 37: "Rb", 38: "Sr", 39: "Y", 40: "Zr", 41: "Nb", 42: "Mo",
+    43: "Tc", 44: "Ru", 45: "Rh", 46: "Pd", 47: "Ag", 48: "Cd", 49: "In", 50: "Sn",
+    51: "Sb", 52: "Te", 53: "I", 54: "Xe",
+}
+
+
+def _atomic_nums_to_symbols(atomic_nums: torch.Tensor) -> list[str]:
+    """Convert atomic numbers tensor to list of element symbols."""
+    nums = atomic_nums.detach().cpu().tolist()
+    if isinstance(nums, int):
+        nums = [nums]
+    return [Z_TO_SYMBOL.get(int(z), "X") for z in nums]
+
+
 def _step_metrics_from_projected_hessian(
     *,
     forces: torch.Tensor,
@@ -202,8 +225,29 @@ def compute_gad_vector_projected_tracked(
     k_track: int = 8,
     beta: float = 1.0,
     tr_threshold: float = 1e-6,
+    coords: torch.Tensor | None = None,
+    atomsymbols: list[str] | None = None,
+    project_gradient_and_v: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor, dict[str, float]]:
-    """GAD direction using projected Hessian with mode tracking."""
+    """GAD direction using projected Hessian with mode tracking.
+
+    Args:
+        forces: (N, 3) or (1, N, 3) forces (negative gradient)
+        hessian_proj: (3N, 3N) already projected Hessian
+        v_prev: Previous guide vector for mode tracking
+        k_track: Number of lowest modes to track among
+        beta: Smoothing factor for mode tracking
+        tr_threshold: Threshold for filtering TR modes
+        coords: (N, 3) coordinates - REQUIRED if project_gradient_and_v=True
+        atomsymbols: List of atom symbols - REQUIRED if project_gradient_and_v=True
+        project_gradient_and_v: If True, also project gradient and guide vector v
+            to prevent leakage into TR space (recommended for GAD stability)
+
+    Returns:
+        gad_vec: (N, 3) GAD direction
+        v_next: (3N,) tracked mode for next step
+        info: dict with mode tracking info
+    """
     if forces.dim() == 3 and forces.shape[0] == 1:
         forces = forces[0]
     forces = forces.reshape(-1, 3)
@@ -231,6 +275,23 @@ def compute_gad_vector_projected_tracked(
     else:
         v = v_new
 
+    # ---- Full projection mode (prevents TR leakage) ----
+    if project_gradient_and_v and coords is not None and atomsymbols is not None:
+        # Use the full GAD dynamics with projected gradient and guide vector
+        gad_vec, v_proj, proj_info = gad_dynamics_projected_torch(
+            coords=coords.reshape(-1, 3),
+            forces=forces,
+            v=v,
+            atomsymbols=atomsymbols,
+        )
+        v_next = v_proj.detach().clone().reshape(-1)
+        return gad_vec, v_next, {
+            "mode_overlap": float(overlap),
+            "mode_index": float(j),
+            **proj_info,
+        }
+
+    # ---- Original (unprojected gradient/v) mode ----
     f_flat = forces.reshape(-1)
     gad_flat = f_flat + 2.0 * torch.dot(-f_flat, v) * v
     gad_vec = gad_flat.view(num_atoms, 3)
@@ -330,10 +391,29 @@ def gad_euler_step_projected(
     v_prev: torch.Tensor | None = None,
     k_track: int = 8,
     beta: float = 1.0,
+    project_gradient_and_v: bool = False,
+    atomsymbols: Optional[list[str]] = None,
 ) -> Dict[str, Any]:
     """GAD Euler step using PROJECTED Hessian for eigenvector computation.
 
     This is the Eckart-MW variant of gad_euler_step.
+
+    Args:
+        predict_fn: Energy/forces/hessian prediction function
+        coords: (N, 3) or (1, N, 3) coordinates
+        atomic_nums: Atomic numbers tensor
+        dt: Time step for Euler integration
+        out: Optional cached prediction output
+        scine_elements: SCINE element types (if using SCINE)
+        v_prev: Previous guide vector for mode tracking
+        k_track: Number of lowest modes to track among
+        beta: Smoothing factor for mode tracking
+        project_gradient_and_v: If True, project gradient and guide vector v
+            to prevent leakage into TR space (recommended for stability)
+        atomsymbols: List of atom symbols - REQUIRED if project_gradient_and_v=True
+
+    Returns:
+        Dict with new_coords, gad_vec, out, hessian_proj, v_next, mode info
     """
     if coords.dim() == 3 and coords.shape[0] == 1:
         coords = coords[0]
@@ -355,6 +435,9 @@ def gad_euler_step_projected(
         v_prev,
         k_track=k_track,
         beta=beta,
+        coords=coords if project_gradient_and_v else None,
+        atomsymbols=atomsymbols,
+        project_gradient_and_v=project_gradient_and_v,
     )
     new_coords = coords + dt * gad_vec
 
@@ -625,6 +708,8 @@ def run_multi_mode_escape(
     # Early stopping parameters
     early_stop_patience: int = 0,  # 0 = disabled, else stop if neg_vib unchanged for this many steps
     early_stop_min_steps: int = 100,  # Don't early stop before this many steps
+    # Full projection parameters (prevents TR leakage)
+    project_gradient_and_v: bool = False,  # Project gradient and guide vector v
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """Run GAD with multi-mode escape mechanism.
 
@@ -644,6 +729,9 @@ def run_multi_mode_escape(
       steps (i.e., no progress in reducing negative eigenvalue count).
     """
     coords = coords0.detach().clone().to(torch.float32)
+
+    # Get atom symbols for full projection (HIP path)
+    atomsymbols = _atomic_nums_to_symbols(atomic_nums) if project_gradient_and_v else None
 
     trajectory = {k: [] for k in [
         "energy",
@@ -723,6 +811,8 @@ def run_multi_mode_escape(
                 v_prev=v_prev,
                 k_track=8,
                 beta=1.0,
+                project_gradient_and_v=project_gradient_and_v,
+                atomsymbols=atomsymbols,
             )
             gad_vec = step_out["gad_vec"]
             v_prev = step_out.get("v_next")
@@ -1046,6 +1136,16 @@ def main(
         help="Maximum number of escape attempts. Set high to let n_steps be the limiting factor.",
     )
 
+    # Full Eckart projection for gradient and guide vector (prevents TR leakage)
+    parser.add_argument(
+        "--project-gradient-and-v",
+        action="store_true",
+        default=False,
+        help="Project gradient and guide vector v to vibrational subspace. "
+             "This prevents dynamics from leaking into translation/rotation space "
+             "(recommended for better GAD stability, but slightly slower).",
+    )
+
     parser.add_argument("--wandb", action="store_true")
     parser.add_argument("--wandb-project", type=str, default="noisy-multi-mode-eckartmw")
     parser.add_argument("--wandb-entity", type=str, default=None)
@@ -1109,6 +1209,7 @@ def main(
             "adaptive_delta": args.adaptive_delta,
             "min_interatomic_dist": args.min_interatomic_dist,
             "max_escape_cycles": args.max_escape_cycles,
+            "project_gradient_and_v": args.project_gradient_and_v,
         }
         wandb_name = args.wandb_name
         if not wandb_name:
@@ -1177,6 +1278,7 @@ def main(
                 min_interatomic_dist=float(args.min_interatomic_dist),
                 max_escape_cycles=int(args.max_escape_cycles),
                 profile_every=int(args.profile_every),
+                project_gradient_and_v=bool(args.project_gradient_and_v),
             )
             wall = time.time() - t0
         except Exception as e:

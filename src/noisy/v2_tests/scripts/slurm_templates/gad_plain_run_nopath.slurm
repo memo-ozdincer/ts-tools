@@ -72,7 +72,7 @@ TR_THRESHOLD="${TR_THRESHOLD:-1e-6}"
 # Eckart projection options
 # Set to "true" to enable full projection (gradient + guide vector v)
 # This prevents TR leakage and improves numerical stability
-# Submit with: PROJECT_GRADIENT_AND_V=true sbatch gad_plain_run.slurm
+# Submit with: PROJECT_GRADIENT_AND_V=true sbatch gad_plain_run_nopath.slurm
 PROJECT_GRADIENT_AND_V="${PROJECT_GRADIENT_AND_V:-false}"
 
 export PYTHONPATH="$PROJECT_DIR:$PYTHONPATH"
