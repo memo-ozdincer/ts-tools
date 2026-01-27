@@ -24,8 +24,8 @@ warnings.filterwarnings("ignore")
 from src.noisy.v2_tests.runners.run_with_diagnostics import run_multi_mode_with_diagnostics
 
 from src.dependencies.common_utils import Transition1xDataset, UsePos, parse_starting_geometry
-from src.noisy.parallel.scine_parallel import ParallelSCINEProcessor
-from src.noisy.parallel.utils import run_batch_parallel
+from src.parallel.scine_parallel import ParallelSCINEProcessor
+from src.parallel.utils import run_batch_parallel
 
 try:
     import wandb
