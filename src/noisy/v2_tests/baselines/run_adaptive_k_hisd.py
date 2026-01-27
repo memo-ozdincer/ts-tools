@@ -1,35 +1,37 @@
 """Adaptive k-HiSD runner with diagnostic logging.
 
-Unlike standard GAD + v₂ kicking, this uses the theoretically-justified
-adaptive k-HiSD algorithm from the iHiSD paper:
+**CORRECTED IMPLEMENTATION**
 
-1. At each step, compute Morse index k (count of negative eigenvalues)
-2. Use k-HiSD direction: -R∇E where R = I - 2∑ᵢ₌₁ᵏ vᵢvᵢᵀ
-3. This makes index-k saddles unstable, allowing descent to index-(k-1)
-4. Eventually converge to index-1 transition state
+The key insight from iHiSD Theorem 3.2:
+    "Index-k saddles are STABLE fixed points of k-HiSD"
 
-Key difference from v₂ kicking:
-- v₂ kick: only perturbs along 2nd mode (works for index-2, not index-5)
-- Adaptive k-HiSD: reflects along ALL k negative modes continuously
+This means:
+- k-HiSD with k = Morse index STABILIZES the current saddle (WRONG!)
+- k-HiSD with k < Morse index makes the current saddle UNSTABLE (CORRECT!)
 
-Per iHiSD Theorem 3.2:
-- k-HiSD is stable at index-k saddles
-- To descend from index-k, you NEED k reflections
+**Correct Algorithm**:
+1. Start with k=1 (same as GAD, targets index-1 saddles)
+2. Take k-HiSD steps normally
+3. When STUCK (grad small but Morse index > k):
+   - Increase k by 1
+   - This makes the current high-index saddle UNSTABLE
+   - We escape and continue
+4. Eventually reach index-1 where k=1 is stable
+
+Note: 1-HiSD IS mathematically identical to GAD:
+    1-HiSD: -R∇E = -(I - 2v₁v₁ᵀ)∇E = -∇E + 2(v₁ᵀ∇E)v₁ = GAD direction
 """
 
 from __future__ import annotations
 
-import argparse
-import json
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 import torch
 
 # Import existing components
-from src.core_algos.gad import pick_tracked_mode
 from src.dependencies.hessian import (
     vibrational_eigvals,
     get_scine_elements_from_predict_output,
@@ -39,13 +41,11 @@ from src.dependencies.hessian import (
 from src.noisy.multi_mode_eckartmw import (
     get_projected_hessian,
     _force_mean,
-    _mean_atom_norm,
-    _max_atom_norm,
     _to_float,
 )
 
-# Import k-HiSD
-from .k_hisd import adaptive_k_hisd_step, compute_adaptive_k
+# Import k-HiSD with corrected logic
+from .k_hisd import adaptive_k_hisd_step, AdaptiveKState
 
 # Import logging infrastructure
 from ..logging import TrajectoryLogger
@@ -64,8 +64,9 @@ def run_adaptive_k_hisd(
     dt_max: float,
     max_atom_disp: Optional[float],
     tr_threshold: float = 1e-6,
-    min_k: int = 1,
-    max_k: Optional[int] = None,
+    neg_threshold: float = -1e-4,
+    grad_stuck_threshold: float = 1e-4,
+    stuck_threshold_steps: int = 10,
     # Adaptive dt control
     dt_control: str = "adaptive",
     dt_grow_factor: float = 1.1,
@@ -75,12 +76,11 @@ def run_adaptive_k_hisd(
     formula: str = "",
     known_ts_coords: Optional[torch.Tensor] = None,
 ) -> Tuple[Dict[str, Any], TrajectoryLogger]:
-    """Run adaptive k-HiSD with comprehensive diagnostic logging.
+    """Run CORRECTED adaptive k-HiSD with diagnostic logging.
 
-    Unlike GAD + v₂ kicking:
-    - No explicit "escape" mechanism needed
-    - Continuously uses k-HiSD where k = Morse index
-    - Naturally descends from high-index saddles
+    Key difference from old implementation:
+    - OLD: k = Morse index always → STABILIZES current saddle (wrong!)
+    - NEW: k starts at 1, increases when stuck → DESTABILIZES current saddle
 
     Args:
         predict_fn: Energy/force/Hessian prediction function
@@ -94,11 +94,12 @@ def run_adaptive_k_hisd(
         dt_max: Maximum timestep
         max_atom_disp: Maximum per-atom displacement per step
         tr_threshold: Threshold for TR mode filtering
-        min_k: Minimum k to use (1 = standard GAD behavior at index-1)
-        max_k: Maximum k to use (None = no limit)
+        neg_threshold: Threshold for "negative" eigenvalue
+        grad_stuck_threshold: Gradient norm threshold for "stuck" detection
+        stuck_threshold_steps: Steps stuck before increasing k
         dt_control: "fixed" or "adaptive"
-        dt_grow_factor: Factor to grow dt when index decreases
-        dt_shrink_factor: Factor to shrink dt when index increases
+        dt_grow_factor: Factor to grow dt when making progress
+        dt_shrink_factor: Factor to shrink dt when regressing
         sample_id: Sample identifier for logging
         formula: Chemical formula for logging
         known_ts_coords: Known TS for validation
@@ -108,16 +109,28 @@ def run_adaptive_k_hisd(
         trajectory_logger: Full diagnostic data
     """
     coords = coords0.detach().clone().to(torch.float32)
+    if coords.dim() == 3 and coords.shape[0] == 1:
+        coords = coords[0]
+    coords = coords.reshape(-1, 3)
 
     # Initialize trajectory logger
     logger = TrajectoryLogger(sample_id=sample_id, formula=formula)
     logger.known_ts_coords = known_ts_coords
 
+    # Initialize ADAPTIVE STATE - starts at k=1
+    state = AdaptiveKState(
+        k=1,  # START AT k=1 (GAD behavior)
+        k_target=1,  # We want index-1 saddles
+        stuck_counter=0,
+        stuck_threshold=stuck_threshold_steps,
+    )
+
     # Trajectory storage
     trajectory = {k: [] for k in [
         "energy", "force_mean", "eig0", "eig1", "eig_product", "neg_vib",
         "disp_from_last", "disp_from_start", "dt_eff", "gad_norm",
-        "k_used", "morse_index", "direction_type",
+        "k_used", "k_next", "morse_index", "direction_type",
+        "stuck", "stuck_counter", "k_increased",
         # Extended eigenvalue spectrum
         "eig_0", "eig_1", "eig_2", "eig_3", "eig_4", "eig_5",
     ]}
@@ -125,7 +138,8 @@ def run_adaptive_k_hisd(
     start_pos = coords.clone()
     prev_pos = coords.clone()
     prev_energy = None
-    prev_k = None
+    prev_morse_index = None
+    disp_history: list[float] = []
 
     steps_to_ts: Optional[int] = None
     total_steps = 0
@@ -146,15 +160,16 @@ def run_adaptive_k_hisd(
         # Get projected Hessian
         hess_proj = get_projected_hessian(hessian, coords, atomic_nums, scine_elements=scine_elements)
 
-        # Take adaptive k-HiSD step
-        new_coords, step_info = adaptive_k_hisd_step(
+        # Take adaptive k-HiSD step with STATE TRACKING
+        new_coords, step_info, new_state = adaptive_k_hisd_step(
             coords,
             forces,
             hess_proj,
             dt_eff,
+            state,  # Pass current state
             tr_threshold=tr_threshold,
-            min_k=min_k,
-            max_k=max_k,
+            neg_threshold=neg_threshold,
+            grad_stuck_threshold=grad_stuck_threshold,
         )
 
         k_used = step_info["k_used"]
@@ -184,26 +199,34 @@ def run_adaptive_k_hisd(
         trajectory["dt_eff"].append(dt_eff)
         trajectory["gad_norm"].append(gad_norm)
         trajectory["k_used"].append(k_used)
+        trajectory["k_next"].append(step_info["k_next"])
         trajectory["morse_index"].append(morse_index)
         trajectory["direction_type"].append(step_info["direction_type"])
+        trajectory["stuck"].append(step_info["stuck"])
+        trajectory["stuck_counter"].append(step_info["stuck_counter"])
+        trajectory["k_increased"].append(step_info["k_increased"])
 
         # Extended spectrum
         for i in range(6):
             key = f"eig_{i}"
             trajectory[key].append(eig_spectrum[i] if i < len(eig_spectrum) else float("nan"))
 
-        # Log to TrajectoryLogger for extended metrics
-        # (Simplified - full logging would compute all ExtendedMetrics)
+        if total_steps > 0:
+            disp_history.append(disp_from_last)
+        x_disp_window = float(np.mean(disp_history[-10:])) if disp_history else float("nan")
+
+        # Log to TrajectoryLogger
         logger.log_step(
             step=total_steps,
             coords=coords,
             energy=energy_value,
             forces=forces,
             hessian_proj=hess_proj,
-            gad_vec=forces,  # Placeholder - actual direction is k-HiSD
+            gad_vec=forces,  # Placeholder
             dt_eff=dt_eff,
             coords_prev=prev_pos if total_steps > 0 else None,
             energy_prev=prev_energy,
+            x_disp_window=x_disp_window,
         )
 
         # Check for TS (index = 1 and product condition)
@@ -213,11 +236,11 @@ def run_adaptive_k_hisd(
                 break
 
         # Adaptive dt control
-        if dt_control == "adaptive" and prev_k is not None:
-            if morse_index < prev_k:
+        if dt_control == "adaptive" and prev_morse_index is not None:
+            if morse_index < prev_morse_index:
                 # Index decreased - good progress, grow dt
                 dt_eff = min(dt_eff * dt_grow_factor, dt_max)
-            elif morse_index > prev_k:
+            elif morse_index > prev_morse_index:
                 # Index increased - shrink dt
                 dt_eff = max(dt_eff * dt_shrink_factor, dt_min)
 
@@ -232,7 +255,8 @@ def run_adaptive_k_hisd(
         # Update state
         prev_pos = coords.clone()
         prev_energy = energy_value
-        prev_k = morse_index
+        prev_morse_index = morse_index
+        state = new_state  # Update adaptive state
         coords = new_coords.detach()
         total_steps += 1
 
@@ -253,6 +277,10 @@ def run_adaptive_k_hisd(
         converged_to_ts=(steps_to_ts is not None) or (final_neg_vib == 1),
     )
 
+    # Count k increases
+    k_increases = sum(1 for k_inc in trajectory["k_increased"] if k_inc)
+    max_k_used = max(trajectory["k_used"]) if trajectory["k_used"] else 1
+
     final_out_dict = {
         "final_coords": coords.detach().cpu(),
         "trajectory": trajectory,
@@ -263,7 +291,10 @@ def run_adaptive_k_hisd(
         "final_eig_product": trajectory["eig_product"][-1] if trajectory["eig_product"] else None,
         "final_neg_vibrational": final_neg_vib,
         "total_steps": total_steps,
-        "algorithm": "adaptive_k_hisd",
+        "final_k": state.k,
+        "k_increases": k_increases,
+        "max_k_used": max_k_used,
+        "algorithm": "adaptive_k_hisd_corrected",
     }
 
     return final_out_dict, logger
@@ -279,21 +310,7 @@ def run_single_sample_adaptive_k_hisd(
     formula: str,
     out_dir: str,
 ) -> Dict[str, Any]:
-    """Run adaptive k-HiSD on a single sample with diagnostics.
-
-    Args:
-        predict_fn: Prediction function
-        coords: Starting coordinates
-        atomic_nums: Atomic numbers
-        params: Algorithm parameters
-        n_steps: Max steps
-        sample_id: Sample identifier
-        formula: Chemical formula
-        out_dir: Output directory
-
-    Returns:
-        Result dictionary
-    """
+    """Run adaptive k-HiSD on a single sample with diagnostics."""
     t0 = time.time()
 
     diag_dir = Path(out_dir) / "diagnostics"
@@ -309,11 +326,12 @@ def run_single_sample_adaptive_k_hisd(
             stop_at_ts=params.get("stop_at_ts", True),
             ts_eps=params.get("ts_eps", 1e-5),
             dt_min=params.get("dt_min", 1e-6),
-            dt_max=params.get("dt_max", 0.05),
-            max_atom_disp=params.get("max_atom_disp", 0.25),
+            dt_max=params.get("dt_max", 0.08),
+            max_atom_disp=params.get("max_atom_disp", 0.35),
             tr_threshold=params.get("tr_threshold", 1e-6),
-            min_k=params.get("min_k", 1),
-            max_k=params.get("max_k", None),
+            neg_threshold=params.get("neg_threshold", -1e-4),
+            grad_stuck_threshold=params.get("grad_stuck_threshold", 1e-4),
+            stuck_threshold_steps=params.get("stuck_threshold_steps", 10),
             dt_control=params.get("dt_control", "adaptive"),
             dt_grow_factor=params.get("dt_grow_factor", 1.1),
             dt_shrink_factor=params.get("dt_shrink_factor", 0.5),
@@ -336,7 +354,10 @@ def run_single_sample_adaptive_k_hisd(
             "success": final_neg_vib == 1,
             "wall_time": wall_time,
             "error": None,
-            "algorithm": "adaptive_k_hisd",
+            "algorithm": "adaptive_k_hisd_corrected",
+            "k_increases": out_dict.get("k_increases", 0),
+            "max_k_used": out_dict.get("max_k_used", 1),
+            "final_k": out_dict.get("final_k", 1),
         }
 
     except Exception as e:
@@ -348,5 +369,8 @@ def run_single_sample_adaptive_k_hisd(
             "success": False,
             "wall_time": wall_time,
             "error": str(e),
-            "algorithm": "adaptive_k_hisd",
+            "algorithm": "adaptive_k_hisd_corrected",
+            "k_increases": 0,
+            "max_k_used": 0,
+            "final_k": 1,
         }

@@ -294,6 +294,13 @@ def run_multi_mode_with_diagnostics(
         disp_from_start = float((coords - start_pos).norm(dim=1).mean().item()) if total_steps > 0 else 0.0
         gad_norm = _mean_atom_norm(gad_vec)
 
+        disp_window_vals = (disp_history + [disp_from_last]) if total_steps > 0 else []
+        x_disp_window = (
+            float(np.mean(disp_window_vals[-escape_window:]))
+            if disp_window_vals
+            else float("nan")
+        )
+
         # Log to trajectory logger (extended logging)
         logger.log_step(
             step=total_steps,
@@ -305,6 +312,8 @@ def run_multi_mode_with_diagnostics(
             dt_eff=dt_eff_state,
             coords_prev=prev_pos if total_steps > 0 else None,
             energy_prev=prev_energy,
+            mode_index=step_info.get("mode_index"),
+            x_disp_window=x_disp_window,
         )
 
         # Update rolling history

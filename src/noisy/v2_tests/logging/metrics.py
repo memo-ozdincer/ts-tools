@@ -85,6 +85,7 @@ class ExtendedMetrics:
     grad_norm: float           # ‖∇E‖
     step_size_eff: float       # effective dt after capping
     x_disp_step: float         # ‖x(t) - x(t-dt)‖
+    x_disp_window: float = float("nan")  # mean displacement over last N steps
 
     # Position/Energy
     energy: float
@@ -119,6 +120,7 @@ class ExtendedMetrics:
             "grad_norm": self.grad_norm,
             "step_size_eff": self.step_size_eff,
             "x_disp_step": self.x_disp_step,
+            "x_disp_window": self.x_disp_window,
             "energy": self.energy,
             "energy_delta": self.energy_delta,
             "dist_to_ts": self.dist_to_ts,
@@ -162,6 +164,8 @@ def compute_extended_metrics(
     gad_vec: torch.Tensor,
     v_prev: Optional[torch.Tensor],
     dt_eff: float,
+    mode_index: Optional[int] = None,
+    x_disp_window: Optional[float] = None,
     *,
     tr_threshold: float = 1e-6,
     n_eigs_to_compute: int = 6,
@@ -289,6 +293,7 @@ def compute_extended_metrics(
     # Find which mode index v1 corresponds to (for mode_index tracking)
     # This is the index within the vibrational subspace
     mode_index = 0  # Always tracking lowest vibrational mode
+    mode_index = int(mode_index) if mode_index is not None else 0
 
     # Displacement
     if coords_prev is not None:
@@ -368,6 +373,7 @@ def compute_eigenvalue_spectrum(
 def compute_morse_index(
     hessian_proj: torch.Tensor,
     tr_threshold: float = 1e-6,
+        x_disp_window=float(x_disp_window) if x_disp_window is not None else float("nan"),
 ) -> int:
     """Compute Morse index (count of negative vibrational eigenvalues).
 
