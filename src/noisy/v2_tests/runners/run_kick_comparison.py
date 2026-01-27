@@ -115,6 +115,7 @@ def run_gad_with_kick_strategy(
     escape_delta: float = 0.3,
     max_escape_cycles: int = 500,
     min_interatomic_dist: float = 0.5,
+    force_escape_after: Optional[int] = None,
     # Convergence
     ts_eps: float = 1e-5,
     stop_at_ts: bool = True,
@@ -162,6 +163,7 @@ def run_gad_with_kick_strategy(
         best_neg_vib = None
         no_improve = 0
         plateau_patience = 20
+        last_escape_step = -1
 
         while escape_cycle < max_escape_cycles and total_steps < n_steps:
             # Get energy, forces, Hessian
@@ -245,6 +247,16 @@ def run_gad_with_kick_strategy(
                 disp_threshold=escape_disp_threshold,
                 neg_vib_std_threshold=escape_neg_vib_std,
             )
+            trigger_reason = "displacement_plateau"
+
+            if (
+                not is_plateau
+                and force_escape_after is not None
+                and total_steps - last_escape_step >= int(force_escape_after)
+                and int(neg_vib) > 1
+            ):
+                is_plateau = True
+                trigger_reason = "forced_escape_after"
 
             if is_plateau:
                 # Perform escape using specified strategy
@@ -290,7 +302,7 @@ def run_gad_with_kick_strategy(
                     escape_event = create_escape_event(
                         step=total_steps,
                         escape_cycle=escape_cycle,
-                        trigger_reason="displacement_plateau",
+                        trigger_reason=trigger_reason,
                         pre_hessian_proj=hess_proj,
                         pre_forces=forces,
                         pre_energy=energy,
@@ -319,6 +331,7 @@ def run_gad_with_kick_strategy(
 
                 coords = new_coords.detach()
                 escape_cycle += 1
+                last_escape_step = total_steps
                 dt_eff = dt  # Reset dt
                 disp_history.clear()
                 neg_vib_history.clear()

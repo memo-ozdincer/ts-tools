@@ -71,6 +71,7 @@ ESCAPE_DELTA="${ESCAPE_DELTA:-0.3}"
 MAX_ESCAPE_CYCLES="${MAX_ESCAPE_CYCLES:-500}"
 MIN_INTERATOMIC_DIST="${MIN_INTERATOMIC_DIST:-0.5}"
 TS_EPS="${TS_EPS:-1e-5}"
+FORCE_ESCAPE_AFTER="${FORCE_ESCAPE_AFTER:-2000}"
 
 export PYTHONPATH="$PROJECT_DIR:$PYTHONPATH"
 
@@ -99,4 +100,5 @@ python "$PROJECT_DIR/src/noisy/v2_tests/runners/run_kick_comparison_parallel.py"
     --escape-delta "$ESCAPE_DELTA" \
     --max-escape-cycles "$MAX_ESCAPE_CYCLES" \
     --min-interatomic-dist "$MIN_INTERATOMIC_DIST" \
-    --ts-eps "$TS_EPS"
+    --ts-eps "$TS_EPS" \
+    --force-escape-after "$FORCE_ESCAPE_AFTER"

@@ -15,7 +15,7 @@ set -e
 PROJECT_DIR="/h/327/memo/project/memo/ts-tools"
 VENV_DIR="${PROJECT_DIR}/.venv"
 PYTHON_VERSION="3.11"
-SCRATCH_DIR="/scratch/${USER}/ts-tools-scratch"
+SCRATCH_DIR="/scratch/memo/ts-tools-scratch"
 
 # --- Script Start ---
 echo ">>> Starting job on node $(hostname)"
@@ -53,7 +53,7 @@ export VECLIB_MAXIMUM_THREADS="$TOTAL_CPUS"
 export MPLBACKEND=Agg
 
 # Data paths
-H5_PATH="${H5_PATH:/h/327/memo/large-files/data/transition1x.h5}"
+H5_PATH="${H5_PATH:/scratch/memo/ts-tools-scratch/data/transition1x.h5}"
 OUT_DIR="${SCRATCH_DIR}/runs/gad_mode_tracked_${SLURM_JOB_ID}"
 
 mkdir -p "$OUT_DIR"

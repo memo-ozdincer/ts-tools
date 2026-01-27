@@ -68,6 +68,7 @@ def run_single_sample(
             escape_delta=params["escape_delta"],
             max_escape_cycles=params["max_escape_cycles"],
             min_interatomic_dist=params["min_interatomic_dist"],
+            force_escape_after=params.get("force_escape_after"),
             ts_eps=params["ts_eps"],
             stop_at_ts=params["stop_at_ts"],
             sample_id=sample_id,
@@ -185,6 +186,7 @@ def main() -> None:
     parser.add_argument("--escape-delta", type=float, default=0.3)
     parser.add_argument("--max-escape-cycles", type=int, default=500)
     parser.add_argument("--min-interatomic-dist", type=float, default=0.5)
+    parser.add_argument("--force-escape-after", type=int, default=None)
 
     parser.add_argument("--ts-eps", type=float, default=1e-5)
     parser.add_argument("--stop-at-ts", action="store_true")
@@ -210,6 +212,7 @@ def main() -> None:
         "escape_delta": args.escape_delta,
         "max_escape_cycles": args.max_escape_cycles,
         "min_interatomic_dist": args.min_interatomic_dist,
+        "force_escape_after": args.force_escape_after,
         "ts_eps": args.ts_eps,
         "stop_at_ts": args.stop_at_ts,
         "log_dir": str(diag_dir),

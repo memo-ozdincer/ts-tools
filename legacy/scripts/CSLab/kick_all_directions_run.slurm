@@ -9,13 +9,12 @@
 #SBATCH --mem=64G
 #SBATCH --output=logs/kick_all_dirs_%j.out
 #SBATCH --error=logs/kick_all_dirs_%j.err
-
 # --- Configuration ---
 set -e
-PROJECT_DIR="/h/327/memo/ts-tools"
+PROJECT_DIR="/h/327/memo/project/memo/ts-tools"
 VENV_DIR="${PROJECT_DIR}/.venv"
 PYTHON_VERSION="3.11"
-SCRATCH_DIR="/scratch/${USER}/ts-tools-scratch"
+SCRATCH_DIR="/scratch/memo/ts-tools-scratch"
 
 # --- Script Start ---
 echo ">>> Starting job on node $(hostname)"
@@ -53,8 +52,8 @@ export VECLIB_MAXIMUM_THREADS="$TOTAL_CPUS"
 export MPLBACKEND=Agg
 
 # Data paths
-H5_PATH="${H5_PATH:-/project/memo/data/transition1x.h5}"
-OUT_DIR="${SCRATCH_DIR}/runs/kick_all_dirs_${SLURM_JOB_ID}"
+H5_PATH="${H5_PATH:/scratch/memo/ts-tools-scratch/data/transition1x.h5}"
+OUT_DIR="${SCRATCH_DIR}/runs/gad_mode_tracked_${SLURM_JOB_ID}"
 
 mkdir -p "$OUT_DIR"
 
