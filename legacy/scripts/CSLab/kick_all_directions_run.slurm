@@ -12,7 +12,7 @@
 
 # --- Configuration ---
 set -e
-PROJECT_DIR="/project/memo/code/ts-tools"
+PROJECT_DIR="/h/327/memo/ts-tools"
 VENV_DIR="${PROJECT_DIR}/.venv"
 PYTHON_VERSION="3.11"
 SCRATCH_DIR="/scratch/${USER}/ts-tools-scratch"
