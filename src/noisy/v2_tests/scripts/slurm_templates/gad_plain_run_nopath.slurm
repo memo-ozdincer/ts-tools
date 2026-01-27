@@ -60,7 +60,7 @@ START_FROM="${START_FROM:-midpoint_rt_noise2.0A}"
 NOISE_SEED="${NOISE_SEED:-42}"
 SCINE_FUNCTIONAL="${SCINE_FUNCTIONAL:-DFTB0}"
 
-DT="${DT:-0.00005}"
+DT="${DT:-0.02}"
 # Adaptive dt strategies (state-based only, no path information):
 # - none: fixed timestep
 # - gradient: dt_eff = clamp(dt_base * scale_factor / (grad_norm + eps), dt_min, dt_max)
