@@ -53,7 +53,7 @@ export VECLIB_MAXIMUM_THREADS="$TOTAL_CPUS"
 export MPLBACKEND=Agg
 
 # Data paths
-H5_PATH="${H5_PATH:-/project/memo/data/transition1x.h5}"
+H5_PATH="${H5_PATH:/h/327/memo/large-files/data/transition1x.h5}"
 OUT_DIR="${SCRATCH_DIR}/runs/gad_fixed_dt_${SLURM_JOB_ID}"
 
 mkdir -p "$OUT_DIR"
