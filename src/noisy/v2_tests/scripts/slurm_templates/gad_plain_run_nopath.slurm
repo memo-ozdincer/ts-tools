@@ -61,9 +61,14 @@ NOISE_SEED="${NOISE_SEED:-42}"
 SCINE_FUNCTIONAL="${SCINE_FUNCTIONAL:-DFTB0}"
 
 DT="${DT:-0.00005}"
-DT_CONTROL="${DT_CONTROL:-adaptive}"
+# Adaptive dt strategies (state-based only, no path information):
+# - none: fixed timestep
+# - gradient: dt_eff = clamp(dt_base * scale_factor / (grad_norm + eps), dt_min, dt_max)
+# - eigenvalue: dt_eff = clamp(dt_base * scale_factor / (|eig_0| + eps), dt_min, dt_max)
+DT_ADAPTATION="${DT_ADAPTATION:-gradient}"
 DT_MIN="${DT_MIN:-1e-6}"
 DT_MAX="${DT_MAX:-0.08}"
+DT_SCALE_FACTOR="${DT_SCALE_FACTOR:-1.0}"
 MAX_ATOM_DISP="${MAX_ATOM_DISP:-0.35}"
 MIN_INTERATOMIC_DIST="${MIN_INTERATOMIC_DIST:-0.5}"
 TS_EPS="${TS_EPS:-1e-5}"
@@ -93,9 +98,10 @@ python "$PROJECT_DIR/src/noisy/v2_tests/runners/run_gad_baselines_parallel_nopat
     --threads-per-worker "$THREADS_PER_WORKER" \
     --baseline plain \
     --dt "$DT" \
-    --dt-control "$DT_CONTROL" \
+    --dt-adaptation "$DT_ADAPTATION" \
     --dt-min "$DT_MIN" \
     --dt-max "$DT_MAX" \
+    --dt-scale-factor "$DT_SCALE_FACTOR" \
     --max-atom-disp "$MAX_ATOM_DISP" \
     --min-interatomic-dist "$MIN_INTERATOMIC_DIST" \
     --ts-eps "$TS_EPS" \

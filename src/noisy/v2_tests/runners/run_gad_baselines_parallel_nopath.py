@@ -26,8 +26,9 @@ from torch_geometric.loader import DataLoader
 
 from src.core_algos.gad import pick_tracked_mode
 from src.dependencies.common_utils import Transition1xDataset, UsePos, parse_starting_geometry
+from src.dependencies.differentiable_projection import gad_dynamics_projected_torch
 from src.dependencies.hessian import get_scine_elements_from_predict_output, prepare_hessian
-from src.noisy.multi_mode_eckartmw import get_projected_hessian, _min_interatomic_distance
+from src.noisy.multi_mode_eckartmw import get_projected_hessian, _min_interatomic_distance, _atomic_nums_to_symbols
 from src.noisy.v2_tests.logging import TrajectoryLogger
 from src.parallel.scine_parallel import ParallelSCINEProcessor
 from src.parallel.utils import run_batch_parallel
@@ -106,6 +107,7 @@ def run_gad_baseline(
     min_interatomic_dist: float,
     tr_threshold: float,
     track_mode: bool,
+    project_gradient_and_v: bool,
     log_dir: Optional[str],
     sample_id: str,
     formula: str,
@@ -156,9 +158,20 @@ def run_gad_baseline(
         v_new, mode_index, _overlap = pick_tracked_mode(V, v_prev_local, k=int(V.shape[1]))
         v = v_new
 
+        # Compute GAD direction with optional vector projection
         f_flat = forces.reshape(-1)
-        gad_flat = f_flat + 2.0 * torch.dot(-f_flat, v) * v
-        gad_vec = gad_flat.view(num_atoms, 3)
+        if project_gradient_and_v:
+            atomsymbols = _atomic_nums_to_symbols(atomic_nums)
+            gad_vec, v_proj, _proj_info = gad_dynamics_projected_torch(
+                coords=coords,
+                forces=forces,
+                v=v,
+                atomsymbols=atomsymbols,
+            )
+            v = v_proj.reshape(-1)  # Update v with projected version
+        else:
+            gad_flat = f_flat + 2.0 * torch.dot(-f_flat, v) * v
+            gad_vec = gad_flat.view(num_atoms, 3)
 
         if track_mode:
             v_prev = v.detach().clone().reshape(-1)
@@ -274,6 +287,7 @@ def run_single_sample(
             min_interatomic_dist=params["min_interatomic_dist"],
             tr_threshold=params["tr_threshold"],
             track_mode=params["track_mode"],
+            project_gradient_and_v=params["project_gradient_and_v"],
             log_dir=params.get("log_dir"),
             sample_id=sample_id,
             formula=formula,
@@ -403,6 +417,13 @@ def main() -> None:
     parser.add_argument("--ts-eps", type=float, default=1e-5)
     parser.add_argument("--tr-threshold", type=float, default=1e-6)
 
+    parser.add_argument(
+        "--project-gradient-and-v",
+        action="store_true",
+        default=False,
+        help="Project gradient and guide vector to prevent TR leakage (recommended for stability)",
+    )
+
     parser.add_argument("--stop-at-ts", action="store_true")
     parser.add_argument("--no-stop-at-ts", dest="stop_at_ts", action="store_false")
     parser.set_defaults(stop_at_ts=True)
@@ -426,6 +447,7 @@ def main() -> None:
         "ts_eps": args.ts_eps,
         "tr_threshold": args.tr_threshold,
         "track_mode": track_mode,
+        "project_gradient_and_v": args.project_gradient_and_v,
         "stop_at_ts": args.stop_at_ts,
         "log_dir": str(diag_dir),
     }
