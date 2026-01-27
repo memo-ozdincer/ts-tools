@@ -56,7 +56,7 @@ mkdir -p "$OUT_DIR"
 # =============================================================================
 N_STEPS="${N_STEPS:-10000}"
 MAX_SAMPLES="${MAX_SAMPLES:-20}"
-START_FROM="${START_FROM:-midpoint_rt_noise1.0A}"
+START_FROM="${START_FROM:-midpoint_rt_noise2.0A}"
 NOISE_SEED="${NOISE_SEED:-42}"
 SCINE_FUNCTIONAL="${SCINE_FUNCTIONAL:-DFTB0}"
 
@@ -73,7 +73,7 @@ TR_THRESHOLD="${TR_THRESHOLD:-1e-6}"
 # Set to "true" to enable full projection (gradient + guide vector v)
 # This prevents TR leakage and improves numerical stability
 # Submit with: PROJECT_GRADIENT_AND_V=true sbatch gad_plain_run_nopath.slurm
-PROJECT_GRADIENT_AND_V="${PROJECT_GRADIENT_AND_V:-false}"
+PROJECT_GRADIENT_AND_V="${PROJECT_GRADIENT_AND_V:-true}"
 
 export PYTHONPATH="$PROJECT_DIR:$PYTHONPATH"
 
