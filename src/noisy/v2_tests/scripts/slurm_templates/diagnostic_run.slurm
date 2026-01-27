@@ -78,19 +78,19 @@ START_FROM="${START_FROM:-midpoint_rt_noise1.0A}"
 NOISE_SEED="${NOISE_SEED:-42}"
 SCINE_FUNCTIONAL="${SCINE_FUNCTIONAL:-DFTB0}"
 
-# GAD hyperparameters (use defaults from multi_mode_eckartmw)
-DT="${DT:-0.001}"
-DT_MAX="${DT_MAX:-0.05}"
-MAX_ATOM_DISP="${MAX_ATOM_DISP:-0.25}"
-PLATEAU_PATIENCE="${PLATEAU_PATIENCE:-10}"
-PLATEAU_BOOST="${PLATEAU_BOOST:-1.5}"
-PLATEAU_SHRINK="${PLATEAU_SHRINK:-0.5}"
-ESCAPE_DISP_THRESHOLD="${ESCAPE_DISP_THRESHOLD:-5e-4}"
-ESCAPE_WINDOW="${ESCAPE_WINDOW:-20}"
-ESCAPE_NEG_VIB_STD="${ESCAPE_NEG_VIB_STD:-0.5}"
-ESCAPE_DELTA="${ESCAPE_DELTA:-0.1}"
-MIN_INTERATOMIC_DIST="${MIN_INTERATOMIC_DIST:-0.5}"
-MAX_ESCAPE_CYCLES="${MAX_ESCAPE_CYCLES:-100}"
+# GAD hyperparameters (use defaults from scine_multi_mode_eckartmw_parallel.py)
+DT="${DT:-0.004998616}"
+DT_MAX="${DT_MAX:-0.0787679}"
+MAX_ATOM_DISP="${MAX_ATOM_DISP:-0.35089121}"
+PLATEAU_PATIENCE="${PLATEAU_PATIENCE:-20}"
+PLATEAU_BOOST="${PLATEAU_BOOST:-1.84829112}"
+PLATEAU_SHRINK="${PLATEAU_SHRINK:-0.63416279}"
+ESCAPE_DISP_THRESHOLD="${ESCAPE_DISP_THRESHOLD:-0.000724457}"
+ESCAPE_WINDOW="${ESCAPE_WINDOW:-10}"
+ESCAPE_NEG_VIB_STD="${ESCAPE_NEG_VIB_STD:-0.884664427}"
+ESCAPE_DELTA="${ESCAPE_DELTA:-0.299065436}"
+MIN_INTERATOMIC_DIST="${MIN_INTERATOMIC_DIST:-0.52478195}"
+MAX_ESCAPE_CYCLES="${MAX_ESCAPE_CYCLES:-1000}"
 
 echo "=============================================="
 echo "GAD Diagnostic Runner - Trillium"
@@ -116,15 +116,28 @@ echo "  escape_disp_threshold: $ESCAPE_DISP_THRESHOLD"
 echo "  escape_delta: $ESCAPE_DELTA"
 echo "=============================================="
 
-python -m src.noisy.v2_tests.runners.run_with_diagnostics \
+export PYTHONPATH="$PROJECT_DIR:$PYTHONPATH"
+
+# Calculate workers based on CPUs (default: 4 threads per worker)
+THREADS_PER_WORKER="${THREADS_PER_WORKER:-4}"
+N_WORKERS=$((TOTAL_CPUS / THREADS_PER_WORKER))
+if [ "$N_WORKERS" -lt 1 ]; then N_WORKERS=1; fi
+
+echo "Parallel Execution Config:"
+echo "  Total CPUs: $TOTAL_CPUS"
+echo "  Workers: $N_WORKERS"
+echo "  Threads per worker: $THREADS_PER_WORKER"
+
+python "$PROJECT_DIR/src/noisy/scine_multi_mode_eckartmw_parallel_diagnostics.py" \
     --h5-path "$H5_PATH" \
     --out-dir "$OUT_DIR" \
-    --calculator scine \
     --scine-functional "$SCINE_FUNCTIONAL" \
     --n-steps "$N_STEPS" \
     --max-samples "$MAX_SAMPLES" \
     --start-from "$START_FROM" \
     --noise-seed "$NOISE_SEED" \
+    --n-workers "$N_WORKERS" \
+    --threads-per-worker "$THREADS_PER_WORKER" \
     --dt "$DT" \
     --dt-max "$DT_MAX" \
     --max-atom-disp "$MAX_ATOM_DISP" \
