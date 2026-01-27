@@ -4,7 +4,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=32
 #SBATCH --gpus-per-node=0
-#SBATCH --time=04:00:00
+#SBATCH --time=00:30:00
 #SBATCH --output=/scratch/memoozd/ts-tools-scratch/logs/kick_all_dirs_%j.out
 #SBATCH --error=/scratch/memoozd/ts-tools-scratch/logs/kick_all_dirs_%j.err
 #SBATCH --account=rrg-aspuru

@@ -4,7 +4,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=32
 #SBATCH --gpus-per-node=0
-#SBATCH --time=02:00:00
+#SBATCH --time=00:30:00
 #SBATCH --output=/scratch/memoozd/ts-tools-scratch/logs/grad_descent_%j.out
 #SBATCH --error=/scratch/memoozd/ts-tools-scratch/logs/grad_descent_%j.err
 #SBATCH --account=rrg-aspuru
