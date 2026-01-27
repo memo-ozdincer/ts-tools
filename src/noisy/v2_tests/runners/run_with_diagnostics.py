@@ -26,20 +26,20 @@ import torch
 
 # Import existing components
 from src.core_algos.gad import pick_tracked_mode
-from ...dependencies.common_utils import add_common_args, parse_starting_geometry, setup_experiment
-from ...dependencies.experiment_logger import ExperimentLogger, RunResult, build_loss_type_flags
-from ...dependencies.hessian import (
+from src.dependencies.common_utils import add_common_args, parse_starting_geometry, setup_experiment
+from src.dependencies.experiment_logger import ExperimentLogger, RunResult, build_loss_type_flags
+from src.dependencies.hessian import (
     vibrational_eigvals,
     get_scine_elements_from_predict_output,
     prepare_hessian,
 )
-from ...runners._predict import make_predict_fn_from_calculator
+from src.runners._predict import make_predict_fn_from_calculator
 
 # Import our new logging infrastructure
 from ..logging import TrajectoryLogger, create_escape_event
 
 # Import from existing multi_mode_eckartmw
-from ...noisy.multi_mode_eckartmw import (
+from src.noisy.multi_mode_eckartmw import (
     get_projected_hessian,
     perform_escape_perturbation,
     _check_plateau_convergence,
@@ -51,7 +51,7 @@ from ...noisy.multi_mode_eckartmw import (
 
 # SCINE projection (may not be available)
 try:
-    from ...dependencies.scine_masses import ScineFrequencyAnalyzer, get_scine_masses
+    from src.dependencies.scine_masses import ScineFrequencyAnalyzer, get_scine_masses
     SCINE_PROJECTION_AVAILABLE = True
 except ImportError:
     SCINE_PROJECTION_AVAILABLE = False
