@@ -11,7 +11,7 @@ from typing import Any, Dict, Optional, Tuple
 import numpy as np
 import torch
 
-from src.core_algos_gad import gad_euler_step
+from src.core_algos.gad import gad_euler_step
 from ..dependencies.common_utils import add_common_args, parse_starting_geometry, setup_experiment
 from ..dependencies.experiment_logger import ExperimentLogger, RunResult, build_loss_type_flags
 from ..dependencies.hessian import get_scine_elements_from_predict_output, vibrational_eigvals
