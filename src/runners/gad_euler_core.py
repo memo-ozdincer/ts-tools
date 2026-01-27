@@ -20,7 +20,7 @@ from ..logging import (
     log_summary,
 )
 from ..logging.plotly_utils import plot_gad_trajectory_interactive
-from ..core_algos.gad import gad_euler_step
+from src.core_algos_gad import gad_euler_step
 from ..dependencies.hessian import vibrational_eigvals, get_scine_elements_from_predict_output
 from ._predict import make_predict_fn_from_calculator
 

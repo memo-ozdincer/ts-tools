@@ -12,7 +12,7 @@ from typing import Any, Dict, Optional, Tuple
 import numpy as np
 import torch
 
-from ..core_algos.gad import gad_euler_step
+from src.core_algos_gad import gad_euler_step
 from ..dependencies.common_utils import add_common_args, parse_starting_geometry, setup_experiment
 from ..dependencies.experiment_logger import ExperimentLogger, RunResult, build_loss_type_flags
 from ..dependencies.hessian import vibrational_eigvals, get_scine_elements_from_predict_output
@@ -495,7 +495,7 @@ def main(
     all_metrics = defaultdict(list)
 
     # Import lazily to avoid mixing runner modules unless needed
-    from ..core_algos.gad import gad_rk45_integrate
+    from src.core_algos_gad import gad_rk45_integrate
 
     for i, batch in enumerate(dataloader):
         if i >= args.max_samples:

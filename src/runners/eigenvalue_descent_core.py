@@ -10,7 +10,7 @@ import torch
 from ..dependencies.common_utils import add_common_args, parse_starting_geometry, setup_experiment
 from ..dependencies.experiment_logger import ExperimentLogger, RunResult, build_loss_type_flags
 from ..logging import finish_wandb, init_wandb_run, log_sample, log_summary
-from ..core_algos.signenforcer import sign_enforcer_loss
+from src.core_algos.signenforcer import sign_enforcer_loss
 from ..dependencies.hessian import vibrational_eigvals
 from ._predict import make_predict_fn_from_calculator
 

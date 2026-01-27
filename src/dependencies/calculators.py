@@ -4,7 +4,7 @@ from typing import Any, Dict
 
 import torch
 
-from ..core_algos.types import PredictFn
+from src.core_algos.types import PredictFn
 from .pyg_batch import coords_to_pyg_batch
 
 
