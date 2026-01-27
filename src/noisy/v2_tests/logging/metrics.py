@@ -374,7 +374,6 @@ def compute_eigenvalue_spectrum(
 def compute_morse_index(
     hessian_proj: torch.Tensor,
     tr_threshold: float = 1e-6,
-        x_disp_window=float(x_disp_window) if x_disp_window is not None else float("nan"),
 ) -> int:
     """Compute Morse index (count of negative vibrational eigenvalues).
 
