@@ -33,6 +33,7 @@ export XDG_CACHE_HOME="${SCRATCH_DIR}/.cache"
 export MPLCONFIGDIR="${SCRATCH_DIR}/.config/matplotlib"
 export FONTCONFIG_PATH=/etc/fonts
 export FONTCONFIG_FILE=/etc/fonts/fonts.conf
+TR_THRESHOLD="${TR_THRESHOLD:-1e-6}"
 
 mkdir -p "$TMPDIR" "$XDG_CACHE_HOME" "$MPLCONFIGDIR"
 
@@ -97,6 +98,7 @@ CMD=(
     --armijo-c "$ARMIJO_C"
     --backtrack-factor "$BACKTRACK_FACTOR"
     --max-backtrack "$MAX_BACKTRACK"
+    --tr-threshold "$TR_THRESHOLD"
 )
 
 if [ "$ADAPTIVE_STEP" -eq 1 ]; then
