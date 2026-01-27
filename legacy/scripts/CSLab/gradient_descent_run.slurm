@@ -77,6 +77,7 @@ ADAPTIVE_STEP="${ADAPTIVE_STEP:-1}"
 ARMIJO_C="${ARMIJO_C:-1e-4}"
 BACKTRACK_FACTOR="${BACKTRACK_FACTOR:-0.5}"
 MAX_BACKTRACK="${MAX_BACKTRACK:-10}"
+TR_THRESHOLD="${TR_THRESHOLD:-1e-6}"
 
 export PYTHONPATH="$PROJECT_DIR:$PYTHONPATH"
 
@@ -104,6 +105,7 @@ CMD=(
     --armijo-c "$ARMIJO_C"
     --backtrack-factor "$BACKTRACK_FACTOR"
     --max-backtrack "$MAX_BACKTRACK"
+    --tr-threshold "$TR_THRESHOLD"
 )
 
 if [ "$ADAPTIVE_STEP" -eq 1 ]; then

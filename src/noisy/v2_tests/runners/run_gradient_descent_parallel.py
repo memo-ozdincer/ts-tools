@@ -15,6 +15,8 @@ import torch
 from torch_geometric.loader import DataLoader
 
 from src.dependencies.common_utils import Transition1xDataset, UsePos, parse_starting_geometry
+from src.dependencies.hessian import get_scine_elements_from_predict_output
+from src.noisy.multi_mode_eckartmw import get_projected_hessian
 from src.noisy.v2_tests.baselines.gradient_descent import run_gradient_descent
 from src.parallel.scine_parallel import ParallelSCINEProcessor
 from src.parallel.utils import run_batch_parallel
@@ -42,8 +44,22 @@ def run_single_sample(
     sample_id: str,
     formula: str,
 ) -> Dict[str, Any]:
+    def _count_neg_vib(coords_local: torch.Tensor) -> Optional[int]:
+        try:
+            out = predict_fn(coords_local, atomic_nums, do_hessian=True, require_grad=False)
+            scine_elements = get_scine_elements_from_predict_output(out)
+            hess_proj = get_projected_hessian(out["hessian"], coords_local, atomic_nums, scine_elements)
+            evals, _ = torch.linalg.eigh(hess_proj)
+            tr_threshold = float(params.get("tr_threshold", 1e-6))
+            vib_mask = torch.abs(evals) > tr_threshold
+            vib_evals = evals[vib_mask]
+            return int((vib_evals < -tr_threshold).sum().item())
+        except Exception:
+            return None
+
     t0 = time.time()
     try:
+        start_neg_vib = _count_neg_vib(coords)
         result, trajectory = run_gradient_descent(
             predict_fn,
             coords,
@@ -60,6 +76,8 @@ def run_single_sample(
             backtrack_factor=params["backtrack_factor"],
             max_backtrack=params["max_backtrack"],
         )
+        final_coords = result.get("final_coords")
+        final_neg_vib = _count_neg_vib(final_coords.to(coords.device) if isinstance(final_coords, torch.Tensor) else coords)
         if params.get("log_dir"):
             log_dir = Path(params["log_dir"])
             log_dir.mkdir(parents=True, exist_ok=True)
@@ -69,6 +87,8 @@ def run_single_sample(
                     {
                         "sample_id": sample_id,
                         "formula": formula,
+                        "start_neg_vib": start_neg_vib,
+                        "final_neg_vib": final_neg_vib,
                         "trajectory": trajectory,
                     },
                     f,
@@ -81,6 +101,8 @@ def run_single_sample(
             "final_energy": result.get("final_energy"),
             "final_force_norm": result.get("final_force_norm"),
             "total_steps": result.get("total_steps", n_steps),
+            "start_neg_vib": start_neg_vib,
+            "final_neg_vib": final_neg_vib,
             "wall_time": wall_time,
             "error": None,
         }
@@ -92,6 +114,8 @@ def run_single_sample(
             "final_energy": None,
             "final_force_norm": None,
             "total_steps": 0,
+            "start_neg_vib": None,
+            "final_neg_vib": None,
             "wall_time": wall_time,
             "error": str(e),
         }
@@ -184,6 +208,7 @@ def main() -> None:
     parser.add_argument("--armijo-c", type=float, default=1e-4)
     parser.add_argument("--backtrack-factor", type=float, default=0.5)
     parser.add_argument("--max-backtrack", type=int, default=10)
+    parser.add_argument("--tr-threshold", type=float, default=1e-6)
 
     args = parser.parse_args()
 
@@ -202,6 +227,7 @@ def main() -> None:
         "armijo_c": args.armijo_c,
         "backtrack_factor": args.backtrack_factor,
         "max_backtrack": args.max_backtrack,
+        "tr_threshold": args.tr_threshold,
         "log_dir": str(diag_dir),
     }
 
