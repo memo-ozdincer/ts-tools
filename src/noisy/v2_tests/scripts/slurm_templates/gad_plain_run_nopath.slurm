@@ -65,7 +65,7 @@ DT="${DT:-0.02}"
     # - none: fixed timestep
     # - gradient: dt_eff = clamp(dt_base * scale_factor / (grad_norm + eps), dt_min, dt_max)
     # - eigenvalue: dt_eff = clamp(dt_base * scale_factor / (|eig_0| + eps), dt_min, dt_max)
-    DT_ADAPTATION="${DT_ADAPTATION:-eigenvalue}"
+    DT_ADAPTATION="${DT_ADAPTATION:-none}"
     DT_MIN="${DT_MIN:-1e-6}"
     DT_MAX="${DT_MAX:-0.08}"
     DT_SCALE_FACTOR="${DT_SCALE_FACTOR:-1.0}"
