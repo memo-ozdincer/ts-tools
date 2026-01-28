@@ -161,11 +161,11 @@ def compare_all_trajectories(
     for sample_id in common_samples:
         print(f"  Processing {sample_id}...")
 
-        dt_path = traj_path[sample_id].get("dt_eff", [])
-        dt_nopath = traj_nopath[sample_id].get("dt_eff", [])
+        dt_path = traj_path[sample_id].get("dt_eff") or traj_path[sample_id].get("step_size_eff", [])
+        dt_nopath = traj_nopath[sample_id].get("dt_eff") or traj_nopath[sample_id].get("step_size_eff", [])
 
         if not dt_path or not dt_nopath:
-            print(f"    WARNING: Missing dt_eff data for {sample_id}")
+            print(f"    WARNING: Missing dt_eff (or step_size_eff) data for {sample_id}")
             continue
 
         plot_path = output_dir / f"{sample_id}_dt_eff_comparison.png"
