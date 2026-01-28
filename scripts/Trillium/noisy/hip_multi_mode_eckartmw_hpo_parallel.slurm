@@ -75,7 +75,7 @@ export WANDB_RUN_GROUP="HPO-multi-mode-eckartmw-trillium"
 
 N_STEPS="${N_STEPS:-4000}"
 MAX_SAMPLES="${MAX_SAMPLES:-15}"
-START_FROM="${START_FROM:-midpoint_rt_noise1.0A}"
+START_FROM="${START_FROM:-midpoint_rt_noise2.0A}"
 NOISE_SEED="${NOISE_SEED:-42}"
 
 N_TRIALS="${N_TRIALS:-500}"
