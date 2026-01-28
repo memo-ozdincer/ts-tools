@@ -28,11 +28,17 @@ from src.dependencies.hessian import (
     vibrational_eigvals,
     get_scine_elements_from_predict_output,
 )
-from src.noisy.multi_mode_eckartmw import get_projected_hessian
+from src.noisy.multi_mode_eckartmw import (
+    get_projected_hessian,
+    _force_mean,
+    _to_float,
+)
 
 from .recursive_hisd import (
     RecursiveHiSDConfig,
-    run_recursive_hisd,
+    RecursiveHiSDState,
+    recursive_hisd_step,
+    perturb_along_unstable_direction,
 )
 from ..logging import TrajectoryLogger
 
@@ -46,8 +52,11 @@ def run_recursive_hisd_with_logging(
     sample_id: str = "unknown",
     formula: str = "",
     known_ts_coords: Optional[torch.Tensor] = None,
+    max_recursion_depth: int = 10,
 ) -> Tuple[Dict[str, Any], TrajectoryLogger]:
     """Run Recursive HiSD with full diagnostic logging.
+
+    This version computes the FULL Hessian and forces at each step for proper logging.
 
     Args:
         predict_fn: Energy/force/Hessian prediction function
@@ -57,6 +66,7 @@ def run_recursive_hisd_with_logging(
         sample_id: Sample identifier for logging
         formula: Chemical formula for logging
         known_ts_coords: Known TS for validation
+        max_recursion_depth: Maximum recursion levels
 
     Returns:
         final_out_dict: Results dictionary
@@ -77,74 +87,221 @@ def run_recursive_hisd_with_logging(
     logger = TrajectoryLogger(sample_id=sample_id, formula=formula)
     logger.known_ts_coords = known_ts_coords
 
-    # Get SCINE elements and compute initial Morse index
+    # Get SCINE elements
     out = predict_fn(coords, atomic_nums, do_hessian=True, require_grad=False)
     scine_elements = get_scine_elements_from_predict_output(out)
 
-    # Compute initial Morse index for tracking
-    initial_morse_index = -1
-    try:
-        initial_vib_eigvals = vibrational_eigvals(
-            out["hessian"], coords, atomic_nums, scine_elements=scine_elements
-        )
-        initial_morse_index = int((initial_vib_eigvals < 0).sum().item())
-    except Exception:
-        pass
+    # Compute initial Morse index
+    hess_proj = get_projected_hessian(out["hessian"], coords, atomic_nums, scine_elements=scine_elements)
+    evals, evecs = torch.linalg.eigh(hess_proj)
+    vib_mask = torch.abs(evals) > config.tr_threshold
+    vib_evals = evals[vib_mask]
+    initial_morse_index = int((vib_evals < config.neg_threshold).sum().item())
+    current_index = initial_morse_index
 
-    def get_proj_hessian_fn(hessian, coords, atomic_nums, scine_elem):
-        return get_projected_hessian(hessian, coords, atomic_nums, scine_elements=scine_elem)
-
-    # Run Recursive HiSD
-    result, trajectory = run_recursive_hisd(
-        predict_fn,
-        coords,
-        atomic_nums,
-        get_proj_hessian_fn,
-        config=config,
-        scine_elements=scine_elements,
+    # State tracking
+    state = RecursiveHiSDState(
+        current_index=current_index,
+        initial_index=initial_morse_index,
     )
 
-    # Log trajectory to TrajectoryLogger
-    disp_history = []
-    prev_coords = coords.clone()
+    start_pos = coords.clone()
+    prev_pos = coords.clone()
     prev_energy = None
+    disp_history: list[float] = []
+    total_steps = 0
+    steps_to_ts: Optional[int] = None
+    level_info = []
 
-    for i, step_info in enumerate(trajectory):
-        # Reconstruct approximate coords from step info
-        step_energy = step_info.get("energy", float("nan"))
+    # Recursive descent
+    for depth in range(max_recursion_depth):
+        state.recursion_depth = depth
 
-        # Compute displacement from step direction/norm (approximate)
-        disp = step_info.get("direction_norm", 0) * step_info.get("dt_eff", config.dt)
-        disp_history.append(disp)
-        x_disp_window = float(np.mean(disp_history[-10:])) if disp_history else float("nan")
+        # Get current Morse index
+        out = predict_fn(coords, atomic_nums, do_hessian=True, require_grad=False)
+        hess_proj = get_projected_hessian(out["hessian"], coords, atomic_nums, scine_elements=scine_elements)
+        evals, evecs = torch.linalg.eigh(hess_proj)
+        vib_mask = torch.abs(evals) > config.tr_threshold
+        vib_evals = evals[vib_mask]
+        vib_evecs = evecs[:, vib_mask]
+        current_index = int((vib_evals < config.neg_threshold).sum().item())
 
-        logger.log_step(
-            step=i,
-            coords=prev_coords,  # Approximate
-            energy=step_energy,
-            forces=None,
-            hessian_proj=None,
-            gad_vec=None,
-            dt_eff=step_info.get("dt_eff", config.dt),
-            coords_prev=prev_coords if i > 0 else None,
-            energy_prev=prev_energy,
-            x_disp_window=x_disp_window,
+        # Base case: reached index-1
+        if current_index <= 1:
+            target_k = 1
+            # Run 1-HiSD (= GAD) to converge to TS
+            for level_step in range(config.max_steps_per_level):
+                # Get energy, forces, Hessian - ALWAYS COMPUTE FULL HESSIAN
+                out = predict_fn(coords, atomic_nums, do_hessian=True, require_grad=False)
+                energy = out.get("energy")
+                forces = out.get("forces")
+                hessian = out.get("hessian")
+
+                energy_value = _to_float(energy)
+                force_mean = _force_mean(forces)
+
+                # Project Hessian
+                hess_proj = get_projected_hessian(hessian, coords, atomic_nums, scine_elements=scine_elements)
+
+                # Take step
+                new_coords, step_info = recursive_hisd_step(
+                    coords, forces, hess_proj, config.dt, target_k,
+                    tr_threshold=config.tr_threshold,
+                    neg_threshold=config.neg_threshold,
+                )
+
+                # Apply max displacement cap
+                step_vec = new_coords - coords
+                max_disp = float(step_vec.norm(dim=1).max().item())
+                dt_eff = config.dt
+                if max_disp > config.max_atom_disp and max_disp > 0:
+                    scale = config.max_atom_disp / max_disp
+                    new_coords = coords + scale * step_vec
+
+                # Displacements
+                disp_from_last = float((new_coords - prev_pos).norm(dim=1).mean().item())
+                disp_from_start = float((new_coords - start_pos).norm(dim=1).mean().item())
+
+                if total_steps > 0:
+                    disp_history.append(disp_from_last)
+                x_disp_window = float(np.mean(disp_history[-10:])) if disp_history else float("nan")
+
+                # Log to TrajectoryLogger with FULL HESSIAN
+                logger.log_step(
+                    step=total_steps,
+                    coords=coords,
+                    energy=energy_value,
+                    forces=forces,
+                    hessian_proj=hess_proj,
+                    gad_vec=forces,  # Use forces as GAD direction approximation
+                    dt_eff=dt_eff,
+                    coords_prev=prev_pos if total_steps > 0 else None,
+                    energy_prev=prev_energy,
+                    x_disp_window=x_disp_window,
+                )
+
+                # Check convergence
+                if step_info["grad_norm"] < config.grad_threshold and step_info["morse_index"] == 1:
+                    steps_to_ts = total_steps
+                    level_info.append({
+                        "depth": depth,
+                        "target_k": target_k,
+                        "steps": level_step + 1,
+                        "converged": True,
+                    })
+                    coords = new_coords
+                    break
+
+                prev_pos = coords.clone()
+                prev_energy = energy_value
+                coords = new_coords
+                total_steps += 1
+
+            else:
+                # Max steps reached
+                level_info.append({
+                    "depth": depth,
+                    "target_k": target_k,
+                    "steps": config.max_steps_per_level,
+                    "converged": False,
+                })
+
+            # Done - reached index-1 level
+            break
+
+        # Target the next lower index
+        target_k = current_index - 1
+
+        # Perturb to escape current saddle
+        coords = perturb_along_unstable_direction(
+            coords,
+            vib_evecs,
+            vib_evals,
+            magnitude=config.perturb_magnitude,
+            neg_threshold=config.neg_threshold,
+            strategy=config.perturb_strategy,
         )
-        prev_energy = step_energy
+
+        # Run k-HiSD at this level
+        level_converged = False
+        for level_step in range(config.max_steps_per_level):
+            # Get energy, forces, Hessian - ALWAYS COMPUTE FULL HESSIAN
+            out = predict_fn(coords, atomic_nums, do_hessian=True, require_grad=False)
+            energy = out.get("energy")
+            forces = out.get("forces")
+            hessian = out.get("hessian")
+
+            energy_value = _to_float(energy)
+            force_mean = _force_mean(forces)
+
+            # Project Hessian
+            hess_proj = get_projected_hessian(hessian, coords, atomic_nums, scine_elements=scine_elements)
+
+            # Take step
+            new_coords, step_info = recursive_hisd_step(
+                coords, forces, hess_proj, config.dt, target_k,
+                tr_threshold=config.tr_threshold,
+                neg_threshold=config.neg_threshold,
+            )
+
+            # Apply max displacement cap
+            step_vec = new_coords - coords
+            max_disp = float(step_vec.norm(dim=1).max().item())
+            dt_eff = config.dt
+            if max_disp > config.max_atom_disp and max_disp > 0:
+                scale = config.max_atom_disp / max_disp
+                new_coords = coords + scale * step_vec
+
+            # Displacements
+            disp_from_last = float((new_coords - prev_pos).norm(dim=1).mean().item())
+            disp_from_start = float((new_coords - start_pos).norm(dim=1).mean().item())
+
+            if total_steps > 0:
+                disp_history.append(disp_from_last)
+            x_disp_window = float(np.mean(disp_history[-10:])) if disp_history else float("nan")
+
+            # Log to TrajectoryLogger with FULL HESSIAN
+            logger.log_step(
+                step=total_steps,
+                coords=coords,
+                energy=energy_value,
+                forces=forces,
+                hessian_proj=hess_proj,
+                gad_vec=forces,
+                dt_eff=dt_eff,
+                coords_prev=prev_pos if total_steps > 0 else None,
+                energy_prev=prev_energy,
+                x_disp_window=x_disp_window,
+            )
+
+            # Check convergence
+            if step_info["grad_norm"] < config.grad_threshold:
+                if step_info["morse_index"] == target_k:
+                    level_converged = True
+                    break
+
+            prev_pos = coords.clone()
+            prev_energy = energy_value
+            coords = new_coords
+            total_steps += 1
+
+        level_info.append({
+            "depth": depth,
+            "target_k": target_k,
+            "steps": level_step + 1 if level_converged else config.max_steps_per_level,
+            "converged": level_converged,
+        })
+
+        # Update current index for next iteration
+        current_index = step_info["morse_index"]
 
     # Final vibrational analysis
-    final_coords = result["final_coords"]
-    if isinstance(final_coords, torch.Tensor):
-        final_coords = final_coords.to(torch.float32)
-    else:
-        final_coords = torch.tensor(final_coords, dtype=torch.float32)
-
     final_neg_vib = -1
     try:
-        final_out = predict_fn(final_coords, atomic_nums, do_hessian=True, require_grad=False)
+        final_out = predict_fn(coords, atomic_nums, do_hessian=True, require_grad=False)
         scine_elements = get_scine_elements_from_predict_output(final_out)
         final_vib_eigvals = vibrational_eigvals(
-            final_out["hessian"], final_coords, atomic_nums, scine_elements=scine_elements
+            final_out["hessian"], coords, atomic_nums, scine_elements=scine_elements
         )
         final_neg_vib = int((final_vib_eigvals < 0).sum().item())
     except Exception:
@@ -152,26 +309,20 @@ def run_recursive_hisd_with_logging(
 
     # Finalize logger
     logger.finalize(
-        final_coords=final_coords,
+        final_coords=coords,
         final_morse_index=final_neg_vib,
-        converged_to_ts=result.get("converged", False) or (final_neg_vib == 1),
+        converged_to_ts=(steps_to_ts is not None) or (final_neg_vib == 1),
     )
 
-    # Use computed initial_morse_index if result doesn't have it
-    result_initial_index = result.get("initial_index", initial_morse_index)
-    if result_initial_index == -1:
-        result_initial_index = initial_morse_index
-
     final_out_dict = {
-        "final_coords": final_coords.detach().cpu(),
-        "trajectory": trajectory,
-        "steps_taken": result["total_steps"],
-        "steps_to_ts": result.get("converged_step"),
+        "final_coords": coords.detach().cpu(),
+        "steps_taken": total_steps,
+        "steps_to_ts": steps_to_ts,
         "final_neg_vibrational": final_neg_vib,
-        "initial_index": result_initial_index,
-        "final_index": result.get("final_index", -1),
-        "recursion_depth": result.get("recursion_depth", 0),
-        "level_info": result.get("level_info", []),
+        "initial_index": initial_morse_index,
+        "final_index": final_neg_vib,
+        "recursion_depth": state.recursion_depth,
+        "level_info": level_info,
         "algorithm": "recursive_hisd",
     }
 

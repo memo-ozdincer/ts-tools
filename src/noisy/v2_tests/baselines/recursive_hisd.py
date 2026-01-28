@@ -244,6 +244,9 @@ def run_recursive_hisd_level(
         converged: Whether gradient converged
         trajectory: List of step info dicts
     """
+    if coords is None:
+        raise ValueError("coords cannot be None")
+
     if coords.dim() == 3 and coords.shape[0] == 1:
         coords = coords[0]
     coords = coords.reshape(-1, 3).detach().clone()
@@ -334,6 +337,9 @@ def run_recursive_hisd(
     """
     if config is None:
         config = RecursiveHiSDConfig()
+
+    if coords0 is None:
+        raise ValueError("coords0 cannot be None")
 
     if coords0.dim() == 3 and coords0.shape[0] == 1:
         coords0 = coords0[0]

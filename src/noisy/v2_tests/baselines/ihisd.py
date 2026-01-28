@@ -329,6 +329,9 @@ def run_ihisd(
     if config is None:
         config = IHiSDConfig()
 
+    if coords0 is None:
+        raise ValueError("coords0 cannot be None")
+
     if coords0.dim() == 3 and coords0.shape[0] == 1:
         coords0 = coords0[0]
     coords = coords0.reshape(-1, 3).detach().clone()

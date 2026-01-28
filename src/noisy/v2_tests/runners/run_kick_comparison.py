@@ -39,6 +39,8 @@ from src.noisy.multi_mode_eckartmw import (
     _force_mean,
     _to_float,
     _min_interatomic_distance,
+    compute_gad_vector_projected_tracked,
+    _atomic_nums_to_symbols,
 )
 
 from src.dependencies.hessian import (
@@ -96,6 +98,40 @@ def _check_plateau_convergence(
     )
 
 
+def _eig_metrics_from_projected_hessian(
+    hessian_proj: torch.Tensor,
+    *,
+    tr_threshold: float,
+    eigh_device: str = "cpu",
+) -> Tuple[float, float, float, int]:
+    """Compute eig0/eig1/eig_product/neg_vib from projected Hessian."""
+    hess = hessian_proj
+    if hess.dim() != 2:
+        side = int(hess.numel() ** 0.5)
+        hess = hess.reshape(side, side)
+
+    if str(eigh_device).lower() == "cpu":
+        hess_eigh = hess.detach().to(device=torch.device("cpu"))
+    else:
+        hess_eigh = hess
+
+    evals, _ = torch.linalg.eigh(hess_eigh)
+    evals_local = evals.to(dtype=torch.float32)
+    vib_mask = torch.abs(evals_local) > float(tr_threshold)
+    evals_vib = evals_local[vib_mask] if vib_mask.any() else evals_local
+
+    if int(evals_vib.numel()) >= 2:
+        eig0 = float(evals_vib[0].item())
+        eig1 = float(evals_vib[1].item())
+        eig_product = float((evals_vib[0] * evals_vib[1]).item())
+    else:
+        eig0, eig1, eig_product = float("nan"), float("nan"), float("inf")
+
+    neg_vib = int((evals_vib < -float(tr_threshold)).sum().item()) if int(evals_vib.numel()) > 0 else -1
+
+    return eig0, eig1, eig_product, neg_vib
+
+
 def run_gad_with_kick_strategy(
     predict_fn,
     coords0: torch.Tensor,
@@ -119,6 +155,9 @@ def run_gad_with_kick_strategy(
     # Convergence
     ts_eps: float = 1e-5,
     stop_at_ts: bool = True,
+    # TR tracking / projection
+    tr_threshold: float = 1e-6,
+    project_gradient_and_v: bool = False,
     # Tracking
     sample_id: str = "unknown",
     formula: str = "",
@@ -158,6 +197,7 @@ def run_gad_with_kick_strategy(
         escape_cycle = 0
         dt_eff = dt
         v_prev = None
+        atomsymbols = _atomic_nums_to_symbols(atomic_nums) if project_gradient_and_v else None
 
         # GAD state
         best_neg_vib = None
@@ -179,15 +219,35 @@ def run_gad_with_kick_strategy(
             hess_proj = get_projected_hessian(hessian, coords, atomic_nums, scine_elements)
 
             # Compute GAD and eigenvalues
-            gad_vec, eig0, eig1, eig_product, neg_vib, v_prev, mode_overlap, mode_index = _step_metrics_from_projected_hessian(
-                forces=forces,
-                hessian_proj=hess_proj,
-                tr_threshold=1e-6,
-                eigh_device="cpu",
-                v_prev=v_prev,
-                k_track=8,
-                beta=1.0,
-            )
+            if project_gradient_and_v:
+                gad_vec, v_prev, mode_info = compute_gad_vector_projected_tracked(
+                    forces=forces,
+                    hessian_proj=hess_proj,
+                    v_prev=v_prev,
+                    k_track=8,
+                    beta=1.0,
+                    tr_threshold=tr_threshold,
+                    coords=coords,
+                    atomsymbols=atomsymbols,
+                    project_gradient_and_v=True,
+                )
+                eig0, eig1, eig_product, neg_vib = _eig_metrics_from_projected_hessian(
+                    hess_proj,
+                    tr_threshold=tr_threshold,
+                    eigh_device="cpu",
+                )
+                mode_overlap = float(mode_info.get("mode_overlap", float("nan")))
+                mode_index = int(mode_info.get("mode_index", 0))
+            else:
+                gad_vec, eig0, eig1, eig_product, neg_vib, v_prev, mode_overlap, mode_index = _step_metrics_from_projected_hessian(
+                    forces=forces,
+                    hessian_proj=hess_proj,
+                    tr_threshold=tr_threshold,
+                    eigh_device="cpu",
+                    v_prev=v_prev,
+                    k_track=8,
+                    beta=1.0,
+                )
 
             energies.append(energy)
             morse_indices.append(neg_vib)
@@ -212,6 +272,7 @@ def run_gad_with_kick_strategy(
                     energy_prev=energies[-2] if len(energies) > 1 else None,
                     mode_index=mode_index,
                     x_disp_window=x_disp_window,
+                    tr_threshold=tr_threshold,
                 )
 
             # Check for TS (index = 1)
@@ -320,7 +381,7 @@ def run_gad_with_kick_strategy(
                         min_dist_after=min_dist_after,
                         mean_disp_at_trigger=float(np.mean(disp_history[-escape_window:])) if len(disp_history) >= escape_window else 0.0,
                         neg_vib_std_at_trigger=float(np.std(neg_vib_history[-escape_window:])) if len(neg_vib_history) >= escape_window else 0.0,
-                        tr_threshold=1e-6,
+                        tr_threshold=tr_threshold,
                     )
                     logger.log_escape(escape_event)
 

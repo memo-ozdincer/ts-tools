@@ -71,6 +71,8 @@ def run_single_sample(
             force_escape_after=params.get("force_escape_after"),
             ts_eps=params["ts_eps"],
             stop_at_ts=params["stop_at_ts"],
+            tr_threshold=params["tr_threshold"],
+            project_gradient_and_v=params["project_gradient_and_v"],
             sample_id=sample_id,
             formula=formula,
             log_dir=params.get("log_dir"),
@@ -192,6 +194,13 @@ def main() -> None:
     parser.add_argument("--stop-at-ts", action="store_true")
     parser.add_argument("--no-stop-at-ts", dest="stop_at_ts", action="store_false")
     parser.set_defaults(stop_at_ts=True)
+    parser.add_argument("--tr-threshold", type=float, default=1e-6)
+    parser.add_argument(
+        "--project-gradient-and-v",
+        action="store_true",
+        default=False,
+        help="Project gradient and guide vector into vibrational subspace (prevents TR leakage).",
+    )
 
     args = parser.parse_args()
     os.makedirs(args.out_dir, exist_ok=True)
@@ -215,6 +224,8 @@ def main() -> None:
         "force_escape_after": args.force_escape_after,
         "ts_eps": args.ts_eps,
         "stop_at_ts": args.stop_at_ts,
+        "tr_threshold": args.tr_threshold,
+        "project_gradient_and_v": bool(args.project_gradient_and_v),
         "log_dir": str(diag_dir),
     }
 
@@ -255,6 +266,8 @@ def main() -> None:
                         "n_workers": args.n_workers,
                         "threads_per_worker": args.threads_per_worker,
                         "split": args.split,
+                        "tr_threshold": args.tr_threshold,
+                        "project_gradient_and_v": bool(args.project_gradient_and_v),
                     },
                     "aggregated": results["aggregated"],
                     "samples": results["samples"],

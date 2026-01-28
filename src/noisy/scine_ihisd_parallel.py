@@ -70,12 +70,46 @@ def scine_worker_ihisd(predict_fn, payload) -> Dict[str, Any]:
     formula = getattr(batch, "formula", f"sample_{sample_idx:03d}")
     sample_id = f"sample_{sample_idx:03d}"
 
-    start_coords = parse_starting_geometry(
-        start_from,
-        batch,
-        noise_seed=noise_seed,
-        sample_index=sample_idx,
-    ).detach().to("cpu")
+    try:
+        start_coords = parse_starting_geometry(
+            start_from,
+            batch,
+            noise_seed=noise_seed,
+            sample_index=sample_idx,
+        )
+
+        if start_coords is None:
+            return {
+                "sample_idx": sample_idx,
+                "final_neg_vib": -1,
+                "steps_taken": 0,
+                "steps_to_ts": None,
+                "success": False,
+                "wall_time": 0,
+                "error": "parse_starting_geometry returned None",
+                "algorithm": "ihisd",
+                "initial_index": -1,
+                "final_index": -1,
+                "final_theta": 0,
+                "theta_max": 0,
+            }
+
+        start_coords = start_coords.detach().to("cpu")
+    except Exception as e:
+        return {
+            "sample_idx": sample_idx,
+            "final_neg_vib": -1,
+            "steps_taken": 0,
+            "steps_to_ts": None,
+            "success": False,
+            "wall_time": 0,
+            "error": f"Failed to parse starting geometry: {str(e)}",
+            "algorithm": "ihisd",
+            "initial_index": -1,
+            "final_index": -1,
+            "final_theta": 0,
+            "theta_max": 0,
+        }
 
     with SuppressStdout():
         result = run_single_sample_ihisd(

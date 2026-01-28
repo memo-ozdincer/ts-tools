@@ -72,6 +72,11 @@ MAX_ESCAPE_CYCLES="${MAX_ESCAPE_CYCLES:-500}"
 MIN_INTERATOMIC_DIST="${MIN_INTERATOMIC_DIST:-0.5}"
 TS_EPS="${TS_EPS:-1e-5}"
 FORCE_ESCAPE_AFTER="${FORCE_ESCAPE_AFTER:-2000}"
+TR_THRESHOLD="${TR_THRESHOLD:-1e-6}"
+
+# Eckart projection options
+# Set to "true" to enable full projection (gradient + guide vector v)
+PROJECT_GRADIENT_AND_V="${PROJECT_GRADIENT_AND_V:-true}"
 
 export PYTHONPATH="$PROJECT_DIR:$PYTHONPATH"
 
@@ -101,4 +106,6 @@ python "$PROJECT_DIR/src/noisy/v2_tests/runners/run_kick_comparison_parallel.py"
     --max-escape-cycles "$MAX_ESCAPE_CYCLES" \
     --min-interatomic-dist "$MIN_INTERATOMIC_DIST" \
     --ts-eps "$TS_EPS" \
-    --force-escape-after "$FORCE_ESCAPE_AFTER"
+    --force-escape-after "$FORCE_ESCAPE_AFTER" \
+    --tr-threshold "$TR_THRESHOLD" \
+    $([ "$PROJECT_GRADIENT_AND_V" = "true" ] && echo "--project-gradient-and-v")

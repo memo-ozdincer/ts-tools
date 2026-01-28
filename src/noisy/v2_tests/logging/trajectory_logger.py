@@ -84,6 +84,7 @@ class TrajectoryLogger:
         energy_prev: Optional[float] = None,
         mode_index: Optional[int] = None,
         x_disp_window: Optional[float] = None,
+        tr_threshold: float = 1e-6,
     ) -> ExtendedMetrics:
         """Log a single GAD step with extended metrics.
 
@@ -114,6 +115,7 @@ class TrajectoryLogger:
             dt_eff=dt_eff,
             mode_index=mode_index,
             x_disp_window=x_disp_window,
+            tr_threshold=tr_threshold,
             known_ts_coords=self.known_ts_coords,
         )
 
