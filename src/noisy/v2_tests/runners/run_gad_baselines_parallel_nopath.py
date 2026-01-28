@@ -29,7 +29,7 @@ from src.dependencies.common_utils import Transition1xDataset, UsePos, parse_sta
 from src.dependencies.differentiable_projection import gad_dynamics_projected_torch
 from src.dependencies.hessian import get_scine_elements_from_predict_output, prepare_hessian
 from src.noisy.multi_mode_eckartmw import get_projected_hessian, _min_interatomic_distance, _atomic_nums_to_symbols
-from src.noisy.v2_tests.logging import TrajectoryLogger
+from src.noisy.v2_tests.logging.trajectory_logger_nopath import TrajectoryLogger
 from src.parallel.scine_parallel import ParallelSCINEProcessor
 from src.parallel.utils import run_batch_parallel
 
@@ -126,6 +126,7 @@ def run_gad_baseline(
 
     v_prev = None
     logger = TrajectoryLogger(sample_id=sample_id, formula=formula) if log_dir else None
+    last_evals_vib: Optional[torch.Tensor] = None
 
     for step in range(n_steps):
         out = predict_fn(coords, atomic_nums, do_hessian=True, require_grad=False)
@@ -152,6 +153,8 @@ def run_gad_baseline(
         else:
             evals_vib = evals[vib_mask]
             candidate_indices = vib_indices[: min(8, int(vib_indices.numel()))]
+
+        last_evals_vib = evals_vib.detach()
 
         V = evecs[:, candidate_indices].to(device=forces.device, dtype=forces.dtype)
         v_prev_local = v_prev.to(device=forces.device, dtype=forces.dtype).reshape(-1) if (track_mode and v_prev is not None) else None
@@ -243,10 +246,15 @@ def run_gad_baseline(
 
         coords = new_coords.detach()
 
+    if last_evals_vib is not None and int(last_evals_vib.numel()) > 0:
+        final_morse_index = int((last_evals_vib < -float(tr_threshold)).sum().item())
+    else:
+        final_morse_index = -1
+
     result = {
         "converged": False,
         "converged_step": None,
-        "final_morse_index": -1,
+        "final_morse_index": final_morse_index,
         "total_steps": n_steps,
     }
     if logger is not None:
@@ -368,6 +376,15 @@ def run_batch(
     for v in final_neg_vibs:
         neg_vib_counts[v] = neg_vib_counts.get(v, 0) + 1
 
+    nonconverged_neg_vibs = [
+        r["final_neg_vib"]
+        for r in results
+        if (r.get("error") is None and not r.get("success"))
+    ]
+    nonconverged_neg_vib_counts: Dict[int, int] = {}
+    for v in nonconverged_neg_vibs:
+        nonconverged_neg_vib_counts[v] = nonconverged_neg_vib_counts.get(v, 0) + 1
+
     return {
         "n_samples": n_samples,
         "n_success": n_success,
@@ -377,6 +394,7 @@ def run_batch(
         "mean_wall_time": float(np.mean(wall_times)) if wall_times else float("nan"),
         "total_wall_time": float(sum(wall_times)),
         "neg_vib_counts": neg_vib_counts,
+        "nonconverged_neg_vib_counts": nonconverged_neg_vib_counts,
         "results": results,
     }
 
