@@ -369,7 +369,7 @@ def main():
 
     parser.add_argument("--n-steps", type=int, default=4000)
     parser.add_argument("--max-samples", type=int, default=100)
-    parser.add_argument("--start-from", type=str, default="midpoint_rt_noise1.0A")
+    parser.add_argument("--start-from", type=str, default="midpoint_rt_noise2.0A")
     parser.add_argument("--noise-seed", type=int, default=42)
     parser.add_argument("--split", type=str, default="test")
 

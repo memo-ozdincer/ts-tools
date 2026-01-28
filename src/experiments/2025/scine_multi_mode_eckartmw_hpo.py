@@ -355,7 +355,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--n-steps-per-sample", type=int, default=800, help="Steps per sample per trial")
     parser.add_argument("--n-samples", type=int, default=15, help="Number of samples per trial (from difficult set)")
     parser.add_argument("--difficulty-threshold", type=float, default=0.5, help="Fraction of samples to consider difficult")
-    parser.add_argument("--start-from", type=str, default="midpoint_rt_noise1.0A")
+    parser.add_argument("--start-from", type=str, default="midpoint_rt_noise2.0A")
     parser.add_argument("--study-name", type=str, default=None, help="Optuna study name. Default: auto-generated")
     parser.add_argument("--storage", type=str, default=None, help="Optuna storage URL (e.g., sqlite:///optuna.db)")
     parser.add_argument("--resume", action="store_true", help="Resume from existing study")
