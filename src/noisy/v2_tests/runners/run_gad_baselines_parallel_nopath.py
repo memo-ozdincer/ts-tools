@@ -6,10 +6,27 @@ Baselines:
 - mode_tracked: track v1 across steps
 
 Adaptive dt strategies (state-based only, no path information):
+
+Basic strategies (these don't work well in practice):
 - none: fixed timestep
 - gradient: dt_eff = clamp(dt_base * scale_factor / (grad_norm + eps), dt_min, dt_max)
 - eigenvalue: dt_eff = clamp(dt_base * scale_factor / (|eig_0| + eps), dt_min, dt_max)
 - trust_region: dt_eff = clamp(dt_scale_factor * max_atom_disp / (max(gad_vec_norm) + eps), dt_min, dt_max)
+
+Advanced strategies (better alternatives):
+- harmonic: Natural timescale from inverse square root of curvature: dt ~ 1/sqrt(|λ₀|)
+           Mimics harmonic oscillator period, gives physically meaningful step sizes.
+- spectral_gap: Use eigenvalue gap (λ₁ - λ₀) as stability measure.
+           Larger gap = more distinct saddle direction = larger safe steps.
+- gad_angle: Use angle between force and GAD vector.
+           cos(θ) ≈ 1: near minimum, take larger steps
+           cos(θ) ≈ -1: near maximum along v, take careful steps
+           cos(θ) ≈ 0: balanced saddle region, moderate steps
+- composite: Weighted combination of curvature and GAD vector magnitude.
+           Balances local geometry info with step magnitude directly.
+- force_gad_ratio: Ratio of |F| to |GAD| as a geometry indicator.
+           Near TS, |F| → 0 but |GAD| may stay nonzero (if eigenvalue significant).
+           This ratio naturally decreases near saddles.
 """
 
 from __future__ import annotations
@@ -20,6 +37,7 @@ import os
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional
+import math
 
 import numpy as np
 import torch
@@ -62,6 +80,11 @@ def compute_state_based_dt(
     max_atom_disp: float = 0.1,
     dt_scale_factor: float = 1.0,
     eps: float = 1e-8,
+    # Advanced strategy inputs
+    eig_1: float = 0.0,
+    force_dot_gad: float = 0.0,
+    force_norm_sq: float = 0.0,
+    gad_norm_sq: float = 0.0,
 ) -> float:
     """Compute adaptive dt using only state-based information (no path history).
 
@@ -69,13 +92,17 @@ def compute_state_based_dt(
         dt_base: Base timestep
         dt_min: Minimum allowed timestep
         dt_max: Maximum allowed timestep
-        dt_adaptation: Adaptation method ('none', 'gradient', 'eigenvalue', 'trust_region')
-        grad_norm: Current gradient norm (||-∇E||)
+        dt_adaptation: Adaptation method (see module docstring for list)
+        grad_norm: Current gradient norm (||-∇E|| = ||F||)
         eig_0: Lowest vibrational eigenvalue
         gad_vec_norm_max: Max norm of GAD vector on any atom
         max_atom_disp: Maximum allowed atomic displacement
         dt_scale_factor: Scaling factor for adaptation
         eps: Small constant to prevent division by zero
+        eig_1: Second lowest vibrational eigenvalue (for spectral_gap)
+        force_dot_gad: Dot product of force and GAD vectors (for gad_angle)
+        force_norm_sq: Squared norm of force vector (for gad_angle)
+        gad_norm_sq: Squared norm of GAD vector (for gad_angle)
 
     Returns:
         Effective timestep
@@ -83,16 +110,98 @@ def compute_state_based_dt(
     if dt_adaptation == "none":
         return dt_base
 
+    # =========================================================================
+    # Basic strategies (existing, but don't work well)
+    # =========================================================================
     if dt_adaptation == "gradient":
         # Smaller steps when gradient is large
         dt_eff = dt_base * dt_scale_factor / (grad_norm + eps)
+
     elif dt_adaptation == "eigenvalue":
         # Smaller steps when curvature (|λ₀|) is large
         dt_eff = dt_base * dt_scale_factor / (abs(eig_0) + eps)
+
     elif dt_adaptation == "trust_region":
         # Limit step size such that max atomic displacement is approximately max_atom_disp
-        # dt * gad_vec_norm_max ≈ max_atom_disp
         dt_eff = dt_scale_factor * max_atom_disp / (gad_vec_norm_max + eps)
+
+    # =========================================================================
+    # Advanced strategies (new, potentially better)
+    # =========================================================================
+    elif dt_adaptation == "harmonic":
+        # Use natural timescale from harmonic oscillator: τ ~ 1/ω ~ 1/sqrt(k/m) ~ 1/sqrt(|λ|)
+        # For transition state search, the relevant "stiffness" is |λ₀|
+        # This gives physically meaningful step sizes that adapt to local curvature
+        # When |λ₀| is small (flat region), take larger steps
+        # When |λ₀| is large (curved region), take smaller steps
+        omega = math.sqrt(abs(eig_0) + eps)  # Effective angular frequency
+        dt_eff = dt_base * dt_scale_factor / omega
+
+    elif dt_adaptation == "spectral_gap":
+        # Use the eigenvalue gap (λ₁ - λ₀) as a stability indicator
+        # Larger gap = clearer separation between TS mode and others = safer to take larger steps
+        # Small gap = potential mode crossing = be careful, use smaller steps
+        # This captures mode stability without needing path history
+        gap = eig_1 - eig_0  # Always positive since eig_0 is lowest
+        # Normalize gap by typical eigenvalue scale
+        gap_scale = gap / (abs(eig_0) + abs(eig_1) + eps)
+        # Larger gap_scale → larger dt, but tempered by sqrt to avoid extremes
+        dt_eff = dt_base * dt_scale_factor * math.sqrt(gap_scale + 0.1)
+
+    elif dt_adaptation == "gad_angle":
+        # Use the angle between force F and GAD vector as geometry indicator
+        # GAD = F + 2(F·v)v, so the relationship between F and GAD tells us about
+        # the local geometry:
+        # - cos(θ) ≈ 1: Force and GAD aligned, minimum-like region, can step larger
+        # - cos(θ) ≈ -1: Force and GAD opposite, near maximum along v direction
+        # - cos(θ) ≈ 0: Balanced saddle region, intermediate steps
+        #
+        # Near TS: F → 0, so both norms vanish; this naturally gives moderate dt
+        if force_norm_sq < eps or gad_norm_sq < eps:
+            # Very small force = probably near critical point, use base dt
+            cos_theta = 0.0
+        else:
+            cos_theta = force_dot_gad / (math.sqrt(force_norm_sq * gad_norm_sq) + eps)
+
+        # Map cos(theta) to step size multiplier:
+        # cos = 1 (aligned): multiplier ~ 1.5 (larger steps, minimum-like)
+        # cos = 0 (orthogonal): multiplier ~ 1.0 (balanced)
+        # cos = -1 (opposite): multiplier ~ 0.7 (careful steps)
+        multiplier = 1.0 + 0.3 * cos_theta  # Range: [0.7, 1.3]
+        dt_eff = dt_base * dt_scale_factor * multiplier
+
+    elif dt_adaptation == "composite":
+        # Weighted combination of multiple signals:
+        # 1. Curvature contribution (harmonic-like)
+        # 2. GAD magnitude contribution (trust region-like)
+        # This balances "what the PES looks like" with "how big the step will be"
+        omega = math.sqrt(abs(eig_0) + eps)
+        curvature_factor = 1.0 / omega
+
+        # GAD magnitude factor: smaller when GAD is large
+        gad_factor = max_atom_disp / (gad_vec_norm_max + eps)
+
+        # Geometric mean gives balanced contribution from both
+        dt_eff = dt_base * dt_scale_factor * math.sqrt(curvature_factor * gad_factor)
+
+    elif dt_adaptation == "force_gad_ratio":
+        # Ratio of |F| to |GAD| as a geometry indicator
+        # At minimum: F = 0, GAD = 0 → ratio undefined, use base
+        # At saddle: F small, GAD can be nonzero if λ₀ significant → ratio small
+        # Far from critical: F large, GAD ≈ F → ratio ≈ 1
+        #
+        # Use this ratio to slow down near saddles where GAD > F
+        force_norm = math.sqrt(force_norm_sq + eps)
+        gad_norm = math.sqrt(gad_norm_sq + eps)
+        ratio = force_norm / (gad_norm + eps)
+
+        # ratio < 1: GAD > F (saddle-like) → smaller steps
+        # ratio ≈ 1: GAD ≈ F → base steps
+        # ratio > 1: GAD < F (shouldn't happen often) → larger steps
+        # Cap the multiplier to avoid extremes
+        multiplier = min(max(ratio, 0.3), 2.0)
+        dt_eff = dt_base * dt_scale_factor * multiplier
+
     else:
         dt_eff = dt_base
 
@@ -199,7 +308,14 @@ def run_gad_baseline(
             eig_1 = float(evals_vib[1].item())
             eig_product = eig_0 * eig_1
         else:
+            eig_1 = 0.0
             eig_product = float("inf")
+
+        # Additional quantities for advanced dt strategies
+        gad_flat = gad_vec.reshape(-1)
+        force_dot_gad = float(torch.dot(f_flat, gad_flat).item())
+        force_norm_sq = float(torch.dot(f_flat, f_flat).item())
+        gad_norm_sq = float(torch.dot(gad_flat, gad_flat).item())
 
         # Compute state-based adaptive dt (no path history)
         dt_eff = compute_state_based_dt(
@@ -212,6 +328,11 @@ def run_gad_baseline(
             gad_vec_norm_max=gad_vec_norm_max,
             max_atom_disp=max_atom_disp,
             dt_scale_factor=dt_scale_factor,
+            # Advanced strategy inputs
+            eig_1=eig_1,
+            force_dot_gad=force_dot_gad,
+            force_norm_sq=force_norm_sq,
+            gad_norm_sq=gad_norm_sq,
         )
 
         if logger is not None:
@@ -430,9 +551,22 @@ def main() -> None:
     parser.add_argument(
         "--dt-adaptation",
         type=str,
-        default="gradient",
-        choices=["none", "gradient", "eigenvalue"],
-        help="State-based adaptive dt method: none (fixed), gradient (1/grad_norm), eigenvalue (1/|λ₀|)",
+        default="composite",
+        choices=[
+            "none",  # Fixed timestep
+            # Basic (don't work well):
+            "gradient",  # dt ~ 1/grad_norm
+            "eigenvalue",  # dt ~ 1/|λ₀|
+            "trust_region",  # dt = scale * max_disp / |gad_vec|
+            # Advanced (recommended):
+            "harmonic",  # dt ~ 1/sqrt(|λ₀|), natural timescale from curvature
+            "spectral_gap",  # dt ~ sqrt(λ₁ - λ₀), eigenvalue gap as stability indicator
+            "gad_angle",  # Uses angle between F and GAD as geometry indicator
+            "composite",  # Geometric mean of harmonic + trust_region
+            "force_gad_ratio",  # dt ~ |F|/|GAD|, ratio indicates saddle proximity
+        ],
+        help="State-based adaptive dt method. Advanced strategies (harmonic, spectral_gap, "
+             "gad_angle, composite, force_gad_ratio) are recommended over basic ones.",
     )
     parser.add_argument("--dt-min", type=float, default=1e-6)
     parser.add_argument("--dt-max", type=float, default=0.08)
