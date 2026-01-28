@@ -43,6 +43,27 @@ from .recursive_hisd import (
 from ..logging import TrajectoryLogger
 
 
+def _require_full_hessian_output(
+    predict_fn,
+    coords: torch.Tensor,
+    atomic_nums: torch.Tensor,
+    out: Dict[str, Any],
+) -> Tuple[Dict[str, Any], torch.Tensor, torch.Tensor]:
+    """Ensure full forces + Hessian are present (no approximations)."""
+    forces = out.get("forces")
+    hessian = out.get("hessian")
+    if forces is None or hessian is None:
+        out = predict_fn(coords, atomic_nums, do_hessian=True, require_grad=False)
+        forces = out.get("forces")
+        hessian = out.get("hessian")
+    if forces is None or hessian is None:
+        raise RuntimeError(
+            "Recursive HiSD requires full forces and full Hessian at every step; received None. "
+            "Disable lightweight mode and enable do_hessian=True in the calculator."
+        )
+    return out, forces, hessian
+
+
 def run_recursive_hisd_with_logging(
     predict_fn,
     coords0: torch.Tensor,
@@ -89,10 +110,11 @@ def run_recursive_hisd_with_logging(
 
     # Get SCINE elements
     out = predict_fn(coords, atomic_nums, do_hessian=True, require_grad=False)
+    out, _, hessian0 = _require_full_hessian_output(predict_fn, coords, atomic_nums, out)
     scine_elements = get_scine_elements_from_predict_output(out)
 
     # Compute initial Morse index
-    hess_proj = get_projected_hessian(out["hessian"], coords, atomic_nums, scine_elements=scine_elements)
+    hess_proj = get_projected_hessian(hessian0, coords, atomic_nums, scine_elements=scine_elements)
     evals, evecs = torch.linalg.eigh(hess_proj)
     vib_mask = torch.abs(evals) > config.tr_threshold
     vib_evals = evals[vib_mask]
@@ -119,7 +141,8 @@ def run_recursive_hisd_with_logging(
 
         # Get current Morse index
         out = predict_fn(coords, atomic_nums, do_hessian=True, require_grad=False)
-        hess_proj = get_projected_hessian(out["hessian"], coords, atomic_nums, scine_elements=scine_elements)
+        out, _, hessian = _require_full_hessian_output(predict_fn, coords, atomic_nums, out)
+        hess_proj = get_projected_hessian(hessian, coords, atomic_nums, scine_elements=scine_elements)
         evals, evecs = torch.linalg.eigh(hess_proj)
         vib_mask = torch.abs(evals) > config.tr_threshold
         vib_evals = evals[vib_mask]
@@ -133,9 +156,8 @@ def run_recursive_hisd_with_logging(
             for level_step in range(config.max_steps_per_level):
                 # Get energy, forces, Hessian - ALWAYS COMPUTE FULL HESSIAN
                 out = predict_fn(coords, atomic_nums, do_hessian=True, require_grad=False)
+                out, forces, hessian = _require_full_hessian_output(predict_fn, coords, atomic_nums, out)
                 energy = out.get("energy")
-                forces = out.get("forces")
-                hessian = out.get("hessian")
 
                 energy_value = _to_float(energy)
                 force_mean = _force_mean(forces)
@@ -227,9 +249,8 @@ def run_recursive_hisd_with_logging(
         for level_step in range(config.max_steps_per_level):
             # Get energy, forces, Hessian - ALWAYS COMPUTE FULL HESSIAN
             out = predict_fn(coords, atomic_nums, do_hessian=True, require_grad=False)
+            out, forces, hessian = _require_full_hessian_output(predict_fn, coords, atomic_nums, out)
             energy = out.get("energy")
-            forces = out.get("forces")
-            hessian = out.get("hessian")
 
             energy_value = _to_float(energy)
             force_mean = _force_mean(forces)
@@ -299,9 +320,10 @@ def run_recursive_hisd_with_logging(
     final_neg_vib = -1
     try:
         final_out = predict_fn(coords, atomic_nums, do_hessian=True, require_grad=False)
+        final_out, _, final_hessian = _require_full_hessian_output(predict_fn, coords, atomic_nums, final_out)
         scine_elements = get_scine_elements_from_predict_output(final_out)
         final_vib_eigvals = vibrational_eigvals(
-            final_out["hessian"], coords, atomic_nums, scine_elements=scine_elements
+            final_hessian, coords, atomic_nums, scine_elements=scine_elements
         )
         final_neg_vib = int((final_vib_eigvals < 0).sum().item())
     except Exception:

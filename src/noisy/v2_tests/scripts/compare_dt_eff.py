@@ -12,32 +12,50 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 
 import matplotlib.pyplot as plt
 import numpy as np
 
 
-def load_trajectory_data(diag_dir: Path) -> Dict[str, Dict[str, List[float]]]:
+def _extract_trailing_index(name: str) -> Optional[str]:
+    """Extract trailing digits from a string (e.g., sample_001 -> 001)."""
+    match = re.search(r"(\d+)$", name)
+    return match.group(1) if match else None
+
+
+def load_trajectory_data(diag_dir: Path) -> Dict[str, Dict[str, Any]]:
     """Load all trajectory JSON files from a diagnostics directory.
 
     Args:
         diag_dir: Path to diagnostics directory containing *_trajectory.json files
 
     Returns:
-        Dictionary mapping sample_id -> trajectory data dict
+        Dictionary mapping match_key -> {"sample_id", "data"}
     """
-    trajectories = {}
+    trajectories: Dict[str, Dict[str, Any]] = {}
 
     for traj_file in sorted(diag_dir.glob("*_trajectory.json")):
         # Extract sample_id from filename (e.g., "sample_000_trajectory.json" -> "sample_000")
         sample_id = traj_file.stem.replace("_trajectory", "")
+        match_key = _extract_trailing_index(sample_id) or sample_id
 
         with open(traj_file) as f:
             traj_data = json.load(f)
 
-        trajectories[sample_id] = traj_data
+        if match_key in trajectories:
+            print(
+                f"WARNING: Duplicate match key {match_key} in {diag_dir}. "
+                f"Keeping first occurrence ({trajectories[match_key]['sample_id']})."
+            )
+            continue
+
+        trajectories[match_key] = {
+            "sample_id": sample_id,
+            "data": traj_data,
+        }
 
     return trajectories
 
@@ -147,7 +165,7 @@ def compare_all_trajectories(
     traj_nopath = load_trajectory_data(nopath_dir)
     print(f"  Found {len(traj_nopath)} trajectories")
 
-    # Find common sample IDs
+    # Find common match keys (typically trailing indices)
     common_samples = sorted(set(traj_path.keys()) & set(traj_nopath.keys()))
     print(f"\nComparing {len(common_samples)} common trajectories")
 
@@ -161,16 +179,25 @@ def compare_all_trajectories(
     for sample_id in common_samples:
         print(f"  Processing {sample_id}...")
 
-        dt_path = traj_path[sample_id].get("dt_eff") or traj_path[sample_id].get("step_size_eff", [])
-        dt_nopath = traj_nopath[sample_id].get("dt_eff") or traj_nopath[sample_id].get("step_size_eff", [])
+        entry_path = traj_path[sample_id]
+        entry_nopath = traj_nopath[sample_id]
+        traj_path_data = entry_path["data"]
+        traj_nopath_data = entry_nopath["data"]
+
+        dt_path = traj_path_data.get("dt_eff") or traj_path_data.get("step_size_eff", [])
+        dt_nopath = traj_nopath_data.get("dt_eff") or traj_nopath_data.get("step_size_eff", [])
 
         if not dt_path or not dt_nopath:
             print(f"    WARNING: Missing dt_eff (or step_size_eff) data for {sample_id}")
             continue
 
+        display_id = entry_path["sample_id"]
+        if entry_nopath["sample_id"] != entry_path["sample_id"]:
+            display_id = f"{entry_path['sample_id']}__{entry_nopath['sample_id']}"
+
         plot_path = output_dir / f"{sample_id}_dt_eff_comparison.png"
         stats = compare_dt_eff_single_trajectory(
-            sample_id=sample_id,
+            sample_id=display_id,
             dt_path=dt_path,
             dt_nopath=dt_nopath,
             output_path=plot_path,
