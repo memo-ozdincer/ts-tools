@@ -81,8 +81,8 @@ DT="${DT:-0.02}"
 #   - force_gad_ratio: dt ~ |F|/|GAD|, ratio indicates saddle proximity
 #                      Near saddles |GAD| > |F| → smaller steps
 #
-# If DT_ADAPTATION is set to "all", run all strategies sequentially
-DT_ADAPTATION="${DT_ADAPTATION:-all}"
+# Fixed dt for this comparison (override by env if needed)
+DT_ADAPTATION="${DT_ADAPTATION:-none}"
 DT_MIN="${DT_MIN:-1e-6}"
 DT_MAX="${DT_MAX:-0.08}"
 DT_SCALE_FACTOR="${DT_SCALE_FACTOR:-1.0}"
@@ -91,11 +91,10 @@ MIN_INTERATOMIC_DIST="${MIN_INTERATOMIC_DIST:-0.5}"
 TS_EPS="${TS_EPS:-1e-5}"
 TR_THRESHOLD="${TR_THRESHOLD:-1e-6}"
 
-# Eckart projection options
-# Set to "true" to enable full projection (gradient + guide vector v)
-# This prevents TR leakage and improves numerical stability
-# Submit with: PROJECT_GRADIENT_AND_V=true sbatch gad_plain_run_nopath.slurm
-PROJECT_GRADIENT_AND_V="${PROJECT_GRADIENT_AND_V:-true}"
+# Hessian projection variants
+# - none: raw Hessian (no Eckart projection)
+# - eckart_mw: Eckart-projected, mass-weighted Hessian
+# Gradient/guide-vector projection is toggled per variant below
 
 export PYTHONPATH="$PROJECT_DIR:$PYTHONPATH"
 
@@ -103,22 +102,22 @@ THREADS_PER_WORKER="${THREADS_PER_WORKER:-4}"
 N_WORKERS=$((TOTAL_CPUS / THREADS_PER_WORKER))
 if [ "$N_WORKERS" -lt 1 ]; then N_WORKERS=1; fi
 
-# All available dt adaptation strategies
-ALL_STRATEGIES="none gradient eigenvalue trust_region harmonic spectral_gap gad_angle composite force_gad_ratio"
+run_variant() {
+    local label="$1"
+    shift
+    local variant_out_dir="${OUT_DIR}/${label}"
+    mkdir -p "$variant_out_dir"
 
-run_single_strategy() {
-    local strategy="$1"
-    local strategy_out_dir="${OUT_DIR}/${strategy}"
-    mkdir -p "$strategy_out_dir"
-    
     echo "=============================================="
-    echo "Running dt_adaptation: $strategy"
-    echo "Output: $strategy_out_dir"
+    echo "Running variant: $label"
+    echo "dt_adaptation: $DT_ADAPTATION (fixed dt)"
+    echo "Output: $variant_out_dir"
+    echo "Extra args: $*"
     echo "=============================================="
-    
+
     python "$PROJECT_DIR/src/noisy/v2_tests/runners/run_gad_baselines_parallel_nopath.py" \
         --h5-path "$H5_PATH" \
-        --out-dir "$strategy_out_dir" \
+        --out-dir "$variant_out_dir" \
         --scine-functional "$SCINE_FUNCTIONAL" \
         --n-steps "$N_STEPS" \
         --max-samples "$MAX_SAMPLES" \
@@ -128,7 +127,7 @@ run_single_strategy() {
         --threads-per-worker "$THREADS_PER_WORKER" \
         --baseline mode_tracked \
         --dt "$DT" \
-        --dt-adaptation "$strategy" \
+        --dt-adaptation "$DT_ADAPTATION" \
         --dt-min "$DT_MIN" \
         --dt-max "$DT_MAX" \
         --dt-scale-factor "$DT_SCALE_FACTOR" \
@@ -136,22 +135,33 @@ run_single_strategy() {
         --min-interatomic-dist "$MIN_INTERATOMIC_DIST" \
         --ts-eps "$TS_EPS" \
         --tr-threshold "$TR_THRESHOLD" \
-        $([ "$PROJECT_GRADIENT_AND_V" = "true" ] && echo "--project-gradient-and-v")
-    
-    echo "Completed: $strategy"
+        "$@"
+
+    echo "Completed: $label"
     echo ""
 }
 
-if [ "$DT_ADAPTATION" = "all" ]; then
-    echo "Running ALL dt adaptation strategies..."
-    for strategy in $ALL_STRATEGIES; do
-        run_single_strategy "$strategy"
-    done
-    echo "=============================================="
-    echo "All strategies completed!"
-    echo "Results in: $OUT_DIR"
-    echo "=============================================="
-else
-    # Run single specified strategy
-    run_single_strategy "$DT_ADAPTATION"
-fi
+VARIANT_LABELS=(
+    "no_hessian_projection"
+    "eckart_mw"
+    "project_gradient_and_v"
+)
+
+VARIANT_ARGS=(
+    "--hessian-projection none"
+    "--hessian-projection eckart_mw"
+    "--hessian-projection eckart_mw --project-gradient-and-v"
+)
+
+echo "Running fixed-dt projection variants..."
+for i in "${!VARIANT_LABELS[@]}"; do
+    label="${VARIANT_LABELS[$i]}"
+    args_str="${VARIANT_ARGS[$i]}"
+    read -r -a extra_args <<< "$args_str"
+    run_variant "$label" "${extra_args[@]}"
+done
+
+echo "=============================================="
+echo "All variants completed!"
+echo "Results in: $OUT_DIR"
+echo "=============================================="

@@ -226,6 +226,7 @@ def run_gad_baseline(
     tr_threshold: float,
     track_mode: bool,
     project_gradient_and_v: bool,
+    hessian_projection: str,
     log_dir: Optional[str],
     sample_id: str,
     formula: str,
@@ -256,10 +257,13 @@ def run_gad_baseline(
         forces = forces.reshape(-1, 3)
         num_atoms = int(forces.shape[0])
 
-        scine_elements = get_scine_elements_from_predict_output(out)
-        hess_proj = get_projected_hessian(hessian, coords, atomic_nums, scine_elements)
-        if hess_proj.dim() != 2 or hess_proj.shape[0] != 3 * num_atoms:
-            hess_proj = prepare_hessian(hess_proj, num_atoms)
+        if hessian_projection == "none":
+            hess_proj = prepare_hessian(hessian, num_atoms)
+        else:
+            scine_elements = get_scine_elements_from_predict_output(out)
+            hess_proj = get_projected_hessian(hessian, coords, atomic_nums, scine_elements)
+            if hess_proj.dim() != 2 or hess_proj.shape[0] != 3 * num_atoms:
+                hess_proj = prepare_hessian(hess_proj, num_atoms)
 
         evals, evecs = torch.linalg.eigh(hess_proj)
         vib_mask = _vib_mask_from_evals(evals, tr_threshold)
@@ -429,6 +433,7 @@ def run_single_sample(
             tr_threshold=params["tr_threshold"],
             track_mode=params["track_mode"],
             project_gradient_and_v=params["project_gradient_and_v"],
+            hessian_projection=params["hessian_projection"],
             log_dir=params.get("log_dir"),
             sample_id=sample_id,
             formula=formula,
@@ -588,6 +593,14 @@ def main() -> None:
         help="Project gradient and guide vector to prevent TR leakage (recommended for stability)",
     )
 
+    parser.add_argument(
+        "--hessian-projection",
+        type=str,
+        default="eckart_mw",
+        choices=["eckart_mw", "none"],
+        help="Hessian eigenvector projection mode: 'eckart_mw' (Eckart-projected, mass-weighted) or 'none' (raw).",
+    )
+
     parser.add_argument("--stop-at-ts", action="store_true")
     parser.add_argument("--no-stop-at-ts", dest="stop_at_ts", action="store_false")
     parser.set_defaults(stop_at_ts=True)
@@ -612,6 +625,7 @@ def main() -> None:
         "tr_threshold": args.tr_threshold,
         "track_mode": track_mode,
         "project_gradient_and_v": args.project_gradient_and_v,
+        "hessian_projection": args.hessian_projection,
         "stop_at_ts": args.stop_at_ts,
         "log_dir": str(diag_dir),
     }
