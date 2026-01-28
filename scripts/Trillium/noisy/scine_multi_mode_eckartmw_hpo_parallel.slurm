@@ -71,6 +71,9 @@ START_FROM="${START_FROM:-midpoint_rt_noise2.0A}"
 NOISE_SEED="${NOISE_SEED:-42}"
 SCINE_FUNCTIONAL="${SCINE_FUNCTIONAL:-DFTB0}"
 
+# Submit with: PROJECT_GRADIENT_AND_V=true sbatch scine_multi_mode_eckartmw_hpo_parallel.slurm
+PROJECT_GRADIENT_AND_V="${PROJECT_GRADIENT_AND_V:-true}"
+
 N_TRIALS="${N_TRIALS:-500}"
 N_STARTUP_TRIALS="${N_STARTUP_TRIALS:-5}"
 STUDY_NAME="${STUDY_NAME:-scine_multi_mode_hpo_parallel_${SLURM_JOB_ID}}"
@@ -125,7 +128,8 @@ python -m src.noisy.scine_multi_mode_eckartmw_hpo_parallel \
     $SKIP_VERIFY_ARG \
     --wandb \
     --wandb-project "scine-multi-mode-hpo" \
-    --util-log-every 10
+    --util-log-every 10 \
+    $([ "$PROJECT_GRADIENT_AND_V" = "true" ] && echo "--project-gradient-and-v")
 
 EXIT_CODE=$?
 

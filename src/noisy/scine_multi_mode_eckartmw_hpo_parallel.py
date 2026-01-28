@@ -75,6 +75,7 @@ BASELINE_PARAMS = {
     "hip_eigh_device": "cpu",
     "early_stop_patience": 500,
     "early_stop_min_steps": 200,
+    "project_gradient_and_v": False,
 }
 
 
@@ -117,6 +118,7 @@ def run_single_sample(
                 profile_every=0,
                 early_stop_patience=params.get("early_stop_patience", 0),
                 early_stop_min_steps=params.get("early_stop_min_steps", 100),
+                project_gradient_and_v=params.get("project_gradient_and_v", False),
             )
         wall_time = time.time() - t0
 
@@ -391,8 +393,15 @@ def main():
     parser.add_argument("--wandb", action="store_true")
     parser.add_argument("--wandb-project", type=str, default="scine-multi-mode-hpo")
     parser.add_argument("--wandb-entity", type=str, default=None)
+    parser.add_argument(
+        "--project-gradient-and-v",
+        action="store_true",
+        help="Project gradient and guide vector v (Eckart-MW full projection).",
+    )
 
     args = parser.parse_args()
+
+    BASELINE_PARAMS["project_gradient_and_v"] = bool(args.project_gradient_and_v)
 
     os.makedirs(args.out_dir, exist_ok=True)
     device = "cpu"
@@ -424,6 +433,7 @@ def main():
                 "noise_seed": args.noise_seed,
                 "scine_functional": args.scine_functional,
                 "baseline_params": BASELINE_PARAMS,
+                "project_gradient_and_v": args.project_gradient_and_v,
                 "n_workers": args.n_workers,
                 "threads_per_worker": threads_per_worker,
             },
