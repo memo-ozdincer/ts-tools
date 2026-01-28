@@ -57,9 +57,17 @@ def summarize_tr_metrics(
     if len(n_tr_modes) > 0:
         frac_expected = float(np.mean(n_tr_modes == expected_tr_modes))
         frac_off = float(np.mean(n_tr_modes != expected_tr_modes))
+        n_tr_min = int(np.min(n_tr_modes))
+        n_tr_max = int(np.max(n_tr_modes))
+        n_tr_unique = sorted({int(x) for x in n_tr_modes.tolist()})
+        n_tr_changes = int(np.sum(n_tr_modes[1:] != n_tr_modes[:-1])) if len(n_tr_modes) > 1 else 0
     else:
         frac_expected = float("nan")
         frac_off = float("nan")
+        n_tr_min = -1
+        n_tr_max = -1
+        n_tr_unique = []
+        n_tr_changes = 0
 
     if len(tr_eig_max) > 0:
         frac_over_threshold = float(np.mean(tr_eig_max > tr_threshold))
@@ -75,6 +83,10 @@ def summarize_tr_metrics(
         "n_steps": n_steps,
         "expected_tr_modes": expected_tr_modes,
         "tr_threshold": tr_threshold,
+        "n_tr_modes_min": n_tr_min,
+        "n_tr_modes_max": n_tr_max,
+        "n_tr_modes_unique": n_tr_unique,
+        "n_tr_modes_changes": n_tr_changes,
         "frac_steps_expected_tr_modes": frac_expected,
         "frac_steps_off_tr_modes": frac_off,
         "frac_steps_tr_eig_max_over_threshold": frac_over_threshold,
@@ -211,6 +223,9 @@ def main() -> None:
         "mean_frac_expected_tr_modes": float(np.mean([s["frac_steps_expected_tr_modes"] for s in valid])) if valid else float("nan"),
         "mean_frac_tr_eig_over_threshold": float(np.mean([s["frac_steps_tr_eig_max_over_threshold"] for s in valid])) if valid else float("nan"),
         "max_tr_eig_overall": float(np.max([s["tr_eig_max_max"] for s in valid])) if valid else float("nan"),
+        "mean_n_tr_modes_changes": float(np.mean([s["n_tr_modes_changes"] for s in valid])) if valid else float("nan"),
+        "min_n_tr_modes_overall": int(np.min([s["n_tr_modes_min"] for s in valid])) if valid else -1,
+        "max_n_tr_modes_overall": int(np.max([s["n_tr_modes_max"] for s in valid])) if valid else -1,
     }
     aggregate_path = output_dir / "tr_mode_aggregate.json"
     with open(aggregate_path, "w") as f:
