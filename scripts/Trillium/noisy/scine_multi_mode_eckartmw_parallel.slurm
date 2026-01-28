@@ -72,6 +72,9 @@ START_FROM="${START_FROM:-midpoint_rt_noise2.0A}"
 NOISE_SEED="${NOISE_SEED:-42}"
 SCINE_FUNCTIONAL="${SCINE_FUNCTIONAL:-DFTB0}"
 
+# Submit with: PROJECT_GRADIENT_AND_V=true sbatch scine_multi_mode_eckartmw_parallel.slurm
+PROJECT_GRADIENT_AND_V="${PROJECT_GRADIENT_AND_V:-true}"
+
 DT="${DT:-0.004998616}"
 DT_MAX="${DT_MAX:-0.0787679}"
 MAX_ATOM_DISP="${MAX_ATOM_DISP:-0.3508912104455338}"
@@ -142,7 +145,8 @@ python -m src.noisy.scine_multi_mode_eckartmw_parallel \
     --max-escape-cycles "$MAX_ESCAPE_CYCLES" \
     --wandb \
     --wandb-project "noisy-multi-mode-eckartmw" \
-    --util-log-every 10
+    --util-log-every 10 \
+    $([ "$PROJECT_GRADIENT_AND_V" = "true" ] && echo "--project-gradient-and-v")
 
 EXIT_CODE=$?
 
