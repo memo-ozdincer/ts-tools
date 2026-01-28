@@ -9,6 +9,7 @@ Adaptive dt strategies (state-based only, no path information):
 - none: fixed timestep
 - gradient: dt_eff = clamp(dt_base * scale_factor / (grad_norm + eps), dt_min, dt_max)
 - eigenvalue: dt_eff = clamp(dt_base * scale_factor / (|eig_0| + eps), dt_min, dt_max)
+- trust_region: dt_eff = clamp(dt_scale_factor * max_atom_disp / (max(gad_vec_norm) + eps), dt_min, dt_max)
 """
 
 from __future__ import annotations
@@ -57,6 +58,8 @@ def compute_state_based_dt(
     dt_adaptation: str,
     grad_norm: float,
     eig_0: float,
+    gad_vec_norm_max: float = 1.0,
+    max_atom_disp: float = 0.1,
     dt_scale_factor: float = 1.0,
     eps: float = 1e-8,
 ) -> float:
@@ -66,9 +69,11 @@ def compute_state_based_dt(
         dt_base: Base timestep
         dt_min: Minimum allowed timestep
         dt_max: Maximum allowed timestep
-        dt_adaptation: Adaptation method ('none', 'gradient', 'eigenvalue')
+        dt_adaptation: Adaptation method ('none', 'gradient', 'eigenvalue', 'trust_region')
         grad_norm: Current gradient norm (||-∇E||)
         eig_0: Lowest vibrational eigenvalue
+        gad_vec_norm_max: Max norm of GAD vector on any atom
+        max_atom_disp: Maximum allowed atomic displacement
         dt_scale_factor: Scaling factor for adaptation
         eps: Small constant to prevent division by zero
 
@@ -84,6 +89,10 @@ def compute_state_based_dt(
     elif dt_adaptation == "eigenvalue":
         # Smaller steps when curvature (|λ₀|) is large
         dt_eff = dt_base * dt_scale_factor / (abs(eig_0) + eps)
+    elif dt_adaptation == "trust_region":
+        # Limit step size such that max atomic displacement is approximately max_atom_disp
+        # dt * gad_vec_norm_max ≈ max_atom_disp
+        dt_eff = dt_scale_factor * max_atom_disp / (gad_vec_norm_max + eps)
     else:
         dt_eff = dt_base
 
@@ -184,6 +193,7 @@ def run_gad_baseline(
         # State-based quantities for adaptive dt and convergence check
         grad_norm = float(f_flat.norm().item())
         eig_0 = float(evals_vib[0].item()) if int(evals_vib.numel()) > 0 else 0.0
+        gad_vec_norm_max = float(gad_vec.norm(dim=1).max().item())
 
         if int(evals_vib.numel()) >= 2:
             eig_1 = float(evals_vib[1].item())
@@ -199,6 +209,8 @@ def run_gad_baseline(
             dt_adaptation=dt_adaptation,
             grad_norm=grad_norm,
             eig_0=eig_0,
+            gad_vec_norm_max=gad_vec_norm_max,
+            max_atom_disp=max_atom_disp,
             dt_scale_factor=dt_scale_factor,
         )
 
