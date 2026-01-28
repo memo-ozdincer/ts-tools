@@ -83,7 +83,7 @@ mkdir -p "$OUT_DIR"
 # =============================================================================
 N_STEPS="${N_STEPS:-5000}"
 MAX_SAMPLES="${MAX_SAMPLES:-20}"
-START_FROM="${START_FROM:-midpoint_rt_noise1.0A}"
+START_FROM="${START_FROM:-midpoint_rt_noise2.0A}"
 NOISE_SEED="${NOISE_SEED:-42}"
 SCINE_FUNCTIONAL="${SCINE_FUNCTIONAL:-DFTB0}"
 
