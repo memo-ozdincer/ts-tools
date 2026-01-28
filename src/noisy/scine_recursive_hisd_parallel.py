@@ -126,7 +126,12 @@ def run_batch(
 
     # Recursive HiSD specific stats
     recursion_depths = [r["recursion_depth"] for r in results if r["error"] is None]
-    initial_indices = [r["initial_index"] for r in results if r["error"] is None and r["initial_index"] > 0]
+    initial_indices = [r["initial_index"] for r in results if r["error"] is None and r["initial_index"] >= 0]
+
+    # Initial index distribution
+    initial_index_counts = {}
+    for idx in initial_indices:
+        initial_index_counts[idx] = initial_index_counts.get(idx, 0) + 1
 
     return {
         "n_samples": n_samples,
@@ -139,6 +144,7 @@ def run_batch(
         "neg_vib_counts": neg_vib_counts,
         "mean_recursion_depth": np.mean(recursion_depths) if recursion_depths else float("nan"),
         "mean_initial_index": np.mean(initial_indices) if initial_indices else float("nan"),
+        "initial_index_counts": initial_index_counts,
         "results": results,
     }
 
@@ -254,6 +260,7 @@ def main() -> None:
         print(f"  Mean steps (when success): {metrics['mean_steps_when_success']:.1f}")
         print(f"  Mean recursion depth: {metrics['mean_recursion_depth']:.1f}")
         print(f"  Mean initial index: {metrics['mean_initial_index']:.1f}")
+        print(f"  Initial index distribution: {metrics['initial_index_counts']}")
         print(f"  Final index distribution: {metrics['neg_vib_counts']}")
 
         job_id = os.environ.get("SLURM_JOB_ID", "local")

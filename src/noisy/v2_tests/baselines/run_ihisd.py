@@ -64,6 +64,9 @@ def run_ihisd_with_logging(
     if config is None:
         config = IHiSDConfig()
 
+    if coords0 is None:
+        raise ValueError("coords0 cannot be None")
+
     coords = coords0.detach().clone().to(torch.float32)
     if coords.dim() == 3 and coords.shape[0] == 1:
         coords = coords[0]
@@ -73,9 +76,19 @@ def run_ihisd_with_logging(
     logger = TrajectoryLogger(sample_id=sample_id, formula=formula)
     logger.known_ts_coords = known_ts_coords
 
-    # Get SCINE elements for Hessian projection
+    # Get SCINE elements and compute initial Morse index
     out = predict_fn(coords, atomic_nums, do_hessian=True, require_grad=False)
     scine_elements = get_scine_elements_from_predict_output(out)
+
+    # Compute initial Morse index for tracking
+    initial_morse_index = -1
+    try:
+        initial_vib_eigvals = vibrational_eigvals(
+            out["hessian"], coords, atomic_nums, scine_elements=scine_elements
+        )
+        initial_morse_index = int((initial_vib_eigvals < 0).sum().item())
+    except Exception:
+        pass
 
     def get_proj_hessian_fn(hessian, coords, atomic_nums, scine_elem):
         return get_projected_hessian(hessian, coords, atomic_nums, scine_elements=scine_elem)
@@ -94,11 +107,12 @@ def run_ihisd_with_logging(
     disp_history = []
     prev_coords = coords.clone()
     prev_energy = None
+    default_dt = config.dt_base if config else 0.005
 
     for i, step_info in enumerate(trajectory):
         step_energy = step_info.get("energy", float("nan"))
 
-        disp = step_info.get("direction_norm", 0) * step_info.get("dt_used", config.dt_base)
+        disp = step_info.get("direction_norm", 0) * step_info.get("dt_used", default_dt)
         disp_history.append(disp)
         x_disp_window = float(np.mean(disp_history[-10:])) if disp_history else float("nan")
 
@@ -109,7 +123,7 @@ def run_ihisd_with_logging(
             forces=None,
             hessian_proj=None,
             gad_vec=None,
-            dt_eff=step_info.get("dt_used", config.dt_base),
+            dt_eff=step_info.get("dt_used", default_dt),
             coords_prev=prev_coords if i > 0 else None,
             energy_prev=prev_energy,
             x_disp_window=x_disp_window,
@@ -150,12 +164,13 @@ def run_ihisd_with_logging(
         "steps_taken": result["total_steps"],
         "steps_to_ts": result.get("converged_step"),
         "final_neg_vibrational": final_neg_vib,
+        "initial_index": initial_morse_index,
         "final_index": result.get("final_index", -1),
         "final_theta": result.get("final_theta", 0),
         "theta_min": result.get("theta_min", 0),
         "theta_max": result.get("theta_max", 0),
         "theta_trajectory": theta_trajectory,
-        "search_direction": config.search_direction,
+        "search_direction": config.search_direction if config else 1,
         "algorithm": "ihisd",
     }
 
@@ -177,6 +192,21 @@ def run_single_sample_ihisd(
 
     diag_dir = Path(out_dir) / "diagnostics"
     diag_dir.mkdir(parents=True, exist_ok=True)
+
+    if coords is None:
+        return {
+            "final_neg_vib": -1,
+            "steps_taken": 0,
+            "steps_to_ts": None,
+            "success": False,
+            "wall_time": 0,
+            "error": "coords is None",
+            "algorithm": "ihisd",
+            "initial_index": -1,
+            "final_index": -1,
+            "final_theta": 0,
+            "theta_max": 0,
+        }
 
     try:
         # Build config from params
@@ -222,6 +252,7 @@ def run_single_sample_ihisd(
             "wall_time": wall_time,
             "error": None,
             "algorithm": "ihisd",
+            "initial_index": out_dict.get("initial_index", -1),
             "final_index": out_dict.get("final_index", -1),
             "final_theta": out_dict.get("final_theta", 0),
             "theta_max": out_dict.get("theta_max", 0),
@@ -237,6 +268,7 @@ def run_single_sample_ihisd(
             "wall_time": wall_time,
             "error": str(e),
             "algorithm": "ihisd",
+            "initial_index": -1,
             "final_index": -1,
             "final_theta": 0,
             "theta_max": 0,

@@ -65,6 +65,9 @@ def run_recursive_hisd_with_logging(
     if config is None:
         config = RecursiveHiSDConfig()
 
+    if coords0 is None:
+        raise ValueError("coords0 cannot be None")
+
     coords = coords0.detach().clone().to(torch.float32)
     if coords.dim() == 3 and coords.shape[0] == 1:
         coords = coords[0]
@@ -74,9 +77,19 @@ def run_recursive_hisd_with_logging(
     logger = TrajectoryLogger(sample_id=sample_id, formula=formula)
     logger.known_ts_coords = known_ts_coords
 
-    # Get SCINE elements for Hessian projection
+    # Get SCINE elements and compute initial Morse index
     out = predict_fn(coords, atomic_nums, do_hessian=True, require_grad=False)
     scine_elements = get_scine_elements_from_predict_output(out)
+
+    # Compute initial Morse index for tracking
+    initial_morse_index = -1
+    try:
+        initial_vib_eigvals = vibrational_eigvals(
+            out["hessian"], coords, atomic_nums, scine_elements=scine_elements
+        )
+        initial_morse_index = int((initial_vib_eigvals < 0).sum().item())
+    except Exception:
+        pass
 
     def get_proj_hessian_fn(hessian, coords, atomic_nums, scine_elem):
         return get_projected_hessian(hessian, coords, atomic_nums, scine_elements=scine_elem)
@@ -144,13 +157,18 @@ def run_recursive_hisd_with_logging(
         converged_to_ts=result.get("converged", False) or (final_neg_vib == 1),
     )
 
+    # Use computed initial_morse_index if result doesn't have it
+    result_initial_index = result.get("initial_index", initial_morse_index)
+    if result_initial_index == -1:
+        result_initial_index = initial_morse_index
+
     final_out_dict = {
         "final_coords": final_coords.detach().cpu(),
         "trajectory": trajectory,
         "steps_taken": result["total_steps"],
         "steps_to_ts": result.get("converged_step"),
         "final_neg_vibrational": final_neg_vib,
-        "initial_index": result.get("initial_index", -1),
+        "initial_index": result_initial_index,
         "final_index": result.get("final_index", -1),
         "recursion_depth": result.get("recursion_depth", 0),
         "level_info": result.get("level_info", []),
@@ -175,6 +193,20 @@ def run_single_sample_recursive_hisd(
 
     diag_dir = Path(out_dir) / "diagnostics"
     diag_dir.mkdir(parents=True, exist_ok=True)
+
+    if coords is None:
+        return {
+            "final_neg_vib": -1,
+            "steps_taken": 0,
+            "steps_to_ts": None,
+            "success": False,
+            "wall_time": 0,
+            "error": "coords is None",
+            "algorithm": "recursive_hisd",
+            "initial_index": -1,
+            "final_index": -1,
+            "recursion_depth": 0,
+        }
 
     try:
         # Build config from params
