@@ -10,7 +10,7 @@
 #SBATCH --account=rrg-aspuru
 
 # =============================================================================
-# SCINE Multi-Mode Eckart-MW HPO (Parallel) - Trillium (CPU)
+# SCINE Multi-Mode Eckart-MW Grid Search (Parallel) - Trillium (CPU)
 # =============================================================================
 
 set -e
@@ -63,10 +63,10 @@ export WANDB_MODE=offline
 export WANDB_DIR="$OUT_DIR/wandb"
 mkdir -p "$WANDB_DIR"
 
-export WANDB_RUN_GROUP="HPO-multi-mode-eckartmw-trillium"
+export WANDB_RUN_GROUP="GRID-multi-mode-eckartmw-trillium"
 
-N_STEPS="${N_STEPS:-4000}"
-MAX_SAMPLES="${MAX_SAMPLES:-15}"
+N_STEPS="${N_STEPS:-10000}"
+MAX_SAMPLES="${MAX_SAMPLES:-20}"
 START_FROM="${START_FROM:-midpoint_rt_noise2.0A}"
 NOISE_SEED="${NOISE_SEED:-42}"
 SCINE_FUNCTIONAL="${SCINE_FUNCTIONAL:-DFTB0}"
@@ -74,15 +74,16 @@ SCINE_FUNCTIONAL="${SCINE_FUNCTIONAL:-DFTB0}"
 # Submit with: PROJECT_GRADIENT_AND_V=true sbatch scine_multi_mode_eckartmw_hpo_parallel.slurm
 PROJECT_GRADIENT_AND_V="${PROJECT_GRADIENT_AND_V:-true}"
 
-N_TRIALS="${N_TRIALS:-500}"
+N_TRIALS="${N_TRIALS:-16}"
 N_STARTUP_TRIALS="${N_STARTUP_TRIALS:-5}"
-STUDY_NAME="${STUDY_NAME:-scine_multi_mode_hpo_parallel_${SLURM_JOB_ID}}"
+SEARCH_METHOD="${SEARCH_METHOD:-grid}"
+STUDY_NAME="${STUDY_NAME:-scine_multi_mode_grid_parallel_${SLURM_JOB_ID}}"
 
 RESUME_FLAG="${RESUME:-0}"
 SKIP_VERIFY="${SKIP_VERIFY:-0}"
 
 echo "=============================================="
-echo "SCINE Multi-Mode Eckart-MW HPO - Trillium (Parallel CPU)"
+echo "SCINE Multi-Mode Eckart-MW GRID - Trillium (Parallel CPU)"
 echo "=============================================="
 echo "Date: $(date)"
 echo "SLURM_JOB_ID: $SLURM_JOB_ID"
@@ -95,6 +96,8 @@ echo "  MAX_SAMPLES: $MAX_SAMPLES"
 echo "  START_FROM: $START_FROM"
 echo "  NOISE_SEED: $NOISE_SEED"
 echo "  SCINE_FUNCTIONAL: $SCINE_FUNCTIONAL"
+echo "  SEARCH_METHOD: $SEARCH_METHOD"
+echo "  N_TRIALS: $N_TRIALS"
 echo "  N_WORKERS: $N_WORKERS"
 echo "  THREADS_PER_WORKER: $THREADS_PER_WORKER"
 echo "=============================================="
@@ -122,6 +125,7 @@ python -m src.noisy.scine_multi_mode_eckartmw_hpo_parallel \
     --n-trials "$N_TRIALS" \
     --n-startup-trials "$N_STARTUP_TRIALS" \
     --study-name "$STUDY_NAME" \
+    --search-method "$SEARCH_METHOD" \
     --n-workers "$N_WORKERS" \
     --threads-per-worker "$THREADS_PER_WORKER" \
     $RESUME_ARG \

@@ -18,6 +18,49 @@ def mass_weigh_hessian_torch(hessian, masses3d):
     return mm_sqrt_inv @ h_t @ mm_sqrt_inv
 
 
+def purify_hessian_sum_rules_torch(hessian: torch.Tensor, n_atoms: int) -> torch.Tensor:
+    """Enforce translational invariance sum rules on a Cartesian Hessian.
+
+    For a translationally invariant PES, the Hessian satisfies:
+        sum_j H[i,a; j,b] = 0   for all atom i, direction a.
+
+    ML-predicted Hessians violate this, causing residual TR eigenvalues (~5e-5)
+    after Eckart projection.  This function symmetrically distributes the
+    row-sum error so the sum rules hold exactly, which makes projection clean.
+
+    Fully differentiable (reshape / sum / subtract).
+
+    Args:
+        hessian: (3N, 3N) raw Cartesian Hessian
+        n_atoms: number of atoms N
+
+    Returns:
+        (3N, 3N) purified Hessian satisfying translational sum rules
+    """
+    dtype = torch.float64
+    H = hessian.to(dtype=dtype)
+    dim3N = 3 * n_atoms
+
+    # Reshape to block form (N, 3, N, 3)
+    H_block = H.reshape(n_atoms, 3, n_atoms, 3)
+
+    # For each row-block (i, a): compute sum over all (j, b)
+    # row_sums[i, a] = sum_j sum_b H[i, a, j, b]
+    row_sums = H_block.sum(dim=(2, 3))  # (N, 3)
+
+    # Distribute correction uniformly across all column entries:
+    # H[i, a, j, b] -= row_sums[i, a] / (3N)
+    correction = row_sums[:, :, None, None] / dim3N  # (N, 3, 1, 1)
+    H_block = H_block - correction
+
+    H_purified = H_block.reshape(dim3N, dim3N)
+
+    # Symmetrize (the correction may break exact symmetry slightly)
+    H_purified = 0.5 * (H_purified + H_purified.transpose(0, 1))
+
+    return H_purified
+
+
 def _center_of_mass(coords3d, masses):
     total_mass = torch.sum(masses)
     return (coords3d * masses[:, None]).sum(dim=0) / total_mass
@@ -94,6 +137,127 @@ def eckartprojection_torch(cart_coords, masses, eps=1e-10):
     # make numerically symmetric/idempotent
     P = 0.5 * (P + P.transpose(0, 1))
     return P
+
+
+# ---- reduced vibrational basis (Solution A) -----------------------------------
+
+def build_vibrational_basis_torch(
+    cart_coords: torch.Tensor,
+    masses: torch.Tensor,
+    eps: float = 1e-12,
+    linear_tol: float = 1e-6,
+) -> tuple[torch.Tensor, torch.Tensor, int]:
+    """Build orthonormal vibrational basis Q_vib by complementing the TR subspace.
+
+    Unlike the projector P = I - B(B^TB)^{-1}B^T which keeps the full (3N, 3N)
+    space with 6 near-zero eigenvalues, this constructs an explicit (3N, 3N-k)
+    orthonormal basis for the vibrational subspace, where k = 5 (linear) or 6.
+
+    The resulting Q_vib lets you project to a FULL-RANK (3N-k, 3N-k) Hessian
+    with no zero eigenvalues and no threshold-based filtering.
+
+    Args:
+        cart_coords: (N, 3) Cartesian coordinates
+        masses: (N,) atomic masses in AMU
+        eps: regularization for B construction
+        linear_tol: threshold on QR diagonal to detect degenerate TR modes
+            (linear molecules have only 2 rotations → k=5)
+
+    Returns:
+        Q_vib: (3N, 3N-k) orthonormal columns spanning vibrational space
+        Q_tr: (3N, k) orthonormal columns spanning TR space
+        k: number of TR modes (5 or 6)
+    """
+    B = eckart_B_massweighted_torch(cart_coords, masses, eps=eps)  # (3N, 6)
+    dim3N = B.shape[0]
+
+    # QR decomposition to orthonormalize TR generators
+    Q_full, R = torch.linalg.qr(B, mode="reduced")  # Q: (3N, 6), R: (6, 6)
+
+    # Detect near-degenerate columns (linear molecules: one rotation has ~0 norm)
+    diag_R = torch.abs(torch.diag(R))
+    valid_mask = diag_R > linear_tol
+    k = int(valid_mask.sum().item())
+    k = max(k, 1)  # at least 1 TR mode (safety)
+
+    # Keep only the valid TR columns
+    Q_tr = Q_full[:, :k]  # (3N, k)
+
+    # Build vibrational complement via SVD of Q_tr
+    # U from SVD of Q_tr (full_matrices=True) gives complete orthonormal basis.
+    # First k columns = TR space, remaining 3N-k columns = vibrational space.
+    U, _, _ = torch.linalg.svd(Q_tr, full_matrices=True)  # U: (3N, 3N)
+    Q_vib = U[:, k:]  # (3N, 3N-k)
+
+    return Q_vib, Q_tr, k
+
+
+def reduced_basis_hessian_torch(
+    hessian: torch.Tensor,
+    cart_coords: torch.Tensor,
+    atomsymbols: list[str],
+    purify: bool = False,
+) -> dict[str, torch.Tensor]:
+    """Mass-weight and project Hessian to the full-rank vibrational subspace.
+
+    Returns a (3N-k, 3N-k) Hessian with NO zero eigenvalues — every eigenvalue
+    is a genuine vibrational frequency.  This eliminates the need for
+    threshold-based TR filtering and avoids the numerical issues of working
+    with a rank-deficient (3N, 3N) projected Hessian.
+
+    Args:
+        hessian: (3N, 3N) raw Cartesian Hessian (eV/A^2)
+        cart_coords: (N, 3) Cartesian coordinates (Angstrom)
+        atomsymbols: list of element symbols ['C', 'H', ...]
+        purify: if True, enforce translational sum rules before projecting
+
+    Returns:
+        dict with keys:
+            H_red: (3N-k, 3N-k) full-rank vibrational Hessian
+            Q_vib: (3N, 3N-k) orthonormal vibrational basis
+            Q_tr:  (3N, k) orthonormal TR basis
+            k_tr:  int, number of TR modes (5 or 6)
+            H_mw:  (3N, 3N) mass-weighted Hessian (before reduction)
+            masses: (N,) atomic masses
+            sqrt_m: (3N,) sqrt(mass) repeated per coordinate
+            sqrt_m_inv: (3N,) 1/sqrt(mass) repeated per coordinate
+    """
+    device = hessian.device
+    dtype = torch.float64
+
+    coords_3d = cart_coords.reshape(-1, 3).to(dtype)
+    n_atoms = coords_3d.shape[0]
+
+    masses_t, masses3d_t, sqrt_m, sqrt_m_inv = get_mass_weights_torch(
+        atomsymbols, device=device, dtype=dtype
+    )
+
+    H = hessian.to(dtype=dtype)
+
+    # Optionally purify sum rules
+    if purify:
+        H = purify_hessian_sum_rules_torch(H, n_atoms)
+
+    # Mass-weight
+    H_mw = mass_weigh_hessian_torch(H, masses3d_t)
+
+    # Build vibrational basis
+    Q_vib, Q_tr, k_tr = build_vibrational_basis_torch(coords_3d, masses_t)
+
+    # Project to reduced space
+    H_red = Q_vib.transpose(0, 1) @ H_mw @ Q_vib  # (3N-k, 3N-k)
+    H_red = 0.5 * (H_red + H_red.transpose(0, 1))  # symmetrize
+
+    return {
+        "H_red": H_red,
+        "Q_vib": Q_vib,
+        "Q_tr": Q_tr,
+        "k_tr": k_tr,
+        "H_mw": H_mw,
+        "masses": masses_t,
+        "sqrt_m": sqrt_m,
+        "sqrt_m_inv": sqrt_m_inv,
+    }
 
 
 # ---- vector projection functions for GAD ----------------------------------------

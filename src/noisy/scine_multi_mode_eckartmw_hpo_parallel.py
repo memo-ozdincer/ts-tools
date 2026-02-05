@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Bayesian Hyperparameter Optimization for SCINE Multi-Mode Eckart-MW (parallel)."""
+"""Hyperparameter search for SCINE Multi-Mode Eckart-MW (parallel)."""
 
 from __future__ import annotations
 
@@ -250,6 +250,38 @@ def sample_hyperparameters(trial: optuna.Trial) -> Dict[str, Any]:
     return params
 
 
+def build_grid_params() -> list[Dict[str, Any]]:
+    dt_values = [1e-5, 3e-5, 1e-4, 3e-4, 1e-3, 1e-2, 1e-1, 1.0]
+    escape_cycles = [5000, 4000, 3000, 2500, 2000, 1500, 1200, 1000]
+
+    adapt_profiles = {
+        "high": {
+            "adaptive_delta": True,
+            "plateau_patience": 8,
+            "plateau_boost": 2.4,
+            "plateau_shrink": 0.4,
+        },
+        "low": {
+            "adaptive_delta": False,
+            "plateau_patience": 20,
+            "plateau_boost": 1.3,
+            "plateau_shrink": 0.65,
+        },
+    }
+
+    grid = []
+    for dt, max_cycles in zip(dt_values, escape_cycles):
+        for profile_name in ("high", "low"):
+            params = BASELINE_PARAMS.copy()
+            params.update(adapt_profiles[profile_name])
+            params["dt"] = dt
+            params["dt_max"] = max(BASELINE_PARAMS["dt_max"], dt * 10.0)
+            params["max_escape_cycles"] = int(max_cycles)
+            grid.append(params)
+
+    return grid
+
+
 def run_verification(
     processor: ParallelSCINEProcessor,
     dataloader,
@@ -361,7 +393,7 @@ def start_util_logger(interval_s: int, stop_event: Event) -> Optional[Thread]:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Bayesian HPO for SCINE Multi-Mode Eckart-MW (parallel)"
+        description="Hyperparameter search for SCINE Multi-Mode Eckart-MW (parallel)"
     )
 
     parser.add_argument("--h5-path", type=str, required=True)
@@ -389,6 +421,13 @@ def main():
     parser.add_argument("--study-name", type=str, default=None)
     parser.add_argument("--resume", action="store_true", help="Resume from existing study")
     parser.add_argument("--skip-verification", action="store_true")
+    parser.add_argument(
+        "--search-method",
+        type=str,
+        default="bayes",
+        choices=["bayes", "grid"],
+        help="Hyperparameter search method: bayes (Optuna TPE) or grid.",
+    )
 
     parser.add_argument("--wandb", action="store_true")
     parser.add_argument("--wandb-project", type=str, default="scine-multi-mode-hpo")
@@ -436,8 +475,9 @@ def main():
                 "project_gradient_and_v": args.project_gradient_and_v,
                 "n_workers": args.n_workers,
                 "threads_per_worker": threads_per_worker,
+                "search_method": args.search_method,
             },
-            tags=["hpo", "scine", "multi-mode-eckartmw", "parallel"],
+            tags=["hpo", "scine", "multi-mode-eckartmw", "parallel", args.search_method],
         )
 
     processor = ParallelSCINEProcessor(
@@ -482,208 +522,331 @@ def main():
                     }
                 )
 
-        sampler = TPESampler(
-            n_startup_trials=args.n_startup_trials,
-            seed=42,
-        )
+        if args.search_method == "grid":
+            if args.resume:
+                print("[WARN] --resume is not supported for grid search; ignoring.")
 
-        study = optuna.create_study(
-            study_name=study_name,
-            storage=storage_url,
-            load_if_exists=args.resume,
-            direction="minimize",
-            sampler=sampler,
-        )
-
-        if not args.resume and len(study.trials) == 0:
-            baseline_trial_params = {
-                "dt": BASELINE_PARAMS["dt"],
-                "dt_max": BASELINE_PARAMS["dt_max"],
-                "max_atom_disp": BASELINE_PARAMS["max_atom_disp"],
-                "plateau_patience": BASELINE_PARAMS["plateau_patience"],
-                "plateau_boost": BASELINE_PARAMS["plateau_boost"],
-                "plateau_shrink": BASELINE_PARAMS["plateau_shrink"],
-                "escape_disp_threshold": BASELINE_PARAMS["escape_disp_threshold"],
-                "escape_window": BASELINE_PARAMS["escape_window"],
-                "escape_neg_vib_std": BASELINE_PARAMS["escape_neg_vib_std"],
-                "escape_delta": BASELINE_PARAMS["escape_delta"],
-                "adaptive_delta": BASELINE_PARAMS["adaptive_delta"],
-                "min_interatomic_dist": BASELINE_PARAMS["min_interatomic_dist"],
-            }
-            try:
-                study.enqueue_trial(baseline_trial_params)
-                print(">>> Enqueued baseline trial")
-            except TypeError as e:
-                print(f"WARNING: Could not enqueue baseline trial: {e}")
-
-        def objective(trial: optuna.Trial) -> float:
-            params = sample_hyperparameters(trial)
-
-            print(f"\n>>> Trial {trial.number}: Running with params...")
-            for k, v in params.items():
-                if k not in BASELINE_PARAMS or params[k] != BASELINE_PARAMS[k]:
-                    print(f"    {k}: {v}")
-
-            dataloader_fresh = create_dataloader(
-                args.h5_path,
-                args.split,
-                args.max_samples,
-            )
-
-            metrics = run_batch(
-                processor,
-                dataloader_fresh,
-                params,
-                args.n_steps,
-                args.max_samples,
-                args.start_from,
-                args.noise_seed,
-            )
-
-            score = compute_objective(metrics)
-
-            print(f"    Success rate: {metrics['success_rate']*100:.1f}%")
-            print(f"    Mean steps: {metrics['mean_steps_when_success']:.1f}")
-            print(f"    Score: {-score:.4f}")
+            grid_params = build_grid_params()
+            if args.n_trials is not None:
+                grid_params = grid_params[: max(1, min(args.n_trials, len(grid_params)))]
 
             print(
-                f"[DB] Trial {trial.number} completed: score={-score:.4f}, "
-                f"success_rate={metrics['success_rate']*100:.1f}%",
+                f"\n>>> Starting GRID search with {len(grid_params)} trials...",
                 file=sys.stderr,
             )
+            print(f"    Study: {study_name}", file=sys.stderr)
 
-            trial.set_user_attr("success_rate", metrics["success_rate"])
-            trial.set_user_attr("n_success", metrics["n_success"])
-            trial.set_user_attr("n_samples", metrics["n_samples"])
-            trial.set_user_attr("n_errors", metrics["n_errors"])
-            trial.set_user_attr("n_early_stopped", metrics["n_early_stopped"])
-            trial.set_user_attr(
-                "mean_steps_when_success",
-                float(metrics["mean_steps_when_success"])
-                if np.isfinite(metrics["mean_steps_when_success"])
-                else None,
+            all_trials = []
+            best = None
+
+            for trial_idx, params in enumerate(grid_params):
+                print(f"\n>>> Trial {trial_idx}: Running with params...")
+                for k, v in params.items():
+                    if k not in BASELINE_PARAMS or params[k] != BASELINE_PARAMS[k]:
+                        print(f"    {k}: {v}")
+
+                dataloader_fresh = create_dataloader(
+                    args.h5_path,
+                    args.split,
+                    args.max_samples,
+                )
+
+                metrics = run_batch(
+                    processor,
+                    dataloader_fresh,
+                    params,
+                    args.n_steps,
+                    args.max_samples,
+                    args.start_from,
+                    args.noise_seed,
+                )
+
+                score = compute_objective(metrics)
+
+                print(f"    Success rate: {metrics['success_rate']*100:.1f}%")
+                print(f"    Mean steps: {metrics['mean_steps_when_success']:.1f}")
+                print(f"    Score: {-score:.4f}")
+
+                trial_record = {
+                    "number": trial_idx,
+                    "score": score,
+                    "params": params,
+                    "metrics": {
+                        "success_rate": metrics["success_rate"],
+                        "n_success": metrics["n_success"],
+                        "n_samples": metrics["n_samples"],
+                        "n_errors": metrics["n_errors"],
+                        "n_early_stopped": metrics["n_early_stopped"],
+                        "mean_steps_when_success": float(metrics["mean_steps_when_success"])
+                        if np.isfinite(metrics["mean_steps_when_success"])
+                        else None,
+                        "mean_escape_cycles": float(metrics["mean_escape_cycles"])
+                        if np.isfinite(metrics["mean_escape_cycles"])
+                        else None,
+                        "mean_wall_time": metrics["mean_wall_time"],
+                        "total_wall_time": metrics["total_wall_time"],
+                        "neg_vib_distribution": metrics["neg_vib_counts"],
+                    },
+                }
+                all_trials.append(trial_record)
+
+                if best is None or score < best["score"]:
+                    best = trial_record
+
+                if args.wandb and WANDB_AVAILABLE:
+                    log_dict = {
+                        "trial/success_rate": metrics["success_rate"],
+                        "trial/n_success": metrics["n_success"],
+                        "trial/mean_steps": metrics["mean_steps_when_success"],
+                        "trial/mean_escape_cycles": metrics["mean_escape_cycles"],
+                        "trial/total_time": metrics["total_wall_time"],
+                        "trial/score": -score,
+                        "trial/number": trial_idx,
+                    }
+                    for k, v in params.items():
+                        if isinstance(v, (int, float, bool)):
+                            log_dict[f"hparams/{k}"] = v
+                    wandb.log(log_dict)
+
+            print("\n" + "=" * 70)
+            print("BEST TRIAL")
+            print("=" * 70)
+            if best is not None:
+                print(f"  Trial number: {best['number']}")
+                print(f"  Score: {-best['score']:.4f}")
+                print("  Parameters:")
+                for k, v in best["params"].items():
+                    print(f"    {k}: {v}")
+            print("=" * 70)
+
+            results_path = Path(args.out_dir) / f"{study_name}_grid_results.json"
+            results = {
+                "study_name": study_name,
+                "search_method": "grid",
+                "n_trials": len(all_trials),
+                "baseline_params": BASELINE_PARAMS,
+                "best_trial": best,
+                "trials": all_trials,
+            }
+            with open(results_path, "w") as f:
+                json.dump(results, f, indent=2)
+            print(f"\nResults saved to: {results_path}")
+
+            if args.wandb and WANDB_AVAILABLE and best is not None:
+                wandb.log(
+                    {
+                        "best/trial_number": best["number"],
+                        "best/score": -best["score"],
+                        **{f"best/{k}": v for k, v in best["params"].items()},
+                    }
+                )
+
+                wandb.finish()
+
+            print("\nGRID search complete!")
+        else:
+            sampler = TPESampler(
+                n_startup_trials=args.n_startup_trials,
+                seed=42,
             )
-            trial.set_user_attr(
-                "mean_escape_cycles",
-                float(metrics["mean_escape_cycles"])
-                if np.isfinite(metrics["mean_escape_cycles"])
-                else None,
+
+            study = optuna.create_study(
+                study_name=study_name,
+                storage=storage_url,
+                load_if_exists=args.resume,
+                direction="minimize",
+                sampler=sampler,
             )
-            trial.set_user_attr("mean_wall_time", metrics["mean_wall_time"])
-            trial.set_user_attr("total_wall_time", metrics["total_wall_time"])
-            trial.set_user_attr("neg_vib_distribution", metrics["neg_vib_counts"])
+
+            if not args.resume and len(study.trials) == 0:
+                baseline_trial_params = {
+                    "dt": BASELINE_PARAMS["dt"],
+                    "dt_max": BASELINE_PARAMS["dt_max"],
+                    "max_atom_disp": BASELINE_PARAMS["max_atom_disp"],
+                    "plateau_patience": BASELINE_PARAMS["plateau_patience"],
+                    "plateau_boost": BASELINE_PARAMS["plateau_boost"],
+                    "plateau_shrink": BASELINE_PARAMS["plateau_shrink"],
+                    "escape_disp_threshold": BASELINE_PARAMS["escape_disp_threshold"],
+                    "escape_window": BASELINE_PARAMS["escape_window"],
+                    "escape_neg_vib_std": BASELINE_PARAMS["escape_neg_vib_std"],
+                    "escape_delta": BASELINE_PARAMS["escape_delta"],
+                    "adaptive_delta": BASELINE_PARAMS["adaptive_delta"],
+                    "min_interatomic_dist": BASELINE_PARAMS["min_interatomic_dist"],
+                }
+                try:
+                    study.enqueue_trial(baseline_trial_params)
+                    print(">>> Enqueued baseline trial")
+                except TypeError as e:
+                    print(f"WARNING: Could not enqueue baseline trial: {e}")
+
+            def objective(trial: optuna.Trial) -> float:
+                params = sample_hyperparameters(trial)
+
+                print(f"\n>>> Trial {trial.number}: Running with params...")
+                for k, v in params.items():
+                    if k not in BASELINE_PARAMS or params[k] != BASELINE_PARAMS[k]:
+                        print(f"    {k}: {v}")
+
+                dataloader_fresh = create_dataloader(
+                    args.h5_path,
+                    args.split,
+                    args.max_samples,
+                )
+
+                metrics = run_batch(
+                    processor,
+                    dataloader_fresh,
+                    params,
+                    args.n_steps,
+                    args.max_samples,
+                    args.start_from,
+                    args.noise_seed,
+                )
+
+                score = compute_objective(metrics)
+
+                print(f"    Success rate: {metrics['success_rate']*100:.1f}%")
+                print(f"    Mean steps: {metrics['mean_steps_when_success']:.1f}")
+                print(f"    Score: {-score:.4f}")
+
+                print(
+                    f"[DB] Trial {trial.number} completed: score={-score:.4f}, "
+                    f"success_rate={metrics['success_rate']*100:.1f}%",
+                    file=sys.stderr,
+                )
+
+                trial.set_user_attr("success_rate", metrics["success_rate"])
+                trial.set_user_attr("n_success", metrics["n_success"])
+                trial.set_user_attr("n_samples", metrics["n_samples"])
+                trial.set_user_attr("n_errors", metrics["n_errors"])
+                trial.set_user_attr("n_early_stopped", metrics["n_early_stopped"])
+                trial.set_user_attr(
+                    "mean_steps_when_success",
+                    float(metrics["mean_steps_when_success"])
+                    if np.isfinite(metrics["mean_steps_when_success"])
+                    else None,
+                )
+                trial.set_user_attr(
+                    "mean_escape_cycles",
+                    float(metrics["mean_escape_cycles"])
+                    if np.isfinite(metrics["mean_escape_cycles"])
+                    else None,
+                )
+                trial.set_user_attr("mean_wall_time", metrics["mean_wall_time"])
+                trial.set_user_attr("total_wall_time", metrics["total_wall_time"])
+                trial.set_user_attr("neg_vib_distribution", metrics["neg_vib_counts"])
+
+                if args.wandb and WANDB_AVAILABLE:
+                    log_dict = {
+                        "trial/success_rate": metrics["success_rate"],
+                        "trial/n_success": metrics["n_success"],
+                        "trial/mean_steps": metrics["mean_steps_when_success"],
+                        "trial/mean_escape_cycles": metrics["mean_escape_cycles"],
+                        "trial/total_time": metrics["total_wall_time"],
+                        "trial/score": -score,
+                        "trial/number": trial.number,
+                    }
+                    for k, v in params.items():
+                        if isinstance(v, (int, float, bool)):
+                            log_dict[f"hparams/{k}"] = v
+                    wandb.log(log_dict)
+
+                return score
+
+            print(f"\n>>> Starting HPO with {args.n_trials} trials...", file=sys.stderr)
+            print(f"    Study: {study_name}", file=sys.stderr)
+            print(f"    Database: {db_path}", file=sys.stderr)
+
+            def exception_callback(study, frozen_trial):
+                if frozen_trial.state != optuna.trial.TrialState.FAIL:
+                    return
+                print(
+                    f"[ERROR] Trial {frozen_trial.number} failed with exception:",
+                    file=sys.stderr,
+                )
+                print(
+                    f"        {frozen_trial.user_attrs.get('exception', 'Unknown error')}",
+                    file=sys.stderr,
+                )
+                exc_info = frozen_trial.system_attrs.get("fail_reason", "No traceback available")
+                print(f"        {exc_info}", file=sys.stderr)
+
+            try:
+                study.optimize(
+                    objective,
+                    n_trials=args.n_trials,
+                    show_progress_bar=True,
+                    callbacks=[exception_callback],
+                )
+            except KeyboardInterrupt:
+                print("\n>>> HPO interrupted by user. Saving results...", file=sys.stderr)
+            except Exception as e:
+                print(f"\n[ERROR] HPO failed with exception: {e}", file=sys.stderr)
+                import traceback
+
+                traceback.print_exc(file=sys.stderr)
+                print("Attempting to save partial results...", file=sys.stderr)
+
+            print(f"\n[DB] After optimization:", file=sys.stderr)
+            print(f"[DB]   Database exists: {db_path.exists()}", file=sys.stderr)
+            if db_path.exists():
+                print(f"[DB]   Database size: {db_path.stat().st_size} bytes", file=sys.stderr)
+            print(f"[DB]   Number of trials in study: {len(study.trials)}", file=sys.stderr)
+
+            print("\n" + "=" * 70)
+            print("BEST TRIAL")
+            print("=" * 70)
+            best_trial = study.best_trial
+            print(f"  Trial number: {best_trial.number}")
+            print(f"  Score: {-best_trial.value:.4f}")
+            print(f"  Parameters:")
+            for k, v in best_trial.params.items():
+                print(f"    {k}: {v}")
+            print("=" * 70)
+
+            results_path = Path(args.out_dir) / f"{study_name}_results.json"
+            results = {
+                "study_name": study_name,
+                "best_trial": {
+                    "number": best_trial.number,
+                    "value": best_trial.value,
+                    "params": best_trial.params,
+                },
+                "n_trials": len(study.trials),
+                "baseline_params": BASELINE_PARAMS,
+            }
+            with open(results_path, "w") as f:
+                json.dump(results, f, indent=2)
+            print(f"\nResults saved to: {results_path}")
 
             if args.wandb and WANDB_AVAILABLE:
-                log_dict = {
-                    "trial/success_rate": metrics["success_rate"],
-                    "trial/n_success": metrics["n_success"],
-                    "trial/mean_steps": metrics["mean_steps_when_success"],
-                    "trial/mean_escape_cycles": metrics["mean_escape_cycles"],
-                    "trial/total_time": metrics["total_wall_time"],
-                    "trial/score": -score,
-                    "trial/number": trial.number,
-                }
-                for k, v in params.items():
-                    if isinstance(v, (int, float, bool)):
-                        log_dict[f"hparams/{k}"] = v
-                wandb.log(log_dict)
-
-            return score
-
-        print(f"\n>>> Starting HPO with {args.n_trials} trials...", file=sys.stderr)
-        print(f"    Study: {study_name}", file=sys.stderr)
-        print(f"    Database: {db_path}", file=sys.stderr)
-
-        def exception_callback(study, frozen_trial):
-            if frozen_trial.state != optuna.trial.TrialState.FAIL:
-                return
-            print(
-                f"[ERROR] Trial {frozen_trial.number} failed with exception:",
-                file=sys.stderr,
-            )
-            print(
-                f"        {frozen_trial.user_attrs.get('exception', 'Unknown error')}",
-                file=sys.stderr,
-            )
-            exc_info = frozen_trial.system_attrs.get("fail_reason", "No traceback available")
-            print(f"        {exc_info}", file=sys.stderr)
-
-        try:
-            study.optimize(
-                objective,
-                n_trials=args.n_trials,
-                show_progress_bar=True,
-                callbacks=[exception_callback],
-            )
-        except KeyboardInterrupt:
-            print("\n>>> HPO interrupted by user. Saving results...", file=sys.stderr)
-        except Exception as e:
-            print(f"\n[ERROR] HPO failed with exception: {e}", file=sys.stderr)
-            import traceback
-
-            traceback.print_exc(file=sys.stderr)
-            print("Attempting to save partial results...", file=sys.stderr)
-
-        print(f"\n[DB] After optimization:", file=sys.stderr)
-        print(f"[DB]   Database exists: {db_path.exists()}", file=sys.stderr)
-        if db_path.exists():
-            print(f"[DB]   Database size: {db_path.stat().st_size} bytes", file=sys.stderr)
-        print(f"[DB]   Number of trials in study: {len(study.trials)}", file=sys.stderr)
-
-        print("\n" + "=" * 70)
-        print("BEST TRIAL")
-        print("=" * 70)
-        best_trial = study.best_trial
-        print(f"  Trial number: {best_trial.number}")
-        print(f"  Score: {-best_trial.value:.4f}")
-        print(f"  Parameters:")
-        for k, v in best_trial.params.items():
-            print(f"    {k}: {v}")
-        print("=" * 70)
-
-        results_path = Path(args.out_dir) / f"{study_name}_results.json"
-        results = {
-            "study_name": study_name,
-            "best_trial": {
-                "number": best_trial.number,
-                "value": best_trial.value,
-                "params": best_trial.params,
-            },
-            "n_trials": len(study.trials),
-            "baseline_params": BASELINE_PARAMS,
-        }
-        with open(results_path, "w") as f:
-            json.dump(results, f, indent=2)
-        print(f"\nResults saved to: {results_path}")
-
-        if args.wandb and WANDB_AVAILABLE:
-            wandb.log(
-                {
-                    "best/trial_number": best_trial.number,
-                    "best/score": -best_trial.value,
-                    **{f"best/{k}": v for k, v in best_trial.params.items()},
-                }
-            )
-
-            try:
-                artifact = wandb.Artifact(
-                    name=study_name,
-                    type="optuna-study",
-                    description=f"SCINE Multi-Mode HPO Optuna study: {study_name}",
-                    metadata={
-                        "n_trials": len(study.trials),
-                        "best_score": -best_trial.value,
-                    },
+                wandb.log(
+                    {
+                        "best/trial_number": best_trial.number,
+                        "best/score": -best_trial.value,
+                        **{f"best/{k}": v for k, v in best_trial.params.items()},
+                    }
                 )
-                artifact.add_file(str(db_path))
-                wandb.log_artifact(artifact)
-                print(f"[W&B] Logged artifact: {study_name}")
-            except Exception as e:
-                print(f"[W&B] Failed to log artifact: {e}")
 
-            wandb.finish()
+                try:
+                    artifact = wandb.Artifact(
+                        name=study_name,
+                        type="optuna-study",
+                        description=f"SCINE Multi-Mode HPO Optuna study: {study_name}",
+                        metadata={
+                            "n_trials": len(study.trials),
+                            "best_score": -best_trial.value,
+                        },
+                    )
+                    artifact.add_file(str(db_path))
+                    wandb.log_artifact(artifact)
+                    print(f"[W&B] Logged artifact: {study_name}")
+                except Exception as e:
+                    print(f"[W&B] Failed to log artifact: {e}")
 
-        print("\nHPO complete!")
+                wandb.finish()
+
+            print("\nHPO complete!")
     finally:
         util_stop_event.set()
         if util_thread is not None:
