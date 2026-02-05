@@ -21,7 +21,12 @@ from torch_geometric.loader import DataLoader
 
 from src.core_algos.gad import pick_tracked_mode
 from src.dependencies.common_utils import Transition1xDataset, UsePos, parse_starting_geometry
-from src.dependencies.differentiable_projection import gad_dynamics_projected_torch
+from src.dependencies.differentiable_projection import (
+    gad_dynamics_projected_torch,
+    gad_dynamics_reduced_basis_torch,
+    eckart_frame_align_torch,
+    get_mass_weights_torch,
+)
 from src.dependencies.hessian import get_scine_elements_from_predict_output, prepare_hessian
 from src.noisy.multi_mode_eckartmw import get_projected_hessian, _min_interatomic_distance, _atomic_nums_to_symbols
 from src.noisy.v2_tests.logging import TrajectoryLogger
@@ -65,6 +70,9 @@ def run_gad_baseline(
     log_dir: Optional[str],
     sample_id: str,
     formula: str,
+    projection_mode: str = "eckart_full",
+    purify_hessian: bool = False,
+    frame_tracking: bool = False,
 ) -> Dict[str, Any]:
     coords = coords0.detach().clone().to(torch.float32)
     if coords.dim() == 3 and coords.shape[0] == 1:
@@ -78,7 +86,19 @@ def run_gad_baseline(
     prev_pos = coords.clone()
     prev_energy: Optional[float] = None
 
+    # Pre-compute atom symbols if needed for reduced_basis or project_gradient_and_v
+    need_symbols = projection_mode == "reduced_basis" or project_gradient_and_v
+    atomsymbols = _atomic_nums_to_symbols(atomic_nums) if need_symbols else None
+
+    # Frame tracking reference
+    ref_coords = coords.clone() if frame_tracking else None
+
     for step in range(n_steps):
+        # Frame tracking: align to reference geometry
+        if frame_tracking and ref_coords is not None and atomsymbols is not None:
+            masses_ft, _, _, _ = get_mass_weights_torch(atomsymbols, device=coords.device)
+            coords, _, _ = eckart_frame_align_torch(coords, ref_coords, masses_ft)
+
         out = predict_fn(coords, atomic_nums, do_hessian=True, require_grad=False)
         forces = out["forces"]
         hessian = out["hessian"]
@@ -89,59 +109,86 @@ def run_gad_baseline(
         num_atoms = int(forces.shape[0])
 
         scine_elements = get_scine_elements_from_predict_output(out)
-        hess_proj = get_projected_hessian(hessian, coords, atomic_nums, scine_elements)
-        if hess_proj.dim() != 2 or hess_proj.shape[0] != 3 * num_atoms:
-            hess_proj = prepare_hessian(hess_proj, num_atoms)
 
-        evals, evecs = torch.linalg.eigh(hess_proj)
-        vib_mask = _vib_mask_from_evals(evals, tr_threshold)
-        vib_indices = torch.where(vib_mask)[0]
-
-        if int(vib_indices.numel()) == 0:
-            evals_vib = evals
-            candidate_indices = torch.arange(min(8, evecs.shape[1]), device=evecs.device)
-        else:
-            evals_vib = evals[vib_mask]
-            candidate_indices = vib_indices[: min(8, int(vib_indices.numel()))]
-
-        V = evecs[:, candidate_indices].to(device=forces.device, dtype=forces.dtype)
-        v_prev_local = v_prev.to(device=forces.device, dtype=forces.dtype).reshape(-1) if (track_mode and v_prev is not None) else None
-        v_new, mode_index, _overlap = pick_tracked_mode(V, v_prev_local, k=int(V.shape[1]))
-        v = v_new
-
-        # Compute GAD direction with optional vector projection
-        if project_gradient_and_v:
-            atomsymbols = _atomic_nums_to_symbols(atomic_nums)
-            gad_vec, v_proj, _proj_info = gad_dynamics_projected_torch(
+        # ---- Reduced-basis path (Solution A) ----
+        if projection_mode == "reduced_basis" and scine_elements is None and atomsymbols is not None:
+            gad_vec, v_next, rb_info = gad_dynamics_reduced_basis_torch(
                 coords=coords,
                 forces=forces,
-                v=v,
+                hessian=hessian,
                 atomsymbols=atomsymbols,
+                v_prev_full=v_prev if track_mode else None,
+                purify=purify_hessian,
+                k_track=8,
             )
-            v = v_proj.reshape(-1)  # Update v with projected version
-        else:
-            f_flat = forces.reshape(-1)
-            gad_flat = f_flat + 2.0 * torch.dot(-f_flat, v) * v
-            gad_vec = gad_flat.view(num_atoms, 3)
+            evals_vib_0 = rb_info["eig0"]
+            evals_vib_1 = rb_info["eig1"]
+            eig_product = rb_info["eig_product"]
+            neg_vib_count = rb_info["neg_vib"]
+            mode_index = rb_info["mode_index"]
+            if track_mode:
+                v_prev = v_next.detach().clone().reshape(-1)
+            else:
+                v_prev = None
 
-        if track_mode:
-            v_prev = v.detach().clone().reshape(-1)
+        # ---- Original eckart_full path ----
         else:
-            v_prev = None
+            hess_proj = get_projected_hessian(hessian, coords, atomic_nums, scine_elements,
+                                              purify_hessian=purify_hessian)
+            if hess_proj.dim() != 2 or hess_proj.shape[0] != 3 * num_atoms:
+                hess_proj = prepare_hessian(hess_proj, num_atoms)
 
-        if int(evals_vib.numel()) >= 2:
-            eig0 = float(evals_vib[0].item())
-            eig1 = float(evals_vib[1].item())
-            eig_product = eig0 * eig1
-        else:
-            eig_product = float("inf")
+            evals, evecs = torch.linalg.eigh(hess_proj)
+            vib_mask = _vib_mask_from_evals(evals, tr_threshold)
+            vib_indices = torch.where(vib_mask)[0]
+
+            if int(vib_indices.numel()) == 0:
+                evals_vib = evals
+                candidate_indices = torch.arange(min(8, evecs.shape[1]), device=evecs.device)
+            else:
+                evals_vib = evals[vib_mask]
+                candidate_indices = vib_indices[: min(8, int(vib_indices.numel()))]
+
+            V = evecs[:, candidate_indices].to(device=forces.device, dtype=forces.dtype)
+            v_prev_local = v_prev.to(device=forces.device, dtype=forces.dtype).reshape(-1) if (track_mode and v_prev is not None) else None
+            v_new, mode_index, _overlap = pick_tracked_mode(V, v_prev_local, k=int(V.shape[1]))
+            v = v_new
+
+            # Compute GAD direction with optional vector projection
+            if project_gradient_and_v and atomsymbols is not None:
+                gad_vec, v_proj, _proj_info = gad_dynamics_projected_torch(
+                    coords=coords,
+                    forces=forces,
+                    v=v,
+                    atomsymbols=atomsymbols,
+                )
+                v = v_proj.reshape(-1)
+            else:
+                f_flat = forces.reshape(-1)
+                gad_flat = f_flat + 2.0 * torch.dot(-f_flat, v) * v
+                gad_vec = gad_flat.view(num_atoms, 3)
+
+            if track_mode:
+                v_prev = v.detach().clone().reshape(-1)
+            else:
+                v_prev = None
+
+            if int(evals_vib.numel()) >= 2:
+                evals_vib_0 = float(evals_vib[0].item())
+                evals_vib_1 = float(evals_vib[1].item())
+                eig_product = evals_vib_0 * evals_vib_1
+            else:
+                eig_product = float("inf")
+                evals_vib_0 = float("nan")
+                evals_vib_1 = float("nan")
+            neg_vib_count = int((evals_vib < -float(tr_threshold)).sum().item()) if int(evals_vib.numel()) > 0 else -1
 
         disp_from_last = float((coords - prev_pos).norm(dim=1).mean().item()) if step > 0 else 0.0
         if step > 0:
             disp_history.append(disp_from_last)
         x_disp_window = float(np.mean(disp_history[-10:])) if disp_history else float("nan")
 
-        if logger is not None:
+        if logger is not None and projection_mode != "reduced_basis":
             logger.log_step(
                 step=step,
                 coords=coords,
@@ -157,7 +204,7 @@ def run_gad_baseline(
             )
 
         if stop_at_ts and np.isfinite(eig_product) and eig_product < -abs(ts_eps):
-            final_morse_index = int((evals_vib < -float(tr_threshold)).sum().item()) if int(evals_vib.numel()) > 0 else -1
+            final_morse_index = neg_vib_count
             result = {
                 "converged": True,
                 "converged_step": step,
@@ -242,6 +289,9 @@ def run_single_sample(
             log_dir=params.get("log_dir"),
             sample_id=sample_id,
             formula=formula,
+            projection_mode=params.get("projection_mode", "eckart_full"),
+            purify_hessian=params.get("purify_hessian", False),
+            frame_tracking=params.get("frame_tracking", False),
         )
         wall_time = time.time() - t0
         return {
@@ -367,6 +417,27 @@ def main() -> None:
     parser.add_argument("--no-stop-at-ts", dest="stop_at_ts", action="store_false")
     parser.set_defaults(stop_at_ts=True)
 
+    # Projection experiments
+    parser.add_argument(
+        "--projection-mode",
+        type=str,
+        default="eckart_full",
+        choices=["eckart_full", "reduced_basis"],
+        help="Hessian projection mode: 'eckart_full' (P H P) or 'reduced_basis' (QR complement)",
+    )
+    parser.add_argument(
+        "--purify-hessian",
+        action="store_true",
+        default=False,
+        help="Enforce translational sum rules on the Hessian before projection",
+    )
+    parser.add_argument(
+        "--frame-tracking",
+        action="store_true",
+        default=False,
+        help="Kabsch-align coordinates to reference frame each step to prevent rigid-body drift",
+    )
+
     args = parser.parse_args()
 
     os.makedirs(args.out_dir, exist_ok=True)
@@ -388,6 +459,9 @@ def main() -> None:
         "project_gradient_and_v": args.project_gradient_and_v,
         "stop_at_ts": args.stop_at_ts,
         "log_dir": str(diag_dir),
+        "projection_mode": args.projection_mode,
+        "purify_hessian": args.purify_hessian,
+        "frame_tracking": args.frame_tracking,
     }
 
     processor = ParallelSCINEProcessor(
@@ -427,6 +501,9 @@ def main() -> None:
                         "n_workers": args.n_workers,
                         "threads_per_worker": args.threads_per_worker,
                         "split": args.split,
+                        "projection_mode": args.projection_mode,
+                        "purify_hessian": args.purify_hessian,
+                        "frame_tracking": args.frame_tracking,
                     },
                     "metrics": metrics,
                 },

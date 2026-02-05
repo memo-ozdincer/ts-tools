@@ -75,6 +75,34 @@ TR_THRESHOLD="${TR_THRESHOLD:-1e-6}"
 # Submit with: PROJECT_GRADIENT_AND_V=true sbatch gad_plain_run.slurm
 PROJECT_GRADIENT_AND_V="${PROJECT_GRADIENT_AND_V:-true}"
 
+# =============================================================================
+# Projection experiments
+# =============================================================================
+# "eckart_full" (default/current P H P), "reduced_basis" (QR complement, full-rank)
+PROJECTION_MODE="${PROJECTION_MODE:-eckart_full}"
+# Sum-rule purification: enforce translational invariance on Hessian before projection
+PURIFY_HESSIAN="${PURIFY_HESSIAN:-false}"
+# Frame tracking: Kabsch-align coordinates to reference each step
+FRAME_TRACKING="${FRAME_TRACKING:-false}"
+
+# =============================================================================
+# Experiment submission examples
+# =============================================================================
+# Experiment 1: Current baseline (eckart_full + grad/v projection)
+#   PROJECT_GRADIENT_AND_V=true sbatch gad_plain_run.slurm
+#
+# Experiment 2: Reduced basis (no threshold filtering needed)
+#   PROJECTION_MODE=reduced_basis sbatch gad_plain_run.slurm
+#
+# Experiment 3: Reduced basis + purification
+#   PROJECTION_MODE=reduced_basis PURIFY_HESSIAN=true sbatch gad_plain_run.slurm
+#
+# Experiment 4: Eckart full + purification (test if purification alone helps)
+#   PURIFY_HESSIAN=true sbatch gad_plain_run.slurm
+#
+# Experiment 5: Reduced basis + purification + frame tracking
+#   PROJECTION_MODE=reduced_basis PURIFY_HESSIAN=true FRAME_TRACKING=true sbatch gad_plain_run.slurm
+
 export PYTHONPATH="$PROJECT_DIR:$PYTHONPATH"
 
 THREADS_PER_WORKER="${THREADS_PER_WORKER:-4}"
@@ -100,4 +128,7 @@ python "$PROJECT_DIR/src/noisy/v2_tests/runners/run_gad_baselines_parallel.py" \
     --min-interatomic-dist "$MIN_INTERATOMIC_DIST" \
     --ts-eps "$TS_EPS" \
     --tr-threshold "$TR_THRESHOLD" \
-    $([ "$PROJECT_GRADIENT_AND_V" = "true" ] && echo "--project-gradient-and-v")
+    --projection-mode "$PROJECTION_MODE" \
+    $([ "$PROJECT_GRADIENT_AND_V" = "true" ] && echo "--project-gradient-and-v") \
+    $([ "$PURIFY_HESSIAN" = "true" ] && echo "--purify-hessian") \
+    $([ "$FRAME_TRACKING" = "true" ] && echo "--frame-tracking")

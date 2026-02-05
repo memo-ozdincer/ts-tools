@@ -1347,6 +1347,10 @@ def main(
             "min_interatomic_dist": args.min_interatomic_dist,
             "max_escape_cycles": args.max_escape_cycles,
             "project_gradient_and_v": args.project_gradient_and_v,
+            "projection_mode": args.projection_mode,
+            "purify_hessian": args.purify_hessian,
+            "frame_tracking": args.frame_tracking,
+            "frame_tracking_ref": args.frame_tracking_ref,
         }
         wandb_name = args.wandb_name
         if not wandb_name:
