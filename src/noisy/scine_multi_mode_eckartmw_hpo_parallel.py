@@ -251,8 +251,8 @@ def sample_hyperparameters(trial: optuna.Trial) -> Dict[str, Any]:
 
 
 def build_grid_params() -> list[Dict[str, Any]]:
-    dt_values = [1e-5, 3e-5, 1e-4, 3e-4, 1e-3, 1e-2, 1e-1, 1.0]
-    escape_cycles = [5000, 4000, 3000, 2500, 2000, 1500, 1200, 1000]
+    escape_delta_values = [1e-5, 1e-4, 1e-3, 1e-2, 1e-1, 1.0]
+    escape_cycles = [5000, 4000, 3000, 2000, 1500, 1000]
 
     adapt_profiles = {
         "high": {
@@ -260,22 +260,34 @@ def build_grid_params() -> list[Dict[str, Any]]:
             "plateau_patience": 8,
             "plateau_boost": 2.4,
             "plateau_shrink": 0.4,
+            "escape_window": 8,
+            "escape_neg_vib_std": 0.9,
+        },
+        "mid": {
+            "adaptive_delta": True,
+            "plateau_patience": 12,
+            "plateau_boost": 1.8,
+            "plateau_shrink": 0.55,
+            "escape_window": 12,
+            "escape_neg_vib_std": 0.7,
         },
         "low": {
             "adaptive_delta": False,
             "plateau_patience": 20,
             "plateau_boost": 1.3,
             "plateau_shrink": 0.65,
+            "escape_window": 20,
+            "escape_neg_vib_std": 0.4,
         },
     }
 
     grid = []
-    for dt, max_cycles in zip(dt_values, escape_cycles):
-        for profile_name in ("high", "low"):
+    for escape_delta, max_cycles in zip(escape_delta_values, escape_cycles):
+        for profile_name in ("high", "mid", "low"):
             params = BASELINE_PARAMS.copy()
             params.update(adapt_profiles[profile_name])
-            params["dt"] = dt
-            params["dt_max"] = max(BASELINE_PARAMS["dt_max"], dt * 10.0)
+            params["escape_delta"] = escape_delta
+            params["escape_disp_threshold"] = max(1e-6, min(1e-2, escape_delta * 0.01))
             params["max_escape_cycles"] = int(max_cycles)
             grid.append(params)
 
@@ -515,10 +527,12 @@ def main():
                 wandb.log(
                     {
                         "verification/success_rate": verification_metrics["success_rate"],
+                        "verification/convergence_rate": verification_metrics["success_rate"],
                         "verification/n_success": verification_metrics["n_success"],
                         "verification/mean_steps": verification_metrics["mean_steps_when_success"],
                         "verification/mean_escape_cycles": verification_metrics["mean_escape_cycles"],
                         "verification/total_time": verification_metrics["total_wall_time"],
+                        "verification/neg_vib_distribution": verification_metrics["neg_vib_counts"],
                     }
                 )
 
@@ -564,8 +578,10 @@ def main():
                 score = compute_objective(metrics)
 
                 print(f"    Success rate: {metrics['success_rate']*100:.1f}%")
+                print(f"    Convergence rate: {metrics['success_rate']*100:.1f}%")
                 print(f"    Mean steps: {metrics['mean_steps_when_success']:.1f}")
                 print(f"    Score: {-score:.4f}")
+                print(f"    Neg vib distribution: {metrics['neg_vib_counts']}")
 
                 trial_record = {
                     "number": trial_idx,
@@ -596,10 +612,12 @@ def main():
                 if args.wandb and WANDB_AVAILABLE:
                     log_dict = {
                         "trial/success_rate": metrics["success_rate"],
+                        "trial/convergence_rate": metrics["success_rate"],
                         "trial/n_success": metrics["n_success"],
                         "trial/mean_steps": metrics["mean_steps_when_success"],
                         "trial/mean_escape_cycles": metrics["mean_escape_cycles"],
                         "trial/total_time": metrics["total_wall_time"],
+                        "trial/neg_vib_distribution": metrics["neg_vib_counts"],
                         "trial/score": -score,
                         "trial/number": trial_idx,
                     }
@@ -706,8 +724,10 @@ def main():
                 score = compute_objective(metrics)
 
                 print(f"    Success rate: {metrics['success_rate']*100:.1f}%")
+                print(f"    Convergence rate: {metrics['success_rate']*100:.1f}%")
                 print(f"    Mean steps: {metrics['mean_steps_when_success']:.1f}")
                 print(f"    Score: {-score:.4f}")
+                print(f"    Neg vib distribution: {metrics['neg_vib_counts']}")
 
                 print(
                     f"[DB] Trial {trial.number} completed: score={-score:.4f}, "
@@ -739,10 +759,12 @@ def main():
                 if args.wandb and WANDB_AVAILABLE:
                     log_dict = {
                         "trial/success_rate": metrics["success_rate"],
+                        "trial/convergence_rate": metrics["success_rate"],
                         "trial/n_success": metrics["n_success"],
                         "trial/mean_steps": metrics["mean_steps_when_success"],
                         "trial/mean_escape_cycles": metrics["mean_escape_cycles"],
                         "trial/total_time": metrics["total_wall_time"],
+                        "trial/neg_vib_distribution": metrics["neg_vib_counts"],
                         "trial/score": -score,
                         "trial/number": trial.number,
                     }

@@ -465,6 +465,137 @@ def gad_dynamics_projected_torch(
     return gad_vec, v_proj.to(v.dtype), info
 
 
+def gad_dynamics_reduced_basis_torch(
+    coords: torch.Tensor,
+    forces: torch.Tensor,
+    hessian: torch.Tensor,
+    atomsymbols: list[str],
+    v_prev_full: torch.Tensor | None = None,
+    *,
+    purify: bool = False,
+    k_track: int = 8,
+    beta: float = 1.0,
+) -> tuple[torch.Tensor, torch.Tensor, dict]:
+    """Compute GAD dynamics entirely in the reduced (3N-k) vibrational subspace.
+
+    This is the Solution A replacement for the threshold-based approach.
+    Instead of projecting the (3N, 3N) Hessian and filtering near-zero
+    eigenvalues, we explicitly reduce to the (3N-k, 3N-k) vibrational space
+    where ALL eigenvalues are genuine vibrational modes.
+
+    Advantages over gad_dynamics_projected_torch:
+    - No threshold-based TR filtering needed
+    - Full-rank Hessian (finite condition number)
+    - No risk of misclassifying small vibrational modes as TR
+    - Better conditioned eigenvalue gradients for optimization
+
+    Args:
+        coords: (N, 3) Cartesian coordinates
+        forces: (N, 3) or (3N,) forces (negative gradient)
+        hessian: (3N, 3N) raw Cartesian Hessian
+        atomsymbols: list of element symbols
+        v_prev_full: (3N,) previous guide vector in mass-weighted full space
+            (stored across steps; None for first step)
+        purify: if True, enforce sum rules before projection
+        k_track: number of lowest modes to consider for tracking
+        beta: smoothing factor for mode tracking (1.0 = no smoothing)
+
+    Returns:
+        gad_vec: (N, 3) GAD direction in Cartesian space
+        v_next_full: (3N,) guide vector in full MW space (for next step tracking)
+        info: dict with eigenvalues, mode tracking metrics, neg_vib count
+    """
+    from src.core_algos.gad import pick_tracked_mode
+
+    device = coords.device
+    dtype = torch.float64
+
+    coords_3d = coords.reshape(-1, 3).to(dtype)
+    f_flat = forces.reshape(-1).to(dtype)
+    num_atoms = coords_3d.shape[0]
+
+    # 1. Build reduced Hessian and vibrational basis
+    rb = reduced_basis_hessian_torch(hessian, coords_3d, atomsymbols, purify=purify)
+    H_red = rb["H_red"]        # (3N-k, 3N-k)
+    Q_vib = rb["Q_vib"]        # (3N, 3N-k)
+    sqrt_m = rb["sqrt_m"]      # (3N,)
+    sqrt_m_inv = rb["sqrt_m_inv"]  # (3N,)
+
+    # 2. Project gradient to reduced space
+    # grad_mw = M^{-1/2} @ (-forces)
+    grad_mw = sqrt_m_inv * (-f_flat)
+    grad_red = Q_vib.transpose(0, 1) @ grad_mw  # (3N-k,)
+
+    # 3. Eigendecompose the FULL-RANK reduced Hessian
+    evals, evecs = torch.linalg.eigh(H_red)  # evals: (3N-k,), evecs: (3N-k, 3N-k)
+
+    # 4. Mode tracking in reduced space
+    n_vib = evecs.shape[1]
+    k_use = min(k_track, n_vib)
+
+    if v_prev_full is not None:
+        # Project previous guide vector into current vibrational basis
+        v_prev_f64 = v_prev_full.to(device=device, dtype=dtype).reshape(-1)
+        v_prev_red = Q_vib.transpose(0, 1) @ v_prev_f64  # (3N-k,)
+        v_prev_red_norm = v_prev_red.norm()
+        if v_prev_red_norm > 1e-12:
+            v_prev_red = v_prev_red / v_prev_red_norm
+        else:
+            v_prev_red = None
+    else:
+        v_prev_red = None
+
+    # Candidates are the lowest k_use eigenvectors (in reduced space)
+    V_candidates = evecs[:, :k_use].to(dtype=forces.dtype if forces.dtype != dtype else dtype)
+    v_prev_for_track = v_prev_red.to(dtype=V_candidates.dtype) if v_prev_red is not None else None
+
+    v_red_new, j, overlap = pick_tracked_mode(V_candidates, v_prev_for_track, k=k_use)
+    v_red_new = v_red_new.to(dtype=dtype)
+
+    # Optional smoothing
+    if v_prev_red is not None and float(beta) < 1.0:
+        v_red = (1.0 - float(beta)) * v_prev_red.to(dtype) + float(beta) * v_red_new
+        v_red = v_red / (v_red.norm() + 1e-12)
+    else:
+        v_red = v_red_new
+
+    # 5. GAD formula in reduced space:  dq/dt = -g + 2(g·v)v
+    g_dot_v = torch.dot(grad_red, v_red)
+    gad_red = -grad_red + 2.0 * g_dot_v * v_red  # (3N-k,)
+
+    # 6. Lift back to full MW space
+    gad_mw = Q_vib @ gad_red  # (3N,)
+
+    # 7. Convert to Cartesian:  dx = M^{1/2} @ dq_mw
+    gad_cart = sqrt_m * gad_mw
+    gad_vec = gad_cart.reshape(num_atoms, 3).to(forces.dtype)
+
+    # 8. Store v in full MW space for inter-step tracking
+    v_next_full = (Q_vib @ v_red).to(forces.dtype)  # (3N,)
+
+    # 9. Build info dict (same metrics as _step_metrics_from_projected_hessian)
+    evals_f = evals.to(torch.float32)
+    eig0 = float(evals_f[0].item()) if n_vib >= 1 else float("nan")
+    eig1 = float(evals_f[1].item()) if n_vib >= 2 else float("nan")
+    eig_product = eig0 * eig1 if n_vib >= 2 else float("inf")
+    neg_vib = int((evals_f < 0).sum().item())
+
+    info = {
+        "eig0": eig0,
+        "eig1": eig1,
+        "eig_product": eig_product,
+        "neg_vib": neg_vib,
+        "mode_overlap": float(overlap),
+        "mode_index": int(j),
+        "k_tr": rb["k_tr"],
+        "n_vib_modes": n_vib,
+        "grad_norm_red": float(grad_red.norm().item()),
+        "v_norm_red": float(v_red.norm().item()),
+    }
+
+    return gad_vec, v_next_full, info
+
+
 # ---- use this function ----------------------------
 
 def differentiable_massweigh_and_eckartprojection_torch(
@@ -595,6 +726,65 @@ def eckart_project_and_return_cartesian_torch(
     H_cart_proj = 0.5 * (H_cart_proj + H_cart_proj.transpose(0, 1))
 
     return H_cart_proj
+
+
+# ---- Eckart frame tracking (Solution D) ----------------------------------------
+
+def eckart_frame_align_torch(
+    coords_current: torch.Tensor,
+    coords_reference: torch.Tensor,
+    masses: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Align current geometry to a reference using mass-weighted Kabsch alignment.
+
+    Removes rigid-body translation and rotation so that the molecular frame
+    stays consistent across GAD steps.  This prevents cumulative drift in the
+    lab frame that causes the vibrational subspace to rotate unnecessarily.
+
+    Args:
+        coords_current:   (N, 3) current Cartesian coordinates
+        coords_reference: (N, 3) reference Cartesian coordinates
+        masses: (N,) atomic masses in AMU
+
+    Returns:
+        coords_aligned: (N, 3) aligned coordinates (same internal geometry,
+            translated + rotated to best match reference)
+        R: (3, 3) optimal rotation matrix applied
+        translation: (3,) translation vector (com_ref - R @ com_cur)
+    """
+    dtype = torch.float64
+    cur = coords_current.reshape(-1, 3).to(dtype)
+    ref = coords_reference.reshape(-1, 3).to(dtype)
+    m = masses.to(dtype).reshape(-1)
+
+    total_mass = m.sum()
+    # Mass-weighted centers of mass
+    com_cur = (cur * m[:, None]).sum(dim=0) / total_mass
+    com_ref = (ref * m[:, None]).sum(dim=0) / total_mass
+
+    # Center both
+    r_cur = cur - com_cur[None, :]
+    r_ref = ref - com_ref[None, :]
+
+    # Mass-weighted cross-covariance:  H = sum_i m_i * r_cur_i^T r_ref_i
+    # Shape: (3, 3)
+    H_cov = (r_cur * m[:, None]).transpose(0, 1) @ r_ref  # (3, 3)
+
+    # SVD for optimal rotation
+    U, S, Vt = torch.linalg.svd(H_cov)
+
+    # Correct for reflection: ensure det(R) = +1
+    d = torch.det(Vt.transpose(0, 1) @ U.transpose(0, 1))
+    sign_correction = torch.diag(torch.tensor([1.0, 1.0, d.sign()], dtype=dtype, device=cur.device))
+
+    R = Vt.transpose(0, 1) @ sign_correction @ U.transpose(0, 1)  # (3, 3)
+
+    # Apply rotation and translate to reference COM
+    coords_aligned = (R @ r_cur.transpose(0, 1)).transpose(0, 1) + com_ref[None, :]
+
+    translation = com_ref - R @ com_cur
+
+    return coords_aligned.to(coords_current.dtype), R, translation
 
 
 # ---- compare with non-differentiable version ---------------------------------------------------

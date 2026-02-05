@@ -52,6 +52,10 @@ from ..dependencies.hessian import (
 )
 from ..dependencies.differentiable_projection import (
     gad_dynamics_projected_torch,
+    gad_dynamics_reduced_basis_torch,
+    purify_hessian_sum_rules_torch,
+    eckart_frame_align_torch,
+    get_mass_weights_torch,
 )
 from ..logging import finish_wandb, init_wandb_run, log_sample, log_summary
 from ..logging.plotly_utils import plot_gad_trajectory_interactive
@@ -217,6 +221,49 @@ def _step_metrics_from_projected_hessian(
     return gad_vec, eig0, eig1, eig_product, neg_vib, v_next, float(overlap), int(j)
 
 
+def _step_metrics_from_reduced_hessian(
+    *,
+    forces: torch.Tensor,
+    hessian_raw: torch.Tensor,
+    coords: torch.Tensor,
+    atomsymbols: list[str],
+    purify_hessian: bool,
+    v_prev: torch.Tensor | None,
+    k_track: int = 8,
+    beta: float = 1.0,
+) -> tuple[torch.Tensor, float, float, float, int, torch.Tensor, float, int]:
+    """Compute GAD vec + eigen metrics using the reduced-basis approach.
+
+    Same return signature as _step_metrics_from_projected_hessian so the
+    caller can switch transparently based on projection_mode.
+    """
+    if forces.dim() == 3 and forces.shape[0] == 1:
+        forces = forces[0]
+    forces = forces.reshape(-1, 3)
+
+    gad_vec, v_next, info = gad_dynamics_reduced_basis_torch(
+        coords=coords.reshape(-1, 3),
+        forces=forces,
+        hessian=hessian_raw,
+        atomsymbols=atomsymbols,
+        v_prev_full=v_prev,
+        purify=purify_hessian,
+        k_track=k_track,
+        beta=beta,
+    )
+
+    return (
+        gad_vec,
+        info["eig0"],
+        info["eig1"],
+        info["eig_product"],
+        info["neg_vib"],
+        v_next.detach().clone().reshape(-1),
+        info["mode_overlap"],
+        info["mode_index"],
+    )
+
+
 def compute_gad_vector_projected_tracked(
     forces: torch.Tensor,
     hessian_proj: torch.Tensor,
@@ -308,6 +355,7 @@ def get_projected_hessian(
     coords: torch.Tensor,
     atomic_nums: torch.Tensor,
     scine_elements: Optional[list] = None,
+    purify_hessian: bool = False,
 ) -> torch.Tensor:
     """Get Eckart-projected, mass-weighted Hessian (3N x 3N).
 
@@ -321,18 +369,25 @@ def get_projected_hessian(
         coords: Atomic coordinates (N, 3)
         atomic_nums: Atomic numbers
         scine_elements: If provided, uses SCINE-specific mass-weighting
+        purify_hessian: If True, enforce translational sum rules before projecting
 
     Returns:
         Projected Hessian (3N, 3N) with TR modes zeroed out
     """
+    hess = hessian_raw
+    if purify_hessian and scine_elements is None:
+        # Purify only for HIP path (SCINE Hessians already satisfy sum rules)
+        n_atoms = coords.reshape(-1, 3).shape[0]
+        hess = purify_hessian_sum_rules_torch(hess.reshape(3 * n_atoms, 3 * n_atoms), n_atoms)
+
     if scine_elements is not None:
         # SCINE path: compute full 3N x 3N projected Hessian
         if not SCINE_PROJECTION_AVAILABLE:
             raise RuntimeError("SCINE projection requested but scine_masses not available")
-        return _scine_project_hessian_full(hessian_raw, coords, scine_elements)
+        return _scine_project_hessian_full(hess, coords, scine_elements)
 
     # HIP path: use existing projection
-    return project_hessian_remove_rigid_modes(hessian_raw, coords, atomic_nums)
+    return project_hessian_remove_rigid_modes(hess, coords, atomic_nums)
 
 
 def _scine_project_hessian_full(
@@ -499,6 +554,8 @@ def perform_escape_perturbation(
     delta_shrink_factor: float = 0.5,
     max_shrink_attempts: int = 5,
     scine_elements: Optional[list] = None,
+    projection_mode: str = "eckart_full",
+    purify_hessian: bool = False,
 ) -> Tuple[torch.Tensor, Dict[str, Any]]:
     """Perturb geometry along v2 (second-lowest VIBRATIONAL eigenvector) to escape high-index saddle.
 
@@ -528,28 +585,40 @@ def perform_escape_perturbation(
     coords = coords.reshape(-1, 3)
     num_atoms = int(coords.shape[0])
 
-    # Get PROJECTED Hessian (Eckart + mass-weighted)
-    hess_proj = get_projected_hessian(hessian, coords, atomic_nums, scine_elements)
-
-    # Get eigenvalues and eigenvectors from PROJECTED Hessian
-    evals, evecs = torch.linalg.eigh(hess_proj)
-
-    # Skip near-zero TR modes and get second vibrational mode (v2)
-    tr_threshold = 1e-6
-    vib_mask = torch.abs(evals) > tr_threshold
-    vib_indices = torch.where(vib_mask)[0]
-
-    if len(vib_indices) < 2:
-        # Not enough vibrational modes, fall back to second eigenvector
-        v2 = evecs[:, 1]
-        lambda2 = float(evals[1].item())
+    if projection_mode == "reduced_basis" and scine_elements is None:
+        # Reduced-basis path: eigendecompose in (3N-k) space, lift v2 to full space
+        from ..dependencies.differentiable_projection import reduced_basis_hessian_torch
+        atomsymbols = _atomic_nums_to_symbols(atomic_nums)
+        rb = reduced_basis_hessian_torch(hessian, coords, atomsymbols, purify=purify_hessian)
+        evals, evecs = torch.linalg.eigh(rb["H_red"])
+        if evals.numel() < 2:
+            v2_red = evecs[:, min(1, evecs.shape[1] - 1)]
+            lambda2 = float(evals[min(1, evals.numel() - 1)].item())
+        else:
+            v2_red = evecs[:, 1]
+            lambda2 = float(evals[1].item())
+        # Lift to full MW space, then to Cartesian
+        v2_mw = rb["Q_vib"] @ v2_red  # (3N,)
+        v2 = rb["sqrt_m"] * v2_mw     # (3N,) Cartesian-like displacement
+        v2 = v2 / (v2.norm() + 1e-12)
     else:
-        # Second vibrational mode (skip TR modes)
-        second_vib_idx = vib_indices[1]
-        v2 = evecs[:, second_vib_idx]
-        lambda2 = float(evals[second_vib_idx].item())
+        # Original eckart_full path
+        hess_proj = get_projected_hessian(hessian, coords, atomic_nums, scine_elements, purify_hessian=purify_hessian)
+        evals, evecs = torch.linalg.eigh(hess_proj)
 
-    v2 = v2 / (v2.norm() + 1e-12)  # Normalize
+        tr_threshold = 1e-6
+        vib_mask = torch.abs(evals) > tr_threshold
+        vib_indices = torch.where(vib_mask)[0]
+
+        if len(vib_indices) < 2:
+            v2 = evecs[:, 1]
+            lambda2 = float(evals[1].item())
+        else:
+            second_vib_idx = vib_indices[1]
+            v2 = evecs[:, second_vib_idx]
+            lambda2 = float(evals[second_vib_idx].item())
+
+        v2 = v2 / (v2.norm() + 1e-12)
 
     # Adaptive delta scaling based on curvature
     base_delta = float(escape_delta)
@@ -710,6 +779,11 @@ def run_multi_mode_escape(
     early_stop_min_steps: int = 100,  # Don't early stop before this many steps
     # Full projection parameters (prevents TR leakage)
     project_gradient_and_v: bool = False,  # Project gradient and guide vector v
+    # Reduced-basis / purification / frame-tracking experiments
+    projection_mode: str = "eckart_full",  # "eckart_full" or "reduced_basis"
+    purify_hessian: bool = False,          # enforce translational sum rules on Hessian
+    frame_tracking: bool = False,          # Kabsch-align to reference each step
+    frame_tracking_ref: str = "initial",   # "initial" or "previous"
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """Run GAD with multi-mode escape mechanism.
 
@@ -730,8 +804,16 @@ def run_multi_mode_escape(
     """
     coords = coords0.detach().clone().to(torch.float32)
 
-    # Get atom symbols for full projection (HIP path)
-    atomsymbols = _atomic_nums_to_symbols(atomic_nums) if project_gradient_and_v else None
+    # Get atom symbols (needed for reduced_basis and project_gradient_and_v)
+    need_symbols = project_gradient_and_v or projection_mode == "reduced_basis"
+    atomsymbols = _atomic_nums_to_symbols(atomic_nums) if need_symbols else None
+
+    # Frame tracking: store reference geometry for Kabsch alignment
+    ref_coords: torch.Tensor | None = None
+    if frame_tracking:
+        ref_coords = coords0.detach().clone().to(torch.float32)
+        if atomsymbols is None:
+            atomsymbols = _atomic_nums_to_symbols(atomic_nums)
 
     trajectory = {k: [] for k in [
         "energy",
@@ -769,6 +851,13 @@ def run_multi_mode_escape(
     v_prev: torch.Tensor | None = None
 
     while escape_cycle < max_escape_cycles and total_steps < n_steps:
+        # ---- Frame tracking: align to reference geometry ----
+        if frame_tracking and ref_coords is not None and atomsymbols is not None:
+            masses_ft, _, _, _ = get_mass_weights_torch(atomsymbols, device=coords.device)
+            coords, _, _ = eckart_frame_align_torch(coords, ref_coords, masses_ft)
+            if frame_tracking_ref == "previous":
+                ref_coords = coords.clone()
+
         t_predict0 = time.time() if profile_every and (total_steps % profile_every == 0) else None
         out = predict_fn(coords, atomic_nums, do_hessian=True, require_grad=False)
         t_predict1 = time.time() if t_predict0 is not None else None
@@ -782,8 +871,23 @@ def run_multi_mode_escape(
         scine_elements = get_scine_elements_from_predict_output(out)
 
         t_eigs0 = time.time() if t_predict0 is not None else None
-        if scine_elements is None and hip_vib_mode == "proj_tol":
-            hess_proj = get_projected_hessian(hessian, coords, atomic_nums, scine_elements=None)
+
+        # ---- Reduced-basis path (Solution A) ----
+        if projection_mode == "reduced_basis" and scine_elements is None and atomsymbols is not None:
+            gad_vec, eig0, eig1, eig_prod, neg_vib, v_prev, mode_overlap, mode_index = _step_metrics_from_reduced_hessian(
+                forces=forces,
+                hessian_raw=hessian,
+                coords=coords,
+                atomsymbols=atomsymbols,
+                purify_hessian=purify_hessian,
+                v_prev=v_prev,
+                k_track=8,
+                beta=1.0,
+            )
+
+        # ---- Original eckart_full path ----
+        elif scine_elements is None and hip_vib_mode == "proj_tol":
+            hess_proj = get_projected_hessian(hessian, coords, atomic_nums, scine_elements=None, purify_hessian=purify_hessian)
             gad_vec, eig0, eig1, eig_prod, neg_vib, v_prev, mode_overlap, mode_index = _step_metrics_from_projected_hessian(
                 forces=forces,
                 hessian_proj=hess_proj,
@@ -892,6 +996,8 @@ def run_multi_mode_escape(
                 adaptive_delta=adaptive_delta,
                 min_interatomic_dist=min_interatomic_dist,
                 scine_elements=scine_elements,
+                projection_mode=projection_mode,
+                purify_hessian=purify_hessian,
             )
             coords = new_coords
             escape_info["step"] = total_steps

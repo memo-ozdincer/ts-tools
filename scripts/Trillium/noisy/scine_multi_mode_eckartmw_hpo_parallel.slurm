@@ -74,7 +74,7 @@ SCINE_FUNCTIONAL="${SCINE_FUNCTIONAL:-DFTB0}"
 # Submit with: PROJECT_GRADIENT_AND_V=true sbatch scine_multi_mode_eckartmw_hpo_parallel.slurm
 PROJECT_GRADIENT_AND_V="${PROJECT_GRADIENT_AND_V:-true}"
 
-N_TRIALS="${N_TRIALS:-16}"
+N_TRIALS="${N_TRIALS:-18}"
 N_STARTUP_TRIALS="${N_STARTUP_TRIALS:-5}"
 SEARCH_METHOD="${SEARCH_METHOD:-grid}"
 STUDY_NAME="${STUDY_NAME:-scine_multi_mode_grid_parallel_${SLURM_JOB_ID}}"
