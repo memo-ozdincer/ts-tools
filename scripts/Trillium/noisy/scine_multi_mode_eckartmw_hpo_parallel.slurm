@@ -4,7 +4,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=192
 #SBATCH --gpus-per-node=0
-#SBATCH --time=20:00:00
+#SBATCH --time=08:00:00
 #SBATCH --output=/scratch/memoozd/ts-tools-scratch/logs/scine_multimode_hpo_parallel_%j.out
 #SBATCH --error=/scratch/memoozd/ts-tools-scratch/logs/scine_multimode_hpo_parallel_%j.err
 #SBATCH --account=rrg-aspuru

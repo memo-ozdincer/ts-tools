@@ -1252,6 +1252,37 @@ def main(
              "(recommended for better GAD stability, but slightly slower).",
     )
 
+    # ---- Projection experiments (Solutions A, C, D) ----
+    parser.add_argument(
+        "--projection-mode",
+        type=str,
+        default="eckart_full",
+        choices=["eckart_full", "reduced_basis"],
+        help="Hessian projection mode. 'eckart_full' uses P*H*P (3N x 3N with 6 near-zeros). "
+             "'reduced_basis' projects to (3N-6) vibrational space (full rank, no TR filtering).",
+    )
+    parser.add_argument(
+        "--purify-hessian",
+        action="store_true",
+        default=False,
+        help="Enforce translational sum rules on Hessian before projection. "
+             "Fixes ML Hessian TR violations that cause residual ~5e-5 TR eigenvalues.",
+    )
+    parser.add_argument(
+        "--frame-tracking",
+        action="store_true",
+        default=False,
+        help="Kabsch-align geometry to reference at each step to prevent rigid-body drift.",
+    )
+    parser.add_argument(
+        "--frame-tracking-ref",
+        type=str,
+        default="initial",
+        choices=["initial", "previous"],
+        help="Reference geometry for frame tracking. 'initial' = starting geometry, "
+             "'previous' = geometry from previous step.",
+    )
+
     parser.add_argument("--wandb", action="store_true")
     parser.add_argument("--wandb-project", type=str, default="noisy-multi-mode-eckartmw")
     parser.add_argument("--wandb-entity", type=str, default=None)
@@ -1385,6 +1416,10 @@ def main(
                 max_escape_cycles=int(args.max_escape_cycles),
                 profile_every=int(args.profile_every),
                 project_gradient_and_v=bool(args.project_gradient_and_v),
+                projection_mode=str(args.projection_mode),
+                purify_hessian=bool(args.purify_hessian),
+                frame_tracking=bool(args.frame_tracking),
+                frame_tracking_ref=str(args.frame_tracking_ref),
             )
             wall = time.time() - t0
         except Exception as e:
