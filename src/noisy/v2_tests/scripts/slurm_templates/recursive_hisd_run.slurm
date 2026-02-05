@@ -87,16 +87,25 @@ START_FROM="${START_FROM:-midpoint_rt_noise2.0A}"
 NOISE_SEED="${NOISE_SEED:-42}"
 SCINE_FUNCTIONAL="${SCINE_FUNCTIONAL:-DFTB0}"
 
-# Recursive HiSD hyperparameters
-DT="${DT:-0.005}"
+# Recursive HiSD hyperparameters (suggested single-run defaults)
+DT="${DT:-0.003}"
 DT_MIN="${DT_MIN:-1e-6}"
-DT_MAX="${DT_MAX:-0.08}"
-MAX_ATOM_DISP="${MAX_ATOM_DISP:-0.35}"
-PERTURB_MAGNITUDE="${PERTURB_MAGNITUDE:-0.01}"
-PERTURB_STRATEGY="${PERTURB_STRATEGY:-unstable}"  # "unstable", "random", "mixed"
-GRAD_THRESHOLD="${GRAD_THRESHOLD:-1e-5}"
-MAX_STEPS_PER_LEVEL="${MAX_STEPS_PER_LEVEL:-500}"
-TR_THRESHOLD="${TR_THRESHOLD:-1e-6}"
+DT_MAX="${DT_MAX:-0.06}"
+MAX_ATOM_DISP="${MAX_ATOM_DISP:-0.30}"
+PERTURB_MAGNITUDE="${PERTURB_MAGNITUDE:-0.02}"
+PERTURB_STRATEGY="${PERTURB_STRATEGY:-mixed}"  # "unstable", "random", "mixed"
+GRAD_THRESHOLD="${GRAD_THRESHOLD:-5e-6}"
+MAX_STEPS_PER_LEVEL="${MAX_STEPS_PER_LEVEL:-600}"
+TR_THRESHOLD="${TR_THRESHOLD:-5e-6}"
+
+# Optional grid search (set GRID=1 to enable)
+GRID="${GRID:-0}"
+DT_GRID=("1e-3" "3e-3" "5e-3")
+PERTURB_MAG_GRID=("0.01" "0.02" "0.04")
+PERTURB_STRATEGY_GRID=("unstable" "mixed")
+GRAD_THRESH_GRID=("1e-5" "5e-6" "1e-6")
+MAX_STEPS_PER_LEVEL_GRID=("400" "600" "800")
+TR_THRESHOLD_GRID=("1e-5" "5e-6" "1e-6")
 
 echo "=============================================="
 echo "Recursive HiSD Runner - Trillium"
@@ -134,25 +143,63 @@ echo "  Total CPUs: $TOTAL_CPUS"
 echo "  Workers: $N_WORKERS"
 echo "  Threads per worker: $THREADS_PER_WORKER"
 
-python $PROJECT_DIR/src/noisy/scine_recursive_hisd_parallel.py \
-    --h5-path $H5_PATH \
-    --out-dir $OUT_DIR \
-    --scine-functional $SCINE_FUNCTIONAL \
-    --n-steps $N_STEPS \
-    --max-samples $MAX_SAMPLES \
-    --start-from $START_FROM \
-    --noise-seed $NOISE_SEED \
-    --n-workers $N_WORKERS \
-    --threads-per-worker $THREADS_PER_WORKER \
-    --dt $DT \
-    --dt-min $DT_MIN \
-    --dt-max $DT_MAX \
-    --max-atom-disp $MAX_ATOM_DISP \
-    --perturb-magnitude $PERTURB_MAGNITUDE \
-    --perturb-strategy $PERTURB_STRATEGY \
-    --grad-threshold $GRAD_THRESHOLD \
-    --max-steps-per-level $MAX_STEPS_PER_LEVEL \
-    --tr-threshold $TR_THRESHOLD
+if [[ "$GRID" == "1" ]]; then
+    echo "Running Recursive HiSD grid search..."
+    for DT in "${DT_GRID[@]}"; do
+        for PERTURB_MAGNITUDE in "${PERTURB_MAG_GRID[@]}"; do
+            for PERTURB_STRATEGY in "${PERTURB_STRATEGY_GRID[@]}"; do
+                for GRAD_THRESHOLD in "${GRAD_THRESH_GRID[@]}"; do
+                    for MAX_STEPS_PER_LEVEL in "${MAX_STEPS_PER_LEVEL_GRID[@]}"; do
+                        for TR_THRESHOLD in "${TR_THRESHOLD_GRID[@]}"; do
+                            RUN_TAG="dt${DT}_pm${PERTURB_MAGNITUDE}_ps${PERTURB_STRATEGY}_gt${GRAD_THRESHOLD}_ms${MAX_STEPS_PER_LEVEL}_tr${TR_THRESHOLD}"
+                            RUN_OUT_DIR="${OUT_DIR}/${RUN_TAG}"
+                            mkdir -p "$RUN_OUT_DIR"
+                            python $PROJECT_DIR/src/noisy/scine_recursive_hisd_parallel.py \
+                                --h5-path $H5_PATH \
+                                --out-dir $RUN_OUT_DIR \
+                                --scine-functional $SCINE_FUNCTIONAL \
+                                --n-steps $N_STEPS \
+                                --max-samples $MAX_SAMPLES \
+                                --start-from $START_FROM \
+                                --noise-seed $NOISE_SEED \
+                                --n-workers $N_WORKERS \
+                                --threads-per-worker $THREADS_PER_WORKER \
+                                --dt $DT \
+                                --dt-min $DT_MIN \
+                                --dt-max $DT_MAX \
+                                --max-atom-disp $MAX_ATOM_DISP \
+                                --perturb-magnitude $PERTURB_MAGNITUDE \
+                                --perturb-strategy $PERTURB_STRATEGY \
+                                --grad-threshold $GRAD_THRESHOLD \
+                                --max-steps-per-level $MAX_STEPS_PER_LEVEL \
+                                --tr-threshold $TR_THRESHOLD
+                        done
+                    done
+                done
+            done
+        done
+    done
+else
+    python $PROJECT_DIR/src/noisy/scine_recursive_hisd_parallel.py \
+        --h5-path $H5_PATH \
+        --out-dir $OUT_DIR \
+        --scine-functional $SCINE_FUNCTIONAL \
+        --n-steps $N_STEPS \
+        --max-samples $MAX_SAMPLES \
+        --start-from $START_FROM \
+        --noise-seed $NOISE_SEED \
+        --n-workers $N_WORKERS \
+        --threads-per-worker $THREADS_PER_WORKER \
+        --dt $DT \
+        --dt-min $DT_MIN \
+        --dt-max $DT_MAX \
+        --max-atom-disp $MAX_ATOM_DISP \
+        --perturb-magnitude $PERTURB_MAGNITUDE \
+        --perturb-strategy $PERTURB_STRATEGY \
+        --grad-threshold $GRAD_THRESHOLD \
+        --max-steps-per-level $MAX_STEPS_PER_LEVEL \
+        --tr-threshold $TR_THRESHOLD
+fi
 
 EXIT_CODE=$?
 
