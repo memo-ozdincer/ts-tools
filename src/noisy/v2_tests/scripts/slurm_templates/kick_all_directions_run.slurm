@@ -78,7 +78,7 @@ TR_THRESHOLD="${TR_THRESHOLD:-1e-6}"
 PROJECT_GRADIENT_AND_V="${PROJECT_GRADIENT_AND_V:-true}"
 
 # Optional grid search (set GRID=1 to enable)
-GRID="${GRID:-0}"
+GRID="${GRID:-1}"
 ESCAPE_DELTA_GRID=("1e-5" "1e-4" "1e-3" "1e-2" "1e-1" "1.0")
 ESCAPE_DISP_THRESHOLD_GRID=("1e-6" "1e-6" "1e-5" "1e-4" "1e-3" "1e-2")
 MAX_ESCAPE_CYCLES_GRID=("5000" "4000" "3000" "2000" "1500" "1000")
