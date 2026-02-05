@@ -81,7 +81,7 @@ mkdir -p "$OUT_DIR"
 # =============================================================================
 # Configuration (adjust as needed)
 # =============================================================================
-N_STEPS="${N_STEPS:-5000}"
+N_STEPS="${N_STEPS:-15000}"
 MAX_SAMPLES="${MAX_SAMPLES:-20}"
 START_FROM="${START_FROM:-midpoint_rt_noise2.0A}"
 NOISE_SEED="${NOISE_SEED:-42}"
