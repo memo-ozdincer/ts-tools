@@ -99,7 +99,7 @@ MAX_STEPS_PER_LEVEL="${MAX_STEPS_PER_LEVEL:-600}"
 TR_THRESHOLD="${TR_THRESHOLD:-5e-6}"
 
 # Optional grid search (set GRID=1 to enable)
-GRID="${GRID:-0}"
+GRID="${GRID:-1}"
 DT_GRID=("1e-3" "3e-3" "5e-3")
 PERTURB_MAG_GRID=("0.01" "0.02" "0.04")
 PERTURB_STRATEGY_GRID=("unstable" "mixed")
