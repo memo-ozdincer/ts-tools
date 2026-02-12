@@ -82,7 +82,7 @@ DT="${DT:-0.02}"
 #                      Near saddles |GAD| > |F| → smaller steps
 #
 # Fixed dt for this comparison (override by env if needed)
-DT_ADAPTATION="${DT_ADAPTATION:-none}"
+DT_ADAPTATION="${DT_ADAPTATION:-eigenvalue_clamped}"
 DT_MIN="${DT_MIN:-1e-6}"
 DT_MAX="${DT_MAX:-0.08}"
 DT_SCALE_FACTOR="${DT_SCALE_FACTOR:-1.0}"
@@ -102,15 +102,17 @@ THREADS_PER_WORKER="${THREADS_PER_WORKER:-4}"
 N_WORKERS=$((TOTAL_CPUS / THREADS_PER_WORKER))
 if [ "$N_WORKERS" -lt 1 ]; then N_WORKERS=1; fi
 
-run_variant() {
+run_trial() {
     local label="$1"
-    shift
+    local scale_factor="$2"
+    shift 2
     local variant_out_dir="${OUT_DIR}/${label}"
     mkdir -p "$variant_out_dir"
 
     echo "=============================================="
-    echo "Running variant: $label"
-    echo "dt_adaptation: $DT_ADAPTATION (fixed dt)"
+    echo "Running trial: $label"
+    echo "dt_adaptation: $DT_ADAPTATION"
+    echo "dt_scale_factor: $scale_factor"
     echo "Output: $variant_out_dir"
     echo "Extra args: $*"
     echo "=============================================="
@@ -130,7 +132,7 @@ run_variant() {
         --dt-adaptation "$DT_ADAPTATION" \
         --dt-min "$DT_MIN" \
         --dt-max "$DT_MAX" \
-        --dt-scale-factor "$DT_SCALE_FACTOR" \
+        --dt-scale-factor "$scale_factor" \
         --max-atom-disp "$MAX_ATOM_DISP" \
         --min-interatomic-dist "$MIN_INTERATOMIC_DIST" \
         --ts-eps "$TS_EPS" \
@@ -141,24 +143,18 @@ run_variant() {
     echo ""
 }
 
-VARIANT_LABELS=(
-    "no_hessian_projection"
-    "eckart_mw"
-    "project_gradient_and_v"
-)
+# Only trial requested: GAD state-based (no-path) stepsize using
+#   dt_eff ~ dt * scale / clamp(|lambda|, 1e-2, 1e2)
+# Try only these scale factors:
+SCALE_FACTORS=("1e-1" "1e-4" "1e-8")
 
-VARIANT_ARGS=(
-    "--hessian-projection none"
-    "--hessian-projection eckart_mw"
-    "--hessian-projection eckart_mw --project-gradient-and-v"
-)
+# Fixed projection setup for this comparison
+FIXED_ARGS=("--hessian-projection" "eckart_mw" "--project-gradient-and-v")
 
-echo "Running fixed-dt projection variants..."
-for i in "${!VARIANT_LABELS[@]}"; do
-    label="${VARIANT_LABELS[$i]}"
-    args_str="${VARIANT_ARGS[$i]}"
-    read -r -a extra_args <<< "$args_str"
-    run_variant "$label" "${extra_args[@]}"
+echo "Running eigenvalue_clamped dt trials (no-path)..."
+for sf in "${SCALE_FACTORS[@]}"; do
+    label="lambda_clamp_inv_sf_${sf}"
+    run_trial "$label" "$sf" "${FIXED_ARGS[@]}"
 done
 
 echo "=============================================="

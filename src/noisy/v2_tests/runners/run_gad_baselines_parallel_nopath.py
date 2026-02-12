@@ -11,6 +11,7 @@ Basic strategies (these don't work well in practice):
 - none: fixed timestep
 - gradient: dt_eff = clamp(dt_base * scale_factor / (grad_norm + eps), dt_min, dt_max)
 - eigenvalue: dt_eff = clamp(dt_base * scale_factor / (|eig_0| + eps), dt_min, dt_max)
+- eigenvalue_clamped: dt_eff = clamp(dt_base * scale_factor / clamp(|eig_0|, 1e-2, 1e2), dt_min, dt_max)
 - trust_region: dt_eff = clamp(dt_scale_factor * max_atom_disp / (max(gad_vec_norm) + eps), dt_min, dt_max)
 
 Advanced strategies (better alternatives):
@@ -120,6 +121,13 @@ def compute_state_based_dt(
     elif dt_adaptation == "eigenvalue":
         # Smaller steps when curvature (|λ₀|) is large
         dt_eff = dt_base * dt_scale_factor / (abs(eig_0) + eps)
+
+    elif dt_adaptation == "eigenvalue_clamped":
+        # Same as 'eigenvalue', but with a hard clamp on |λ₀| to prevent extreme dt.
+        # Requested form: dt ~ 1 / clamp(lambda, 1e-2, 1e2)
+        lam = abs(eig_0)
+        lam_clamped = min(max(lam, 1e-2), 1e2)
+        dt_eff = dt_base * dt_scale_factor / (lam_clamped + eps)
 
     elif dt_adaptation == "trust_region":
         # Limit step size such that max atomic displacement is approximately max_atom_disp
@@ -562,6 +570,7 @@ def main() -> None:
             # Basic (don't work well):
             "gradient",  # dt ~ 1/grad_norm
             "eigenvalue",  # dt ~ 1/|λ₀|
+            "eigenvalue_clamped",  # dt ~ 1/clamp(|λ₀|, 1e-2, 1e2)
             "trust_region",  # dt = scale * max_disp / |gad_vec|
             # Advanced (recommended):
             "harmonic",  # dt ~ 1/sqrt(|λ₀|), natural timescale from curvature
