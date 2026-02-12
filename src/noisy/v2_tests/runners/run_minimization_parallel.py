@@ -64,35 +64,35 @@ def run_single_sample(
         except Exception:
             return None
 
-    # Pre-compute atom symbols for projection
     project_gradient_and_v = params.get("project_gradient_and_v", False)
-    atomsymbols = _atomic_nums_to_symbols(atomic_nums) if project_gradient_and_v else None
 
     t0 = time.time()
     try:
         start_neg_vib = _count_neg_vib(coords)
+
+        # Pre-fetch scine_elements (needed for Hessian projection in both methods)
+        init_out = predict_fn(coords, atomic_nums, do_hessian=True, require_grad=False)
+        scine_elements = get_scine_elements_from_predict_output(init_out)
+        all_atomsymbols = _atomic_nums_to_symbols(atomic_nums)
 
         if method == "fixed_step_gd":
             result, trajectory = run_fixed_step_gd(
                 predict_fn,
                 coords,
                 atomic_nums,
+                get_projected_hessian,
                 n_steps=n_steps,
                 step_size=params["step_size"],
                 max_atom_disp=params["max_atom_disp"],
                 force_converged=params["force_converged"],
                 min_interatomic_dist=params["min_interatomic_dist"],
+                tr_threshold=params["tr_threshold"],
                 project_gradient_and_v=project_gradient_and_v,
-                atomsymbols=atomsymbols,
+                atomsymbols=all_atomsymbols if project_gradient_and_v else None,
+                scine_elements=scine_elements,
+                purify_hessian=params.get("purify_hessian", False),
             )
         elif method == "newton_raphson":
-            # For NR we need scine_elements at each step, but we pass the
-            # get_projected_hessian function which handles it internally.
-            # Pre-fetch scine_elements from an initial prediction.
-            init_out = predict_fn(coords, atomic_nums, do_hessian=True, require_grad=False)
-            scine_elements = get_scine_elements_from_predict_output(init_out)
-            nr_atomsymbols = _atomic_nums_to_symbols(atomic_nums)
-
             result, trajectory = run_newton_raphson(
                 predict_fn,
                 coords,
@@ -104,7 +104,7 @@ def run_single_sample(
                 min_interatomic_dist=params["min_interatomic_dist"],
                 tr_threshold=params["tr_threshold"],
                 project_gradient_and_v=project_gradient_and_v,
-                atomsymbols=nr_atomsymbols if project_gradient_and_v else None,
+                atomsymbols=all_atomsymbols if project_gradient_and_v else None,
                 scine_elements=scine_elements,
                 purify_hessian=params.get("purify_hessian", False),
             )

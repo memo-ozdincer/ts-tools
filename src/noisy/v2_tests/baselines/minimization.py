@@ -67,32 +67,41 @@ def run_fixed_step_gd(
     predict_fn,
     coords0: torch.Tensor,
     atomic_nums: torch.Tensor,
+    get_projected_hessian_fn,
     *,
     n_steps: int = 5000,
     step_size: float = 0.01,
     max_atom_disp: float = 0.3,
     force_converged: float = 1e-4,
     min_interatomic_dist: float = 0.5,
+    tr_threshold: float = 1e-6,
     project_gradient_and_v: bool = False,
     atomsymbols: Optional[list] = None,
+    scine_elements=None,
+    purify_hessian: bool = False,
 ) -> Tuple[Dict[str, Any], list]:
     """Fixed-step gradient descent to find energy minimum.
 
     Update rule: x_{k+1} = x_k + alpha * forces(x_k)
 
     No line search, no adaptive step sizing. Pure fixed-step descent.
+    Convergence: force norm < threshold AND zero negative vibrational eigenvalues.
 
     Args:
         predict_fn: Energy/force prediction function.
         coords0: Starting coordinates.
         atomic_nums: Atomic numbers.
+        get_projected_hessian_fn: Function to compute projected Hessian.
         n_steps: Maximum number of steps.
         step_size: Fixed step size alpha.
         max_atom_disp: Maximum per-atom displacement per step.
         force_converged: Force convergence threshold (eV/A).
         min_interatomic_dist: Minimum allowed interatomic distance.
+        tr_threshold: Threshold for filtering translation/rotation modes.
         project_gradient_and_v: If True, Eckart-project the gradient before stepping.
         atomsymbols: Atom symbols (required if project_gradient_and_v=True).
+        scine_elements: SCINE element list (passed to get_projected_hessian_fn).
+        purify_hessian: If True, enforce translational sum rules on Hessian.
 
     Returns:
         result: Summary dictionary.
@@ -106,24 +115,37 @@ def run_fixed_step_gd(
     trajectory = []
 
     for step in range(n_steps):
-        out = predict_fn(coords, atomic_nums, do_hessian=False, require_grad=False)
+        out = predict_fn(coords, atomic_nums, do_hessian=True, require_grad=False)
         energy = _to_float(out["energy"])
         forces = out["forces"]
+        hessian = out["hessian"]
         if forces.dim() == 3 and forces.shape[0] == 1:
             forces = forces[0]
         forces = forces.reshape(-1, 3)
 
         force_norm = _force_mean(forces)
 
+        # Compute Hessian eigenvalues to check for minimum (n_neg == 0)
+        hess_proj = get_projected_hessian_fn(
+            hessian, coords, atomic_nums, scine_elements,
+            purify_hessian=purify_hessian,
+        )
+        evals, _ = torch.linalg.eigh(hess_proj)
+        vib_mask = torch.abs(evals) > tr_threshold
+        vib_evals = evals[vib_mask] if vib_mask.any() else evals
+        n_neg = int((vib_evals < -tr_threshold).sum().item())
+
         trajectory.append({
             "step": step,
             "energy": energy,
             "force_norm": force_norm,
             "step_size": step_size,
+            "n_neg_evals": n_neg,
             "min_dist": _min_interatomic_distance(coords),
         })
 
-        if force_norm < force_converged:
+        # Converged: small forces AND zero negative eigenvalues (true minimum)
+        if force_norm < force_converged and n_neg == 0:
             return {
                 "converged": True,
                 "converged_step": step,
@@ -131,6 +153,7 @@ def run_fixed_step_gd(
                 "final_force_norm": force_norm,
                 "final_coords": coords.detach().cpu(),
                 "total_steps": step + 1,
+                "final_n_neg_evals": n_neg,
             }, trajectory
 
         # Optionally project gradient to remove TR components
@@ -163,6 +186,7 @@ def run_fixed_step_gd(
         "final_force_norm": trajectory[-1]["force_norm"] if trajectory else float("nan"),
         "final_coords": coords.detach().cpu(),
         "total_steps": len(trajectory),
+        "final_n_neg_evals": trajectory[-1]["n_neg_evals"] if trajectory else -1,
     }, trajectory
 
 
@@ -257,7 +281,8 @@ def run_newton_raphson(
             "min_dist": _min_interatomic_distance(coords),
         })
 
-        if force_norm < force_converged:
+        # Converged: small forces AND zero negative eigenvalues (true minimum)
+        if force_norm < force_converged and n_neg == 0:
             return {
                 "converged": True,
                 "converged_step": step,
