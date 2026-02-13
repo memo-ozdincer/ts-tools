@@ -2,3 +2,10 @@
 # Not src/experiments/Sella/ (case-insensitive on macOS)
 /sella_repository
 /hip_repository
+hip_repository
+sella_repository
+hpo_results
+hpo_results_full
+legacy
+wandb/
+cheese/
