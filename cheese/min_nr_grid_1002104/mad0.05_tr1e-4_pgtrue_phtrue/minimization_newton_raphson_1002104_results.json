@@ -1,0 +1,336 @@
+{
+  "job_id": "1002104",
+  "method": "newton_raphson",
+  "params": {
+    "method": "newton_raphson",
+    "step_size": 0.01,
+    "max_atom_disp": 0.05,
+    "force_converged": 0.0001,
+    "min_interatomic_dist": 0.5,
+    "tr_threshold": 0.0001,
+    "project_gradient_and_v": true,
+    "purify_hessian": true,
+    "log_dir": "/scratch/memoozd/ts-tools-scratch/runs/min_nr_grid_1002104/mad0.05_tr1e-4_pgtrue_phtrue/diagnostics"
+  },
+  "config": {
+    "n_steps": 20000,
+    "max_samples": 20,
+    "start_from": "midpoint_rt_noise2.0A",
+    "noise_seed": 42,
+    "scine_functional": "DFTB0",
+    "n_workers": 48,
+    "threads_per_worker": 4,
+    "split": "test"
+  },
+  "metrics": {
+    "n_samples": 20,
+    "n_converged": 4,
+    "n_errors": 0,
+    "convergence_rate": 0.2,
+    "mean_steps_when_converged": 3372.75,
+    "mean_wall_time": 50.03533685207367,
+    "total_wall_time": 1000.7067370414734,
+    "results": [
+      {
+        "converged": false,
+        "converged_step": null,
+        "final_energy": -451.96783447265625,
+        "final_force_norm": 0.006229880265891552,
+        "total_steps": 20000,
+        "start_neg_vib": 9,
+        "final_neg_vib": 4,
+        "wall_time": 65.08628463745117,
+        "error": null,
+        "sample_idx": 0,
+        "formula": [
+          "C2H3N3O2"
+        ]
+      },
+      {
+        "converged": false,
+        "converged_step": null,
+        "final_energy": -442.80560302734375,
+        "final_force_norm": 24.454769134521484,
+        "total_steps": 20000,
+        "start_neg_vib": 11,
+        "final_neg_vib": 8,
+        "wall_time": 64.701411485672,
+        "error": null,
+        "sample_idx": 1,
+        "formula": [
+          "C2H3N3O2"
+        ]
+      },
+      {
+        "converged": false,
+        "converged_step": null,
+        "final_energy": -462.9798889160156,
+        "final_force_norm": 3.024898052215576,
+        "total_steps": 20000,
+        "start_neg_vib": 8,
+        "final_neg_vib": 0,
+        "wall_time": 64.62172222137451,
+        "error": null,
+        "sample_idx": 2,
+        "formula": [
+          "C2H3N3O2"
+        ]
+      },
+      {
+        "converged": false,
+        "converged_step": null,
+        "final_energy": -427.55841064453125,
+        "final_force_norm": 45.66341781616211,
+        "total_steps": 20000,
+        "start_neg_vib": 9,
+        "final_neg_vib": 10,
+        "wall_time": 65.64616203308105,
+        "error": null,
+        "sample_idx": 3,
+        "formula": [
+          "C2H3N3O2"
+        ]
+      },
+      {
+        "converged": false,
+        "converged_step": null,
+        "final_energy": -468.288330078125,
+        "final_force_norm": 1.2765573263168335,
+        "total_steps": 20000,
+        "start_neg_vib": 10,
+        "final_neg_vib": 4,
+        "wall_time": 64.48371362686157,
+        "error": null,
+        "sample_idx": 4,
+        "formula": [
+          "C2H3N3O2"
+        ]
+      },
+      {
+        "converged": false,
+        "converged_step": null,
+        "final_energy": -332.2200927734375,
+        "final_force_norm": 43.057334899902344,
+        "total_steps": 20000,
+        "start_neg_vib": 12,
+        "final_neg_vib": 11,
+        "wall_time": 57.70132613182068,
+        "error": null,
+        "sample_idx": 5,
+        "formula": [
+          "C2H5NO2"
+        ]
+      },
+      {
+        "converged": true,
+        "converged_step": 9587,
+        "final_energy": -355.00860595703125,
+        "final_force_norm": 9.794634388526902e-05,
+        "total_steps": 9588,
+        "start_neg_vib": 12,
+        "final_neg_vib": 0,
+        "wall_time": 28.33641815185547,
+        "error": null,
+        "sample_idx": 6,
+        "formula": [
+          "C2H5NO2"
+        ]
+      },
+      {
+        "converged": false,
+        "converged_step": null,
+        "final_energy": -324.2034912109375,
+        "final_force_norm": 45.42485427856445,
+        "total_steps": 20000,
+        "start_neg_vib": 14,
+        "final_neg_vib": 13,
+        "wall_time": 57.9040470123291,
+        "error": null,
+        "sample_idx": 7,
+        "formula": [
+          "C2H5NO2"
+        ]
+      },
+      {
+        "converged": false,
+        "converged_step": null,
+        "final_energy": -362.3923034667969,
+        "final_force_norm": 33.9310417175293,
+        "total_steps": 20000,
+        "start_neg_vib": 12,
+        "final_neg_vib": 6,
+        "wall_time": 56.27817893028259,
+        "error": null,
+        "sample_idx": 8,
+        "formula": [
+          "C2H5NO2"
+        ]
+      },
+      {
+        "converged": false,
+        "converged_step": null,
+        "final_energy": -357.9859924316406,
+        "final_force_norm": 7.851051122997887e-06,
+        "total_steps": 20000,
+        "start_neg_vib": 7,
+        "final_neg_vib": 3,
+        "wall_time": 55.72319030761719,
+        "error": null,
+        "sample_idx": 9,
+        "formula": [
+          "C2H5NO2"
+        ]
+      },
+      {
+        "converged": false,
+        "converged_step": null,
+        "final_energy": -360.28302001953125,
+        "final_force_norm": 0.7378866076469421,
+        "total_steps": 20000,
+        "start_neg_vib": 8,
+        "final_neg_vib": 6,
+        "wall_time": 58.041255474090576,
+        "error": null,
+        "sample_idx": 10,
+        "formula": [
+          "C2H5NO2"
+        ]
+      },
+      {
+        "converged": true,
+        "converged_step": 53,
+        "final_energy": -235.49795532226562,
+        "final_force_norm": 7.357652793871239e-05,
+        "total_steps": 54,
+        "start_neg_vib": 5,
+        "final_neg_vib": 0,
+        "wall_time": 0.23976588249206543,
+        "error": null,
+        "sample_idx": 11,
+        "formula": [
+          "C2HNO"
+        ]
+      },
+      {
+        "converged": false,
+        "converged_step": null,
+        "final_energy": -235.49795532226562,
+        "final_force_norm": 3.081904287682846e-05,
+        "total_steps": 20000,
+        "start_neg_vib": 2,
+        "final_neg_vib": 1,
+        "wall_time": 41.56376838684082,
+        "error": null,
+        "sample_idx": 12,
+        "formula": [
+          "C2HNO"
+        ]
+      },
+      {
+        "converged": true,
+        "converged_step": 134,
+        "final_energy": -235.49795532226562,
+        "final_force_norm": 3.016596929228399e-05,
+        "total_steps": 135,
+        "start_neg_vib": 3,
+        "final_neg_vib": 0,
+        "wall_time": 0.36922740936279297,
+        "error": null,
+        "sample_idx": 13,
+        "formula": [
+          "C2HNO"
+        ]
+      },
+      {
+        "converged": true,
+        "converged_step": 3717,
+        "final_energy": -235.49795532226562,
+        "final_force_norm": 5.643141412292607e-05,
+        "total_steps": 3718,
+        "start_neg_vib": 4,
+        "final_neg_vib": 0,
+        "wall_time": 7.738533973693848,
+        "error": null,
+        "sample_idx": 14,
+        "formula": [
+          "C2HNO"
+        ]
+      },
+      {
+        "converged": false,
+        "converged_step": null,
+        "final_energy": -415.34649658203125,
+        "final_force_norm": 0.21768319606781006,
+        "total_steps": 20000,
+        "start_neg_vib": 7,
+        "final_neg_vib": 1,
+        "wall_time": 51.396108627319336,
+        "error": null,
+        "sample_idx": 15,
+        "formula": [
+          "C2HNO3"
+        ]
+      },
+      {
+        "converged": false,
+        "converged_step": null,
+        "final_energy": -384.2936096191406,
+        "final_force_norm": 29.685503005981445,
+        "total_steps": 20000,
+        "start_neg_vib": 10,
+        "final_neg_vib": 8,
+        "wall_time": 67.09585332870483,
+        "error": null,
+        "sample_idx": 16,
+        "formula": [
+          "C3H5NO2"
+        ]
+      },
+      {
+        "converged": false,
+        "converged_step": null,
+        "final_energy": -396.9691162109375,
+        "final_force_norm": 0.4005722999572754,
+        "total_steps": 20000,
+        "start_neg_vib": 10,
+        "final_neg_vib": 6,
+        "wall_time": 63.68052935600281,
+        "error": null,
+        "sample_idx": 17,
+        "formula": [
+          "C3H5NO2"
+        ]
+      },
+      {
+        "converged": false,
+        "converged_step": null,
+        "final_energy": -380.0377502441406,
+        "final_force_norm": 31.745849609375,
+        "total_steps": 20000,
+        "start_neg_vib": 12,
+        "final_neg_vib": 11,
+        "wall_time": 66.12439179420471,
+        "error": null,
+        "sample_idx": 18,
+        "formula": [
+          "C3H5NO2"
+        ]
+      },
+      {
+        "converged": false,
+        "converged_step": null,
+        "final_energy": -383.15643310546875,
+        "final_force_norm": 22.27174186706543,
+        "total_steps": 20000,
+        "start_neg_vib": 9,
+        "final_neg_vib": 11,
+        "wall_time": 63.97484827041626,
+        "error": null,
+        "sample_idx": 19,
+        "formula": [
+          "C3H5NO2"
+        ]
+      }
+    ]
+  }
+}

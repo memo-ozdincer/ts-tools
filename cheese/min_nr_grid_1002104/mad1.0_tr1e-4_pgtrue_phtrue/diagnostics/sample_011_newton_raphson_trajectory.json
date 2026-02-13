@@ -1,0 +1,39 @@
+{
+  "sample_id": "sample_011",
+  "formula": "['C2HNO']",
+  "method": "newton_raphson",
+  "start_neg_vib": 5,
+  "final_neg_vib": 0,
+  "trajectory": [
+    {
+      "step": 0,
+      "energy": -236.6445770263672,
+      "force_norm": 1.673086404800415,
+      "n_neg_evals": 5,
+      "min_vib_eval": -0.7698413133621216,
+      "max_vib_eval": 0.9869409799575806,
+      "eff_step_size": 85.23955088119513,
+      "min_dist": 2.3646810054779053
+    },
+    {
+      "step": 1,
+      "energy": -235.49737548828125,
+      "force_norm": 0.02387227490544319,
+      "n_neg_evals": 6,
+      "min_vib_eval": -0.014208728447556496,
+      "max_vib_eval": 0.03318890184164047,
+      "eff_step_size": 9387.63413439159,
+      "min_dist": 3.015573501586914
+    },
+    {
+      "step": 2,
+      "energy": -235.49794006347656,
+      "force_norm": 9.781918197404593e-05,
+      "n_neg_evals": 0,
+      "min_vib_eval": 0.00014319390174932778,
+      "max_vib_eval": 0.00014319390174932778,
+      "eff_step_size": 6983.537621249953,
+      "min_dist": 3.8345296382904053
+    }
+  ]
+}

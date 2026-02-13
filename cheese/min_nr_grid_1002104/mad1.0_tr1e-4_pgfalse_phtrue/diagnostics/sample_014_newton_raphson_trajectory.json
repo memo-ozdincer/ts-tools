@@ -1,0 +1,99 @@
+{
+  "sample_id": "sample_014",
+  "formula": "['C2HNO']",
+  "method": "newton_raphson",
+  "start_neg_vib": 4,
+  "final_neg_vib": 0,
+  "trajectory": [
+    {
+      "step": 0,
+      "energy": -235.5778045654297,
+      "force_norm": 0.13704252243041992,
+      "n_neg_evals": 4,
+      "min_vib_eval": -0.17589117586612701,
+      "max_vib_eval": 0.009583082050085068,
+      "eff_step_size": 395.88027862441294,
+      "min_dist": 3.00368332862854
+    },
+    {
+      "step": 1,
+      "energy": -235.52224731445312,
+      "force_norm": 0.04514271020889282,
+      "n_neg_evals": 3,
+      "min_vib_eval": -0.07468618452548981,
+      "max_vib_eval": 0.005357733927667141,
+      "eff_step_size": 1334.6143955805437,
+      "min_dist": 3.0152533054351807
+    },
+    {
+      "step": 2,
+      "energy": -235.51821899414062,
+      "force_norm": 0.033523090183734894,
+      "n_neg_evals": 2,
+      "min_vib_eval": -0.3338434398174286,
+      "max_vib_eval": 0.03431989997625351,
+      "eff_step_size": 30.047017371128025,
+      "min_dist": 2.6034176349639893
+    },
+    {
+      "step": 3,
+      "energy": -235.50160217285156,
+      "force_norm": 0.007087613455951214,
+      "n_neg_evals": 1,
+      "min_vib_eval": -0.08488360792398453,
+      "max_vib_eval": 0.00632057711482048,
+      "eff_step_size": 161.61404616244056,
+      "min_dist": 2.9852662086486816
+    },
+    {
+      "step": 4,
+      "energy": -235.4986572265625,
+      "force_norm": 0.0015512349782511592,
+      "n_neg_evals": 1,
+      "min_vib_eval": -0.020655589178204536,
+      "max_vib_eval": 0.0012471075169742107,
+      "eff_step_size": 824.7065325223433,
+      "min_dist": 3.304583787918091
+    },
+    {
+      "step": 5,
+      "energy": -235.49807739257812,
+      "force_norm": 0.0003291700850240886,
+      "n_neg_evals": 1,
+      "min_vib_eval": -0.004977951291948557,
+      "max_vib_eval": 0.00024019493139348924,
+      "eff_step_size": 4277.716069164821,
+      "min_dist": 3.5911123752593994
+    },
+    {
+      "step": 6,
+      "energy": -235.4979705810547,
+      "force_norm": 7.432328129652888e-05,
+      "n_neg_evals": 1,
+      "min_vib_eval": -0.0012253891909494996,
+      "max_vib_eval": -0.0012253891909494996,
+      "eff_step_size": NaN,
+      "min_dist": 3.841398000717163
+    },
+    {
+      "step": 7,
+      "energy": -235.49795532226562,
+      "force_norm": 2.033499004028272e-05,
+      "n_neg_evals": 1,
+      "min_vib_eval": -0.0003433935926295817,
+      "max_vib_eval": -0.0003433935926295817,
+      "eff_step_size": NaN,
+      "min_dist": 4.063962936401367
+    },
+    {
+      "step": 8,
+      "energy": -235.49794006347656,
+      "force_norm": 1.0426215339975897e-05,
+      "n_neg_evals": 0,
+      "min_vib_eval": -7.207727321656421e-05,
+      "max_vib_eval": 2.9085615551593946e-06,
+      "eff_step_size": NaN,
+      "min_dist": 4.2453203201293945
+    }
+  ]
+}

@@ -1,0 +1,79 @@
+{
+  "sample_id": "sample_012",
+  "formula": "['C2HNO']",
+  "method": "newton_raphson",
+  "start_neg_vib": 2,
+  "final_neg_vib": 0,
+  "trajectory": [
+    {
+      "step": 0,
+      "energy": -235.50584411621094,
+      "force_norm": 0.016624677926301956,
+      "n_neg_evals": 2,
+      "min_vib_eval": -0.029575403779745102,
+      "max_vib_eval": 0.0016977591440081596,
+      "eff_step_size": 4600.432876180803,
+      "min_dist": 3.2930257320404053
+    },
+    {
+      "step": 1,
+      "energy": -235.49803161621094,
+      "force_norm": 0.00022783191525377333,
+      "n_neg_evals": 1,
+      "min_vib_eval": -0.003616116940975189,
+      "max_vib_eval": 0.00016624052659608424,
+      "eff_step_size": 6211.177740820547,
+      "min_dist": 3.654271364212036
+    },
+    {
+      "step": 2,
+      "energy": -235.49795532226562,
+      "force_norm": 5.210995368543081e-05,
+      "n_neg_evals": 1,
+      "min_vib_eval": -0.0009066788479685783,
+      "max_vib_eval": 3.55067677446641e-05,
+      "eff_step_size": 29328.45321682383,
+      "min_dist": 3.895482063293457
+    },
+    {
+      "step": 3,
+      "energy": -235.49794006347656,
+      "force_norm": 1.2460152902349364e-05,
+      "n_neg_evals": 1,
+      "min_vib_eval": -0.00023427950509358197,
+      "max_vib_eval": -0.00023427950509358197,
+      "eff_step_size": NaN,
+      "min_dist": 4.113816261291504
+    },
+    {
+      "step": 4,
+      "energy": -235.49794006347656,
+      "force_norm": 3.517054665280739e-06,
+      "n_neg_evals": 1,
+      "min_vib_eval": -5.4491385526489466e-05,
+      "max_vib_eval": -5.4491385526489466e-05,
+      "eff_step_size": NaN,
+      "min_dist": 4.311487674713135
+    },
+    {
+      "step": 5,
+      "energy": -235.49794006347656,
+      "force_norm": 1.4313769725049497e-06,
+      "n_neg_evals": 1,
+      "min_vib_eval": -1.6071795471361838e-05,
+      "max_vib_eval": -1.6071795471361838e-05,
+      "eff_step_size": NaN,
+      "min_dist": 4.521427154541016
+    },
+    {
+      "step": 6,
+      "energy": -235.49794006347656,
+      "force_norm": 1.1450890724518104e-06,
+      "n_neg_evals": 0,
+      "min_vib_eval": -5.029856311011827e-06,
+      "max_vib_eval": 4.33323793913587e-06,
+      "eff_step_size": NaN,
+      "min_dist": 4.687993049621582
+    }
+  ]
+}

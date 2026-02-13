@@ -26,7 +26,12 @@
 #   3. project_gradient_and_v - Eckart-project gradient before NR step.
 #   4. purify_hessian - Enforce translational sum rules on Hessian.
 #
-# Grid: 5 x 4 x 2 x 2 = 80 combinations (sparse, wide-range)
+# Refinement grid (based on previous 80-combo sweep):
+#   - Best region was around max_atom_disp=1.0 and tr_threshold=1e-4.
+#   - purify_hessian produced identical outcomes across all matched pairs.
+#   - New sweep focuses budget on trust-radius/TR-threshold refinement.
+#
+# Grid: 4 x 4 x 2 x 1 = 32 combinations (focused refinement)
 # =============================================================================
 
 set -e
@@ -83,18 +88,19 @@ FORCE_CONVERGED="${FORCE_CONVERGED:-1e-4}"
 MIN_INTERATOMIC_DIST="${MIN_INTERATOMIC_DIST:-0.5}"
 
 # =============================================================================
-# Grid search axes (sparse, wide-range)
+# Grid search axes (focused around best-performing region)
 # =============================================================================
-# Trust radius: controls how much of the raw NR step we allow per atom
-# Small = conservative (gradient-descent-like), large = full NR
-MAX_ATOM_DISP_GRID=("0.05" "0.1" "0.3" "0.5" "1.0")
+# Trust radius near the previous winner (1.0), with moderate exploration above/below.
+MAX_ATOM_DISP_GRID=("0.5" "0.8" "1.0" "1.3")
 
-# TR mode filtering threshold: eigenvalues below this are excluded from H^{-1}
-TR_THRESHOLD_GRID=("1e-4" "1e-5" "1e-6" "1e-7")
+# TR mode filtering near previous winners (1e-4 and 1e-5), plus intermediate values.
+TR_THRESHOLD_GRID=("3e-4" "1e-4" "5e-5" "1e-5")
 
-# Projection options (boolean axes)
+# Projection options (keep both: speeds up some high-performing regimes).
 PROJECT_GRAD_GRID=("true" "false")
-PURIFY_HESS_GRID=("true" "false")
+
+# Previously no measurable effect in this benchmark; keep fixed to reduce combinatorics.
+PURIFY_HESS_GRID=("false")
 
 echo "=============================================="
 echo "Newton-Raphson Minimization - Grid Search"
