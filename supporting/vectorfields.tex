@@ -1,0 +1,198 @@
+
+
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{geometry}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{float}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{multirow}
+\usepackage{graphicx}
+\usepackage{siunitx}
+\usepackage{enumitem}
+\usepackage{colortbl}
+
+\geometry{margin=1in}
+\hypersetup{colorlinks=true, linkcolor=blue, urlcolor=blue, citecolor=blue}
+
+\definecolor{bestcolor}{RGB}{0,128,0}
+\definecolor{worstcolor}{RGB}{180,0,0}
+\definecolor{neutralcolor}{RGB}{100,100,100}
+\definecolor{headercolor}{RGB}{240,240,250}
+
+\newcommand{\param}[1]{\texttt{#1}}
+\newcommand{\good}[1]{\textcolor{bestcolor}{\textbf{#1}}}
+\newcommand{\bad}[1]{\textcolor{worstcolor}{\textbf{#1}}}
+
+\title{Hyperparameter Optimization Results:\\Transition State Search Algorithms}
+\author{Hyperparamter optimization results}
+\date{January 2026}
+
+\begin{document}
+
+The gentlest ascent dynamics (GAD) are defined as:
+$$
+\mathbf{F}_{GAD}(\mathbf{x})
+= -\nabla E(\mathbf{x})
++ 2\,(\nabla E(\mathbf{x}), \mathbf{v}_1(\mathbf{x}))\,\mathbf{v}_1(\mathbf{x}),
+$$
+where $\mathbf{v}_1(\mathbf{x})$ is the eigenvector of the Hessian $\nabla^{2} E(\mathbf{x})$ associated with the smallest eigenvalue $\lambda_1 \le \lambda_2 \le \dots \le \lambda_N$, $\left( \nabla^{2} E(\mathbf{x}) \right) \mathbf{v}_i(\mathbf{x}) = \lambda_i \mathbf{v}_i(\mathbf{x}) $. 
+To obtain a physical interpretation, we can rewrite the GAD vector field in the eigenbasis of the Hessian. 
+We can express the gradient $\nabla E(\mathbf{x})$ in this basis as:
+$$\nabla E(\mathbf{x}) = \sum_{i=1}^{N} g_i \mathbf{v}_i, \quad \text{where } g_i = \nabla E(\mathbf{x}) \cdot \mathbf{v}_i
+$$
+Substituting the expansion of the gradient into GAD:
+$$
+\mathbf{F}_{GAD}(\mathbf{x}) = -\sum_{i=1}^{N} g_i \mathbf{v}_i + 2 g_1 \mathbf{v}_1 
+= \underbrace{+g_1 \mathbf{v}_1}_{\text{Ascent}} + \sum_{i=2}^{N} \underbrace{-g_i \mathbf{v}_i}_{\text{Descent}}
+$$
+Along the direction of the lowest curvature ($\mathbf{v}_1$), the force is effectively $+\nabla E$ (ascent).
+Along all other directions ($\mathbf{v}_{i \neq 1}$), the force is $-\nabla E$ (descent). The dynamics drive the system toward a saddle point of index 1 (a minimum in all directions except $\mathbf{v}_1$, where it is a maximum).
+
+The primary difference of P-RFO to GAD, is that GAD is a continuous dynamical system (a first-order differential equation), whereas P-RFO (Partitioned Rational Function Optimization) is a discrete, iterative quasi-Newton method (a trust-region optimization step). GAD represents a gradient (steepest descent/ascent) approach. It tells us the direction, but does not account for the curvature (magnitude of $\lambda$) to scale the step length. 
+In contrast, the P-RFO step $\Delta \mathbf{x}$ explicitly divides by the curvature (Newton-like):
+$$\Delta \mathbf{x}_{P\text{-}RFO} = \underbrace{\frac{g_1}{\lambda_1 - \nu_1} \mathbf{v}_1}_{\text{Ascent Step}} + \underbrace{\sum_{i=2}^{N} \frac{-g_i}{\lambda_i - \mu_i} \mathbf{v}_i}_{\text{Descent Step}}$$
+where $\nu,\ \mu$ are shift parameters determined by the trust radius.
+We have to satisfy specific constraints for the shift parameters $\nu,\ \mu$.
+To ensure maximization, the effective curvature has to be negative, i.e. $\nu$ must be higher than the eigenvalue of the TS mode ($\nu > \lambda_1$).
+To enforce the effective Hessian to be positive definite (ensures minimization), $\mu$ must be lower than the lowest eigenvalue in the minimization subspace ($\mu < \min(\lambda_k),\ k>1$). We can use iterative 1D root-finding.
+
+The "Rational Function" in P-RFO refers to a specific non-quadratic local model that inherently requires a control parameter (a shift) to function. This parameter is mathematically equivalent to a trust radius Lagrange multiplier. If we remove the trust radius constraint (effectively setting the shift parameters to zero), P-RFO collapses into the standard Newton-Raphson method.
+Newton-Raphson cannot guarantee convergence to a saddle point of index 1 if we start in a convex region. The trust radius (shift) is the mechanism P-RFO uses to enforce the correct geometry (ascent along $\mathbf{v}_1$, descent along $\mathbf{v}_{i>1}$). 
+
+If we decide not to enforce a trust region (i.e., we assume the quadratic model is perfect everywhere), the shifts $\nu,\ \mu$ become zero. The step becomes:
+$$\Delta x_i = \frac{-g_i}{\lambda_i}$$ This is the exact Newton-Raphson step.
+Why Newton-Raphson (NR) fails (and why P-RFO needs the radius), is that the standard Newton step does not care about the type of stationary point (minimum vs. saddle), NR simply moves toward the nearest one where the gradient is zero. In P-RFO ($\alpha \neq 0$), the trust radius logic forces $\lambda_1 - \nu < 0$. Even if $\lambda_1$ is positive, the shift flips the sign of the denominator, forcing the step to move up (ascent), away from the minimum and toward the saddle. 
+
+\paragraph{Eigenvalue Scaling / Eigenvector Following}
+If we want a method that behaves like P-RFO (guarantees ascent along $\mathbf{v}_1$) but uses a simple Newton step without calculating shifts, we are looking for Eigenvector Following (EF) (or Newton with Sign Flipping):
+\begin{align}
+\Delta x^{(EF)}_1 = +\frac{g_1}{|\lambda_1|} \quad \text{(Always ascent)} \\
+\Delta x^{(EF)}_{i \neq 1} = -\frac{g_i}{|\lambda_i|} \quad \text{(Always descent)}
+\end{align}
+This forces the correct direction without explicitly modeling a trust region, though it is less numerically stable than P-RFO near inflection points (where $\lambda \approx 0$).
+Compared to GAD:
+$$\dot{x}^{(GAD)}_1 = +g_1$$
+$$\dot{x}^{(GAD)}_{i \neq 1} = -g_i
+$$
+EF is "Newton on the GAD Surface"
+$$\mathbf{\Delta x}_{EF} = \mathbf{H}^{-1}_{abs} \cdot \mathbf{F}_{GAD}$$ where $\mathbf{H}_{abs}$ is the Hessian with absolute values of eigenvalues on the diagonal.
+
+Derivation: To make GAD behave like a Newton method (Eigenvector Following), we must apply a preconditioner matrix $\mathbf{K}$ to the GAD force vector. 
+In standard Newton methods, the "preconditioner" is the inverse Hessian. However, to maintain the correct ascent/descent directions enforced by GAD, we must use the absolute value of the inverse Hessian (making the preconditioner positive definite):
+$$\mathbf{K} = \left| (\nabla^2 E)^{-1} \right|$$
+In the eigenbasis of the Hessian, this matrix is diagonal:
+$$\mathbf{K}_{ij} = \delta_{ij} \frac{1}{|\lambda_i|}$$
+Recall the expression of the GAD force in the eigenbasis:
+$$\mathbf{F}_{GAD} = 
+\begin{pmatrix}
++g_1 \\
+-g_2 \\
+\vdots \\
+-g_N
+\end{pmatrix}
+\quad 
+\begin{aligned}
+&\leftarrow \text{Ascent along } \mathbf{v}_1 \\
+& \\
+&\leftarrow \text{Descent along } \mathbf{v}_{i \neq 1}
+& \\
+& \\
+\end{aligned}
+$$Now, we calculate the preconditioned step $\Delta \mathbf{x} = \mathbf{K} \cdot \mathbf{F}_{GAD}$:
+$$
+\Delta \mathbf{x}^{(EF)} = 
+\begin{pmatrix}
+\frac{1}{|\lambda_1|} & 0 & \cdots \\
+0 & \frac{1}{|\lambda_2|} & \cdots \\
+\vdots & \vdots & \ddots
+\end{pmatrix}
+\begin{pmatrix}
++g_1 \\
+-g_2 \\
+\vdots
+\end{pmatrix}
+= 
+\begin{pmatrix}
++\frac{g_1}{|\lambda_1|} \\
+-\frac{g_2}{|\lambda_2|} \\
+\vdots
+\end{pmatrix}$$
+This vector $\Delta \mathbf{x}$ is exactly the Eigenvector Following (Newton with sign flipping) step:
+It retains the direction of GAD ($+$ for mode 1, $-$ for others), but scales the magnitude by scaling each component by the inverse curvature $1/|\lambda_i|$.
+
+
+\section{Escaping High-index regions}
+
+\textcolor{orange}{Ideas here not verified yet}
+
+If GAD is getting stuck in a minimum where many eigenvalues are positive (a broad, convex basin), the problem is likely Mode Switching (or Mixing).
+In a basin with ~7 positive eigenvalues, the "lowest" mode $\mathbf{v}_1$ is often degenerate or nearly degenerate with $\mathbf{v}_2, \mathbf{v}_3 \dots \mathbf{v}_7$. As the system takes a step, the identity of $\mathbf{v}_1$ changes rapidly (the vectors rotate in the subspace). GAD ends up "chasing its tail," constantly changing the direction of ascent, which results in zero net displacement.
+Here are three ways to manipulate GAD to break this deadlock, ranked from most robust to simplest.
+
+1. The "Shotgun" Method: Subspace Ascent (Generalized GAD). Instead of ascending only along $\mathbf{v}_1$, you force the system to ascend along the entire subspace of the first $k$ eigenvectors (where $k \approx 7$ in your case).The Logic: If modes $1 \dots 7$ are all positive and mixing, choose all instead of one. Invert the gradient in the entire subspace. This creates a robust "escape" force that pushes the system out of the basin regardless of how the eigenvectors rotate within that subspace.
+The Modified Equation:
+$$\mathbf{F}_{k\text{-}GAD} = -\nabla E(\mathbf{x}) + 2 \sum_{i=1}^{k} (\nabla E(\mathbf{x}) \cdot \mathbf{v}_i) \mathbf{v}_i$$How to use: Set $k=7$ (or however many modes are clustered near the bottom). Run this dynamics until the smallest eigenvalue $\lambda_1$ becomes clearly negative (indicating you have left the convex region). Then, switch back to standard GAD ($k=1$).
+
+2. The "Booster" Method: Over-emphasize Ascent. You can disturb the balance between ascent and descent. Standard GAD uses a factor of $2$ to exactly flip the sign of the gradient component along $\mathbf{v}_1$ (from $-g_1$ to $+g_1$). By increasing this factor, you artificially dominate the descent forces.The Modified Equation:$$\mathbf{F}_{boost} = -\nabla E(\mathbf{x}) + \gamma \, (\nabla E(\mathbf{x}) \cdot \mathbf{v}_1) \mathbf{v}_1$$Set $\gamma > 2$ (e.g., 3.0 or 4.0).
+The Effect: This makes the net force along $\mathbf{v}_1$ equal to $(\gamma - 1)g_1$. If $\gamma=4$, the ascent force is $3\times$ stronger than the natural gradient. This "overpowers" the descent forces from the other positive modes that are trying to keep you in the minimum.
+
+3. The "Newton Kick": Apply Preconditioning. If the region is "flat" (small eigenvalues), standard gradient-based GAD moves infinitesimally slowly. You can apply the inverse Hessian (or a simplified version) to "jump" to the edge of the basin.The Logic: Since you have the Hessian, calculate the exact step that would take you to the maximum of the local quadratic approximation along $\mathbf{v}_1$.The Manipulation:Instead of integrating the ODE $\dot{\mathbf{x}} = \mathbf{F}_{GAD}$, take a single discrete step:$$\Delta \mathbf{x} = \frac{g_1}{\lambda_1} \mathbf{v}_1$$Warning: Only do this if $\lambda_1 > 0$ (convex). This is the exact distance to the peak of the parabola in the $\mathbf{v}_1$ direction. It instantly transports the system out of the local quadratic trap.
+
+
+4. You can take a step towards $v_2$ or $v_3$ etc until you leave the region where the GAD vector magnitude is small.
+This strategy is known as following a specific mode (or "Mode Tracking").In high-dimensional basins, the "lowest" eigenvector $\mathbf{v}_1$ is not always the chemically relevant reaction coordinate. It might be a global rotation, a "breathing" mode, or a methyl rotation that leads nowhere. The actual reaction channel might be aligned with $\mathbf{v}_2$ or $\mathbf{v}_3$.Here is how to implement this "Kick and Switch" strategy effectively.1. The Method: Target $\mathbf{v}_k$ instead of $\mathbf{v}_1$You temporarily redefine the GAD vector field to ascend along the $k$-th eigenvector (where $k=2, 3, \dots$) while descending along all others (including $\mathbf{v}_1$).The Modified Equation:$$\mathbf{F}_{GAD}^{(k)} = -\nabla E(\mathbf{x}) + 2 (\nabla E(\mathbf{x}) \cdot \mathbf{v}_k) \mathbf{v}_k$$2. Why this works
+Breaking Symmetry: Often $\mathbf{v}_1$ preserves the symmetry of the molecule, trapping you in the basin. $\mathbf{v}_2$ might be a symmetry-breaking mode that leads to a transition state.Escaping "Bad" Modes: If $\mathbf{v}_1$ corresponds to a soft, bounded motion (like a side-chain wiggle), following it just climbs a wall and slides back. $\mathbf{v}_2$ might point towards a bond-breaking event.
+
+\subsection{Chat}
+Standard GAD fails in regions where the Hessian $H(\mathbf x)$ has more than one negative eigenvalue because reversing the force along a single direction $\mathbf v_1$ does not isolate a one-dimensional unstable manifold. To escape such regions, the ascent dynamics must be modified so that instability in multiple directions is either suppressed or systematically resolved.
+In all cases, the key modification is to prevent simultaneous ascent along multiple negative-curvature directions and to actively drive the system toward a region where the Hessian has exactly one negative eigenvalue, at which point standard GAD becomes well posed.
+
+
+5. One approach is subspace GAD. Let ${\mathbf v_i}_{i=1}^k$ be the eigenvectors corresponding to the (k) most negative eigenvalues of $H(\mathbf x)$. One defines a modified force
+$$
+\mathbf F(\mathbf x)
+= -\nabla E(\mathbf x)
+* 2 \sum_{i=1}^k (\nabla E(\mathbf x), \mathbf v_i),\mathbf v_i,
+$$
+
+and simultaneously minimizes the energy in the orthogonal complement of $\mathrm{span}{\mathbf v_i}$. As the trajectory leaves the high-index saddle region, eigenvalues typically separate and the dynamics naturally reduce to (k=1).
+For subspace GAD, (k) should be chosen adaptively from the local Hessian spectrum rather than fixed a priori. At a configuration $\mathbf x$, one computes the lowest part of the spectrum and sets
+$$
+k(\mathbf x)=#{,\lambda_i(\mathbf x)<-\varepsilon,},
+$$
+where $\varepsilon>0$ is a small tolerance that separates genuinely unstable directions from near-zero modes. In practice, (k) is capped at a modest value to avoid noise-dominated modes, and it decreases automatically as the trajectory exits a high-index region and the number of negative eigenvalues drops.
+
+
+
+6. A related strategy is projected GAD. One first projects the gradient onto the stable subspace
+$$
+\mathbf P_s = I - \sum_{\lambda_i<0} \mathbf v_i \mathbf v_i^{\top},
+$$
+and performs steepest descent in this subspace while applying ascent only along the least unstable direction. This suppresses runaway motion along strongly unstable modes and steers the system toward a region with a single negative eigenvalue.
+A single time-discrete step with step size $\Delta t$ can be written as
+$$
+\mathbf x_{n+1}
+= \mathbf x_n
+* \Delta t, \mathbf P_s \nabla E(\mathbf x_n)
+- \Delta t, (\nabla E(\mathbf x_n),\mathbf v_1),\mathbf v_1.
+$$
+The first term performs steepest descent in all locally stable directions, while the second term performs ascent only along the least unstable mode, suppressing divergence along the other negative-curvature directions.
+
+
+7. Another modification is adaptive eigenvalue control. Instead of always following $\mathbf v_1$, one tracks the eigenvector associated with the smallest-magnitude eigenvalue $\lambda_i$ closest to zero. This biases the dynamics toward index reduction, driving the system toward an index-1 saddle rather than climbing along deeply unstable directions.
+Adaptive eigenvalue control drives the system toward an index-1 saddle by preferentially following the direction whose curvature is closest to zero. In regions of multiple negative eigenvalues, deeply negative modes correspond to directions that rapidly lower or raise the energy and tend to lead away from transition regions. By choosing $\mathbf v_\ast$ associated with
+$$
+\lambda_\ast = \arg\min_{\lambda_i<0} |\lambda_i|,
+$$
+and applying ascent only along $\mathbf v_\ast$, the dynamics penalize motion along strongly unstable directions while stabilizing them via descent or projection. As a result, the trajectory is pushed toward configurations where all other negative eigenvalues become positive, leaving a single marginally unstable direction. When only one negative eigenvalue remains, $\mathbf v_\ast$ coincides with $\mathbf v_1$, and the dynamics reduce smoothly to standard GAD centered on an index-1 saddle.
+
+
+\end{document}

@@ -1,0 +1,1310 @@
+% =============================================================================
+% ts-tools: Robust Transition State Search from Noisy Starting Geometries
+%           and Adjoint Sampling for Reaction Generation
+% =============================================================================
+\documentclass[11pt,a4paper]{article}
+
+% --- Packages ---
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{mathtools}
+\usepackage{bm}
+\usepackage{physics}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage[margin=1in]{geometry}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{enumitem}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{natbib}
+\usepackage{tcolorbox}
+
+% --- Custom commands ---
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\vv}{\bm{v}}
+\newcommand{\xx}{\bm{x}}
+\newcommand{\ff}{\bm{f}}
+\newcommand{\gg}{\bm{g}}
+\newcommand{\HH}{\bm{H}}
+\newcommand{\PP}{\bm{P}}
+\newcommand{\BB}{\bm{B}}
+\newcommand{\II}{\bm{I}}
+\newcommand{\MM}{\bm{M}}
+\newcommand{\RR}{\bm{R}}
+\DeclareMathOperator{\diag}{diag}
+\DeclareMathOperator{\tr}{tr}
+\DeclareMathOperator{\sgn}{sgn}
+
+\newtheorem{theorem}{Theorem}
+\newtheorem{proposition}{Proposition}
+\newtheorem{definition}{Definition}
+\newtheorem{remark}{Remark}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue!70!black,
+    citecolor=green!50!black,
+    urlcolor=blue!70!black,
+}
+
+% =============================================================================
+\title{%
+    \texttt{ts-tools}: Robust Transition State Search\\
+    from Noisy Starting Geometries\\[0.5em]
+    \large With Applications to Adjoint Sampling for Reaction Generation
+}
+
+\author{
+    Memo Ozdincer \\
+    \textit{Aspuru-Guzik Group} \\
+    University of Toronto
+}
+
+\date{\today}
+
+% =============================================================================
+\begin{document}
+\maketitle
+
+\begin{abstract}
+    We present \texttt{ts-tools}, a comprehensive toolkit for locating
+    index-1 saddle points (transition states) on molecular potential energy
+    surfaces, with particular emphasis on robustness to noisy or displaced
+    starting geometries. The toolkit implements and benchmarks a suite of
+    algorithms including Gentlest Ascent Dynamics (GAD), eigenvector
+    following, eigenvalue product descent, direct eigenvalue descent, Sella
+    trust-region optimization, improved High-index Saddle Dynamics (iHiSD),
+    and recursive HiSD. A central contribution is a systematic study of
+    escape mechanisms for high-index saddle points encountered when starting
+    from geometries perturbed by up to 2.0\,\AA{} of random noise. We
+    demonstrate that $\vv_2$ kicking---perturbation along the second
+    vibrational eigenvector---combined with mode tracking and adaptive
+    timestep control achieves 100\% GAD convergence on 2.0\,\AA{} noise,
+    dramatically outperforming all baselines. All algorithms operate through
+    Eckart-projected, mass-weighted Hessians and support both machine
+    learning (HIP) and semi-empirical (SCINE) energy backends. In a second
+    line of work, we integrate adjoint sampling methods for diffusion-based
+    generative modeling of molecular conformations and reaction pathways.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+% =============================================================================
+\section{Introduction}
+\label{sec:intro}
+% =============================================================================
+
+Transition states (TSs) are first-order saddle points on the Born--Oppenheimer
+potential energy surface (PES) that govern the kinetics of chemical reactions.
+Locating these critical points is central to understanding reaction mechanisms,
+predicting rate constants, and designing catalysts. Despite decades of research,
+reliably finding transition states remains one of the most challenging problems
+in computational chemistry, particularly when the initial guess is far from the
+true saddle point.
+
+Modern machine learning interatomic potentials (MLIPs) such as
+HIP~\cite{hip2024} provide fast, differentiable access to energies, forces,
+and Hessians, enabling gradient-based saddle point search at a fraction of the
+cost of \emph{ab initio} calculations. Semi-empirical methods such as
+SCINE/Sparrow~\cite{scine2024} offer CPU-based alternatives with analytical
+Hessians at DFTB0, PM6, or AM1 levels of theory. However, when starting
+geometries are corrupted by noise---as commonly arises in generative models,
+coarse molecular dynamics, or interpolation schemes---the search landscape
+becomes significantly more complex, with numerous higher-order saddle points
+(Morse index $>1$) that can trap conventional algorithms.
+
+This report documents the theoretical foundations, algorithmic developments,
+and experimental results of the \texttt{ts-tools} toolkit. The two major
+contributions are:
+
+\begin{enumerate}[label=(\roman*)]
+    \item \textbf{Robust saddle point search from noisy geometries:}
+    A comprehensive study of algorithms and escape strategies that achieve
+    near-perfect transition state convergence from starting points perturbed
+    by up to 2.0\,\AA{} of random noise.
+
+    \item \textbf{Adjoint sampling for reaction generation:}
+    Integration of diffusion-based generative models that sample molecular
+    conformations from Boltzmann distributions defined by energy functions,
+    enabling data-driven reaction pathway generation.
+\end{enumerate}
+
+% =============================================================================
+\section{Theoretical Background}
+\label{sec:theory}
+% =============================================================================
+
+\subsection{Potential Energy Surfaces and Critical Points}
+
+Consider a molecular system with $N$ atoms in three-dimensional space, described
+by nuclear coordinates $\xx \in \R^{3N}$. The Born--Oppenheimer potential energy
+surface $E(\xx)$ determines the energy as a function of nuclear configuration.
+Critical points satisfy $\nabla E(\xx^*) = \bm{0}$, and are classified by the
+\emph{Morse index}---the number of negative eigenvalues of the Hessian matrix
+$\HH(\xx^*) = \nabla^2 E(\xx^*)$:
+
+\begin{definition}[Morse Index]
+    The \emph{Morse index} of a critical point $\xx^*$ is
+    \begin{equation}
+        \text{index}(\xx^*) = \#\{\lambda_i < 0 : \lambda_i \in \sigma(\HH(\xx^*))\},
+    \end{equation}
+    where $\sigma(\HH)$ denotes the spectrum of the Hessian restricted to the
+    vibrational subspace (i.e., after removing translation and rotation modes).
+\end{definition}
+
+\begin{itemize}
+    \item \textbf{Minima:} index $= 0$ (all eigenvalues positive). Local energy
+    minima corresponding to stable molecular conformations.
+    \item \textbf{Transition states:} index $= 1$ (exactly one negative
+    eigenvalue). First-order saddle points connecting reactant and product minima
+    via a minimum energy pathway.
+    \item \textbf{Higher-order saddle points:} index $\geq 2$. These are not
+    physically meaningful transition states but frequently arise as trapping
+    regions in saddle point search algorithms.
+\end{itemize}
+
+A practical convergence criterion for transition state detection uses the
+\emph{eigenvalue product}:
+\begin{equation}
+    \lambda_0 \cdot \lambda_1 < 0,
+    \label{eq:ts_criterion}
+\end{equation}
+where $\lambda_0$ and $\lambda_1$ are the two smallest vibrational eigenvalues
+(sorted in ascending order). This condition is satisfied if and only if exactly
+one of the two lowest eigenvalues is negative, which characterizes an index-1
+saddle point.
+
+\subsection{Gentlest Ascent Dynamics (GAD)}
+\label{sec:gad}
+
+Gentlest Ascent Dynamics~\cite{weinan2011} is a dynamical system designed to
+climb from minima to saddle points along the ``gentlest'' ascent direction. The
+key idea is to invert the force component along the lowest eigenvector of the
+Hessian, creating a modified force field whose stable fixed points are index-1
+saddle points.
+
+Let $\vv_1(\xx)$ denote the eigenvector corresponding to the smallest
+eigenvalue $\lambda_0$ of the Hessian $\HH(\xx)$, and let
+$\ff(\xx) = -\nabla E(\xx)$ be the force. The GAD force is:
+\begin{equation}
+    \boxed{
+    \ff_{\text{GAD}}(\xx) = -\nabla E(\xx) + 2\bigl(\nabla E(\xx) \cdot \vv_1\bigr)\,\vv_1
+    }
+    \label{eq:gad}
+\end{equation}
+
+\begin{remark}[Interpretation in the eigenbasis]
+    Decomposing the gradient in the Hessian eigenbasis
+    $\{\vv_i\}_{i=0}^{3N-1}$ with $\nabla E = \sum_i g_i \vv_i$, the GAD
+    force becomes:
+    \begin{equation}
+        \ff_{\text{GAD}} = g_0 \vv_0 - \sum_{i \geq 1} g_i \vv_i.
+    \end{equation}
+    That is, GAD \emph{ascends} along $\vv_0$ (the softest mode) while
+    \emph{descending} along all other modes. At a fixed point where
+    $\ff_{\text{GAD}} = \bm{0}$, we must have $g_i = 0$ for all $i$, i.e.,
+    $\nabla E = \bm{0}$---a critical point. The stability analysis shows that
+    index-1 saddle points are \emph{stable} fixed points of GAD.
+\end{remark}
+
+\subsubsection{Euler Integration}
+The simplest time-stepping scheme follows the GAD vector field:
+\begin{equation}
+    \xx_{n+1} = \xx_n + \Delta t \cdot \ff_{\text{GAD}}(\xx_n).
+    \label{eq:gad_euler}
+\end{equation}
+
+\subsubsection{RK45 Integration}
+For more accurate trajectory following, we use the Dormand--Prince adaptive
+Runge--Kutta 4(5) scheme with error-based step size control:
+\begin{equation}
+    \xx_{n+1} = \xx_n + \sum_{i=1}^{6} b_i \bm{k}_i,
+    \quad \bm{k}_i = \Delta t \cdot \ff_{\text{GAD}}\!\left(\xx_n + \sum_{j<i} a_{ij}\bm{k}_j\right),
+\end{equation}
+with embedded error estimation for adaptive time stepping.
+
+\subsection{Eigenvector Following (Newton GAD)}
+\label{sec:ef}
+
+Eigenvector following (EF) applies a Newton-like update on the GAD potential
+surface. The key insight is that the Hessian of the GAD potential,
+$\HH_{\text{GAD}}$, can be expressed as:
+\begin{equation}
+    \HH_{\text{GAD}} = -\HH + 2\vv_1 \vv_1^T \HH + 2\HH \vv_1 \vv_1^T.
+\end{equation}
+Near a saddle point where $\HH \vv_i = \lambda_i \vv_i$, the absolute-value
+Hessian provides a convenient approximation:
+\begin{equation}
+    \HH_{\text{abs}} = \sum_i |\lambda_i| \, \vv_i \vv_i^T.
+\end{equation}
+The Newton step on the GAD surface becomes:
+\begin{equation}
+    \boxed{
+    \Delta\xx_{\text{EF}} = \HH_{\text{abs}}^{-1} \cdot \ff_{\text{GAD}}
+    }
+    \label{eq:ef}
+\end{equation}
+This provides quadratic convergence near the saddle point, as opposed to the
+linear convergence of Euler integration.
+
+\subsection{Partitioned Rational Function Optimization (P-RFO)}
+\label{sec:prfo}
+
+P-RFO extends the rational function approximation to saddle point
+optimization by partitioning the step into maximization and minimization
+components. The augmented Hessian equations are:
+\begin{equation}
+    \begin{pmatrix} \lambda_0 & g_0 \\ g_0 & 1 \end{pmatrix}
+    \begin{pmatrix} h_0 \\ 1 \end{pmatrix}
+    = \mu^{(+)}
+    \begin{pmatrix} h_0 \\ 1 \end{pmatrix},
+    \label{eq:prfo_max}
+\end{equation}
+for the maximization along $\vv_0$, and
+\begin{equation}
+    \begin{pmatrix}
+        \lambda_1 & 0 & \cdots & g_1 \\
+        0 & \lambda_2 & \cdots & g_2 \\
+        \vdots & & \ddots & \vdots \\
+        g_1 & g_2 & \cdots & 1
+    \end{pmatrix}
+    \begin{pmatrix} h_1 \\ h_2 \\ \vdots \\ 1 \end{pmatrix}
+    = \mu^{(-)}
+    \begin{pmatrix} h_1 \\ h_2 \\ \vdots \\ 1 \end{pmatrix},
+    \label{eq:prfo_min}
+\end{equation}
+for the minimization along all other modes. The total step in Cartesian
+coordinates is:
+\begin{equation}
+    \Delta\xx_{\text{P-RFO}} = \sum_i h_i \, \vv_i,
+\end{equation}
+subject to a trust radius constraint $\|\Delta\xx\| \leq \Delta_{\max}$.
+
+\subsection{Eigenvalue Product Descent}
+\label{sec:eigprod}
+
+A direct optimization approach minimizes the eigenvalue product as a loss
+function:
+\begin{equation}
+    \mathcal{L}_{\text{prod}}(\xx) = \lambda_0(\xx) \cdot \lambda_1(\xx),
+    \label{eq:eigprod_loss}
+\end{equation}
+where $\lambda_0, \lambda_1$ are the two smallest vibrational eigenvalues.
+At a transition state, $\lambda_0 < 0$ and $\lambda_1 > 0$, so
+$\mathcal{L}_{\text{prod}} < 0$. The gradient is computed via automatic
+differentiation through the eigendecomposition:
+\begin{equation}
+    \xx_{n+1} = \xx_n - \eta \, \nabla_{\xx} \mathcal{L}_{\text{prod}}(\xx_n),
+\end{equation}
+with gradient clipping and per-atom displacement limits for stability.
+This method requires a differentiable calculator (e.g., HIP) and achieved
+92.7\% convergence from clean starting geometries in 2.3 steps on average.
+
+\subsection{Direct Eigenvalue Descent (Sign Enforcer)}
+\label{sec:sign}
+
+The sign enforcer uses an adaptive loss function based on the current number
+of negative eigenvalues:
+\begin{equation}
+    \mathcal{L}_{\text{sign}}(\xx) =
+    \begin{cases}
+        (\lambda_0 - \lambda_{\text{target}})^2 & \text{if } n_{\text{neg}} = 0
+            \text{ (push $\lambda_0$ below target)}, \\
+        0 & \text{if } n_{\text{neg}} = 1
+            \text{ (already at TS)}, \\
+        \sum_{i=1}^{n_{\text{neg}}-1} \lambda_i^2 &
+            \text{if } n_{\text{neg}} > 1
+            \text{ (push extras positive)}.
+    \end{cases}
+    \label{eq:sign_loss}
+\end{equation}
+This achieved 99.7\% convergence from clean geometries in 1.8 steps, the
+highest among all methods tested.
+
+\subsection{High-index Saddle Dynamics (HiSD)}
+\label{sec:hisd}
+
+The $k$-HiSD method~\cite{yin2019} generalizes GAD to target index-$k$
+saddle points using the reflection operator:
+\begin{equation}
+    \RR_k = \II - 2 \sum_{i=0}^{k-1} \vv_i \vv_i^T,
+\end{equation}
+which inverts force components along the $k$ lowest eigenvectors. The dynamics
+become:
+\begin{equation}
+    \dot{\xx} = -\RR_k \nabla E(\xx).
+\end{equation}
+
+\begin{theorem}[Stability of $k$-HiSD~\cite{yin2019}]
+    \label{thm:khisd_stability}
+    Index-$k$ saddle points are \emph{stable} fixed points of $k$-HiSD
+    dynamics. In particular, 1-HiSD is equivalent to GAD and stabilizes
+    transition states.
+\end{theorem}
+
+\begin{remark}[Critical implication]
+    Theorem~\ref{thm:khisd_stability} implies that using $k$ equal to the
+    current Morse index \emph{stabilizes} the current saddle rather than
+    escaping it. This was a critical finding in our experiments: adaptive
+    $k = \text{Morse index}$ achieved 0\% escape rate.
+\end{remark}
+
+\subsubsection{Improved HiSD (iHiSD)}
+\label{sec:ihisd}
+
+The iHiSD algorithm~\cite{ihisd2024} introduces a crossover parameter
+$\theta \in [0, 1]$ that interpolates between gradient flow ($\theta = 0$)
+and full $k$-HiSD ($\theta = 1$):
+\begin{equation}
+    \bm{d}_k = (1 - s\theta)\nabla E + 2\theta \sum_{i=0}^{k-1}
+    (\nabla E \cdot \vv_i)\,\vv_i,
+    \label{eq:ihisd}
+\end{equation}
+where $s = \pm 1$ controls upward ($s = +1$) or downward ($s = -1$) search.
+The crossover schedule $\theta(t)$ (sigmoid, linear, or exponential) allows
+smooth transition from gradient-guided exploration to saddle-targeting
+dynamics, providing nonlocal convergence guarantees.
+
+\subsubsection{Recursive HiSD}
+\label{sec:recursive_hisd}
+
+Recursive HiSD implements systematic saddle index descent:
+\begin{enumerate}
+    \item Detect current Morse index $n$.
+    \item If $n = 1$, the transition state is found.
+    \item Perturb along an unstable direction to escape the current saddle.
+    \item Run $(n{-}1)$-HiSD to locate an index-$(n{-}1)$ saddle.
+    \item Repeat until index 1 is reached.
+\end{enumerate}
+This is motivated by Theorem~5.1 of~\cite{yin2019}, which guarantees
+connectivity between saddles of adjacent indices via saddle-saddle connections.
+
+% =============================================================================
+\section{Eckart Projection and Mass-Weighting}
+\label{sec:eckart}
+% =============================================================================
+
+A molecule with $N$ atoms in three dimensions has $3N$ degrees of freedom, of
+which 3 are translational, 3 are rotational (for nonlinear molecules), and
+$3N - 6$ are vibrational. The raw Hessian $\HH \in \R^{3N \times 3N}$ has 6
+near-zero eigenvalues corresponding to translation/rotation (TR) modes. These
+must be projected out before eigenvalue analysis for saddle point
+characterization.
+
+\subsection{Eckart Conditions and the B Matrix}
+
+The Eckart conditions~\cite{eckart1935} define the separation of internal
+(vibrational) and external (TR) motions. The TR subspace is spanned by 6
+vectors: 3 translations and 3 infinitesimal rotations about the center of
+mass. Collecting these into a matrix $\BB \in \R^{3N \times 6}$:
+
+\begin{equation}
+    \BB = [\BB_{\text{trans}} \,|\, \BB_{\text{rot}}],
+\end{equation}
+where the columns of $\BB_{\text{trans}}$ are mass-weighted unit translations:
+\begin{equation}
+    (\BB_{\text{trans}})_{3a+\alpha, \beta}
+    = \sqrt{m_a}\,\delta_{\alpha\beta},
+    \quad a = 0,\ldots,N{-}1, \quad \alpha,\beta \in \{x,y,z\},
+\end{equation}
+and the columns of $\BB_{\text{rot}}$ encode infinitesimal rotations about the
+center of mass $\bar{\xx}$:
+\begin{equation}
+    (\BB_{\text{rot}})_{3a+\alpha, k}
+    = \sqrt{m_a}\,(\epsilon_{\alpha\beta\gamma}\, r_{a,\gamma}),
+\end{equation}
+with $\bm{r}_a = \xx_a - \bar{\xx}$ the displacement from the center of mass
+and $\epsilon_{\alpha\beta\gamma}$ the Levi-Civita symbol.
+
+\subsection{Full Projection (PHP)}
+\label{sec:php}
+
+The standard Eckart projection constructs the projector onto the TR subspace
+and its complement:
+\begin{equation}
+    \PP_{\text{TR}} = \BB(\BB^T\BB)^{-1}\BB^T, \qquad
+    \PP_{\text{vib}} = \II - \PP_{\text{TR}}.
+    \label{eq:projector}
+\end{equation}
+The projected Hessian in the full $3N$-dimensional space is:
+\begin{equation}
+    \boxed{
+    \tilde{\HH} = \PP_{\text{vib}} \, \HH_{\text{mw}} \, \PP_{\text{vib}}
+    }
+    \label{eq:php}
+\end{equation}
+where $\HH_{\text{mw}} = \MM^{-1/2} \HH \MM^{-1/2}$ is the mass-weighted
+Hessian with $\MM = \diag(m_1, m_1, m_1, m_2, m_2, m_2, \ldots, m_N, m_N, m_N)$.
+This yields a $3N \times 3N$ matrix with exactly 6 zero eigenvalues (TR modes)
+and $3N - 6$ vibrational eigenvalues.
+
+\subsection{Reduced Basis (QR Complement)}
+\label{sec:reduced_basis}
+
+An alternative approach constructs an explicit $(3N{-}6)$-dimensional
+vibrational basis via QR decomposition:
+\begin{enumerate}
+    \item Orthonormalize $\BB$ via QR: $\BB = \bm{Q}_{\text{TR}} \bm{R}$.
+    \item Complete to a full basis using SVD of $\II - \bm{Q}_{\text{TR}}\bm{Q}_{\text{TR}}^T$.
+    \item Extract the $3N - 6$ columns with nonzero singular values as
+    $\bm{Q}_{\text{vib}} \in \R^{3N \times (3N-6)}$.
+\end{enumerate}
+The reduced vibrational Hessian is then:
+\begin{equation}
+    \HH_{\text{red}} = \bm{Q}_{\text{vib}}^T \HH_{\text{mw}} \bm{Q}_{\text{vib}}
+    \in \R^{(3N-6) \times (3N-6)},
+    \label{eq:reduced_basis}
+\end{equation}
+which is full-rank and has no zero eigenvalues. Eigenvectors are mapped back
+to Cartesian space via $\vv_{\text{cart}} = \bm{Q}_{\text{vib}} \vv_{\text{red}}$.
+
+\subsection{Mass-Weighting}
+\label{sec:mass_weighting}
+
+Mass-weighting transforms the Hessian so that eigenvalues correspond to
+squared vibrational frequencies:
+\begin{equation}
+    \HH_{\text{mw}} = \MM^{-1/2} \HH \MM^{-1/2},
+\end{equation}
+where $\MM = \diag(\underbrace{m_1, m_1, m_1}_{x,y,z}, \ldots,
+\underbrace{m_N, m_N, m_N}_{x,y,z})$. The masses $m_a$ are the atomic
+masses of each atom. This ensures that heavy atoms contribute proportionally
+less to vibrational modes than light atoms, which is physically correct.
+
+\subsection{Sum-Rule Purification}
+\label{sec:purification}
+
+The acoustic sum rule states that the Hessian should satisfy translational
+invariance:
+\begin{equation}
+    \sum_{b} H_{a\alpha, b\beta} = 0 \quad \forall\, a, \alpha, \beta.
+\end{equation}
+Numerical Hessians may violate this condition. Purification enforces the sum
+rule by adjusting diagonal blocks:
+\begin{equation}
+    H_{a\alpha, a\beta}^{\text{purified}}
+    = H_{a\alpha, a\beta} - \sum_{b \neq a} H_{a\alpha, b\beta}.
+\end{equation}
+
+\subsection{Kabsch Frame Tracking}
+\label{sec:kabsch}
+
+During dynamics, molecular rotation can contaminate vibrational mode analysis.
+Kabsch alignment~\cite{kabsch1976} rigidly aligns the current geometry to a
+reference frame at each step by finding the optimal rotation matrix via SVD:
+\begin{equation}
+    \RR^* = \arg\min_{\RR \in SO(3)} \sum_a m_a \|\RR \xx_a - \xx_a^{\text{ref}}\|^2.
+\end{equation}
+
+\subsection{Projection of Gradient and Guide Vector}
+\label{sec:proj_grad_v}
+
+An important refinement projects both the gradient $\nabla E$ and the GAD guide
+vector $\vv_1$ into the vibrational subspace before computing the GAD step:
+\begin{equation}
+    \nabla E_{\text{vib}} = \PP_{\text{vib}} \nabla E, \qquad
+    \vv_{1,\text{vib}} = \frac{\PP_{\text{vib}} \vv_1}{\|\PP_{\text{vib}} \vv_1\|}.
+\end{equation}
+This prevents translational/rotational leakage into the dynamics and improves
+numerical stability.
+
+\subsection{Experimental Comparison of Projection Methods}
+
+We tested 7 projection variants on identical noisy starting geometries.
+All variants produced statistically identical convergence rates, confirming
+that Eckart projection is robust to implementation details:
+
+\begin{center}
+\begin{tabular}{ll}
+    \toprule
+    \textbf{Method} & \textbf{Description} \\
+    \midrule
+    \texttt{eckart\_full} & Full $3N \times 3N$ projection (Eq.~\ref{eq:php}) \\
+    \texttt{reduced\_basis} & QR complement (Eq.~\ref{eq:reduced_basis}) \\
+    \texttt{eckart\_full + purify} & PHP + sum-rule purification \\
+    \texttt{reduced\_basis + purify} & QR + sum-rule purification \\
+    \texttt{reduced\_basis + purify + frame} & QR + purification + Kabsch \\
+    \texttt{eckart\_full + proj\_grad\_v} & PHP + gradient/v projection \\
+    \texttt{reduced\_basis + proj\_grad\_v} & QR + gradient/v projection \\
+    \bottomrule
+\end{tabular}
+\end{center}
+
+All 7 methods produced identical convergence rates within statistical noise,
+indicating that the choice of projection method is not a bottleneck. The
+standard \texttt{eckart\_full} with gradient/v projection is used as the
+default throughout.
+
+% =============================================================================
+\section{Mode Tracking}
+\label{sec:mode_tracking}
+% =============================================================================
+
+A fundamental challenge in saddle point search is \emph{mode switching}: the
+eigenvector ordering can change between steps, causing the algorithm to
+inadvertently follow a different mode. This is particularly problematic near
+eigenvalue crossings where $|\lambda_i - \lambda_j| \to 0$.
+
+\subsection{Maximum Overlap Tracking}
+
+We implement continuous mode tracking by selecting the candidate eigenvector
+with maximum overlap to the previous step's tracked mode:
+\begin{equation}
+    j^* = \arg\max_{j \in \{0, \ldots, k{-}1\}} |\langle \vv_j^{(n)},
+    \vv_{\text{tracked}}^{(n-1)}\rangle|,
+    \label{eq:mode_track}
+\end{equation}
+where $k$ is the number of candidate modes to consider (typically $k = 8$).
+The overlap metric is:
+\begin{equation}
+    \text{overlap}^{(n)} = |\langle \vv_{j^*}^{(n)},
+    \vv_{\text{tracked}}^{(n-1)}\rangle| \in [0, 1].
+\end{equation}
+
+\subsection{Mode Smoothing}
+
+Optionally, the tracked mode can be smoothed with an exponential moving average:
+\begin{equation}
+    \vv^{(n)} = (1 - \beta)\,\vv_{\text{tracked}}^{(n-1)} + \beta\,\vv_{j^*}^{(n)},
+    \quad \vv^{(n)} \leftarrow \frac{\vv^{(n)}}{\|\vv^{(n)}\|},
+\end{equation}
+where $\beta \in (0, 1]$ controls the smoothing strength. This prevents abrupt
+direction changes near mode crossings.
+
+% =============================================================================
+\section{The Challenge of Noisy Starting Geometries}
+\label{sec:noisy}
+% =============================================================================
+
+When starting from clean geometries (e.g., midpoints between reactant and TS
+from the Transition1x dataset~\cite{transition1x}), GAD and related methods
+achieve excellent convergence rates:
+
+\begin{center}
+\begin{tabular}{lrr}
+    \toprule
+    \textbf{Method} & \textbf{Convergence (\%)} & \textbf{Avg.\ Steps} \\
+    \midrule
+    GAD-Euler & 91.3 & 25.1 \\
+    GAD-RK45 & 91.3 & 7.3 \\
+    Eigenvalue Product Descent & 92.7 & 2.3 \\
+    Direct Eigenvalue Descent & 99.7 & 1.8 \\
+    \bottomrule
+\end{tabular}
+\end{center}
+
+However, adding random noise ($\sigma = 1.0$--$2.0$\,\AA) to starting
+geometries causes dramatic failures:
+
+\begin{center}
+\begin{tabular}{lrr}
+    \toprule
+    \textbf{Method} & \textbf{Clean (\%)} & \textbf{Noisy 1\,\AA{} (\%)} \\
+    \midrule
+    GAD-Euler & 91.3 & 13 \\
+    GAD-RK45 & 91.3 & $<5$ \\
+    Eigenvalue Product Descent & 92.7 & $<5$ \\
+    Direct Eigenvalue Descent & 99.7 & $\sim0$ \\
+    \bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Why Noisy Starts Fail}
+
+Diagnostic analysis of 20 noisy trajectories revealed the primary failure
+mechanism:
+
+\begin{enumerate}
+    \item \textbf{High-index saddle trapping:} Noisy geometries start at or
+    near higher-order saddle points (typical Morse index 5--8). GAD dynamics
+    attempts to find an index-1 saddle, but the landscape near high-index
+    saddles provides weak guidance.
+
+    \item \textbf{Timestep collapse:} Adaptive timestep controllers reduce
+    $\Delta t$ when the GAD direction oscillates or when displacement
+    constraints are violated. Near high-index saddles, this leads to
+    $\Delta t \to 0$, halting all progress.
+
+    \item \textbf{Eigenvalue gap singularities:} The set
+    $\mathcal{S} = \{\xx : \lambda_0(\xx) = \lambda_1(\xx)\}$ forms a
+    codimension-1 manifold~\cite{levitt2015} where the lowest eigenvector
+    becomes discontinuous. Trajectories near $\mathcal{S}$ exhibit
+    oscillatory behavior. However, only 26\% of stalls occur near
+    singularities; the majority occur at genuine high-index saddles.
+\end{enumerate}
+
+\subsection{Progression of Solutions}
+
+The path to robust noisy-start convergence involved systematic experimentation:
+
+\begin{center}
+\begin{tabular}{lrl}
+    \toprule
+    \textbf{Strategy} & \textbf{Conv.\ (\%)} & \textbf{Key Innovation} \\
+    \midrule
+    Plain GAD & 13 & Baseline \\
+    Hybrid GAD + Product Descent & 33 & Switch algorithms \\
+    L-BFGS Energy Minimizer & 10 & Minimize first \\
+    Plateau Detection (v$_2$ kick) & 40 & First escape mechanism \\
+    Mode Tracking + Trust Radius & 92/71\tablefootnote{SCINE/HIP} & Continuous eigenvector tracking \\
+    v$_2$ Kicking (v2 tests) & \textbf{100} & 2.0\,\AA{} noise \\
+    Adaptive dt Control & 92 & Path-based dt adaptation \\
+    State-based dt Control & 80 & No path information needed \\
+    \bottomrule
+\end{tabular}
+\end{center}
+
+% =============================================================================
+\section{Escape Strategies for High-Index Saddle Points}
+\label{sec:escape}
+% =============================================================================
+
+\subsection{$\vv_2$ Kicking: The Primary Escape Mechanism}
+\label{sec:v2_kick}
+
+The most effective escape strategy is perturbation along the second vibrational
+eigenvector $\vv_2$ (the mode with second-smallest eigenvalue):
+
+\begin{algorithm}[H]
+\caption{$\vv_2$ Kicking Escape}
+\label{alg:v2kick}
+\begin{algorithmic}[1]
+    \Require Current coordinates $\xx$, Hessian $\HH$, escape magnitude $\delta$
+    \State Compute projected Hessian $\tilde{\HH}$
+    \State Eigendecompose: $\tilde{\HH}\vv_i = \lambda_i \vv_i$
+    \State Skip TR modes (first 6 near-zero eigenvalues)
+    \State $\vv_2 \leftarrow$ second vibrational eigenvector
+    \If{adaptive delta \textbf{and} $\lambda_1 < -0.01$}
+        \State $\delta \leftarrow \delta / \sqrt{|\lambda_1|}$
+        \Comment{Scale inversely with curvature}
+    \EndIf
+    \State $\xx^+ \leftarrow \xx + \delta \, \vv_2$, \quad
+           $\xx^- \leftarrow \xx - \delta \, \vv_2$
+    \State Evaluate $E(\xx^+)$ and $E(\xx^-)$
+    \If{both geometries valid (min interatomic distance $> 0.5$\,\AA)}
+        \State \Return $\arg\min(E(\xx^+), E(\xx^-))$
+    \Else
+        \State Shrink $\delta \leftarrow 0.5\,\delta$ and retry (up to 5 times)
+    \EndIf
+\end{algorithmic}
+\end{algorithm}
+
+\subsubsection{Plateau Detection}
+
+The escape mechanism is triggered when a \emph{plateau} is detected, defined by:
+\begin{enumerate}
+    \item Mean displacement over a window of $W$ steps falls below threshold
+    $d_{\min}$:
+    \begin{equation}
+        \frac{1}{W}\sum_{i=n-W+1}^{n} \|\Delta\xx_i\| < d_{\min}.
+    \end{equation}
+
+    \item The Morse index is stable and $>1$ over the window (standard
+    deviation of negative eigenvalue count below threshold).
+
+    \item Patience counter exceeds $P$ consecutive detections.
+\end{enumerate}
+
+After escape, the timestep is reset with a boost factor and subsequent decay:
+$\Delta t \leftarrow \Delta t_{\text{boost}} \cdot \Delta t_0$, then
+$\Delta t \leftarrow \max(\Delta t \cdot \alpha_{\text{shrink}}, \Delta t_{\min})$
+each step.
+
+\subsubsection{Why $\vv_2$?}
+
+Analysis of diagnostic experiments revealed that $\vv_2$ kicking works
+primarily as a brute-force ``unsticking'' mechanism rather than systematic
+index reduction. The mean Morse index changes only from 5.39 to 5.00 after
+kicks, a negligible reduction. However, the perturbation is sufficient to:
+\begin{enumerate}
+    \item Break the $\Delta t \to 0$ deadlock,
+    \item Move the geometry to a new basin of attraction,
+    \item Allow the adaptive timestep to reset, and
+    \item Resume productive GAD dynamics.
+\end{enumerate}
+
+\subsection{Alternative Kick Strategies Tested}
+
+Eight distinct perturbation strategies were compared:
+
+\begin{center}
+\begin{tabular}{lp{8cm}}
+    \toprule
+    \textbf{Strategy} & \textbf{Description} \\
+    \midrule
+    $\vv_2$ kick & Perturb along second vibrational mode \\
+    $\vv_1$ kick & Perturb along first (tracked) vibrational mode \\
+    Random kick & Random direction perturbation (control) \\
+    Random $\perp \vv_1$ & Random direction orthogonal to tracked mode \\
+    Gradient descent kicks & 5 GD steps with $\eta = 0.05$ \\
+    Ortho-$\vv_1$ GD & GD constrained to $\vv_1^{\perp}$ subspace \\
+    Higher modes & Sequential kicks along $\vv_2, \vv_3, \vv_4, \ldots$ \\
+    Adaptive-$k$ reflection & $\bm{d} = -\RR_k \nabla E$, $\RR_k = \II - 2\sum_{i=0}^{k-1}\vv_i\vv_i^T$ \\
+    \bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Adaptive Timestep Control}
+\label{sec:adaptive_dt}
+
+Two families of adaptive timestep strategies were developed and compared:
+
+\subsubsection{Path-Based (Displacement History)}
+
+The path-based controller adapts $\Delta t$ based on recent trajectory
+statistics:
+\begin{itemize}
+    \item \textbf{Grow:} $\Delta t \leftarrow 1.05 \cdot \Delta t$ when
+    steps are successful (displacement within bounds).
+    \item \textbf{Shrink:} $\Delta t \leftarrow 0.8 \cdot \Delta t$ when
+    displacement exceeds maximum atom displacement $d_{\max}$.
+    \item \textbf{Hard reset:} $\Delta t \leftarrow 0.5 \cdot \Delta t$
+    when geometry becomes invalid (atoms too close).
+    \item \textbf{Escape boost:} After $\vv_2$ kick, boost $\Delta t$ by
+    factor 1.2--3.0$\times$ to resume dynamics.
+\end{itemize}
+
+The saddle-order tracker monitors the best (lowest) Morse index seen and
+adjusts aggressiveness:
+\begin{equation}
+    \text{If } n_{\text{neg}}^{(t)} < n_{\text{neg,best}} \implies
+    \text{reset } \Delta t \leftarrow \Delta t_0 \text{ (making progress)}.
+\end{equation}
+
+\subsubsection{State-Based (No Path Information)}
+
+State-based strategies adapt $\Delta t$ using only the current local state:
+\begin{itemize}
+    \item \textbf{Eigenvalue-based:} $\Delta t \propto 1/|\lambda_0|$
+    \item \textbf{Gradient-based:} $\Delta t \propto 1/\|\nabla E\|$
+    \item \textbf{Spectral gap:} $\Delta t \propto |\lambda_1 - \lambda_0|$
+    \item \textbf{GAD angle:} Based on angle between GAD vector and
+    $-\nabla E$
+    \item \textbf{Composite:} Combines multiple signals
+\end{itemize}
+
+State-based methods are simpler but achieve lower convergence (80\%) compared
+to path-based methods (92\%).
+
+\subsection{Trust Radius}
+\label{sec:trust_radius}
+
+A maximum per-atom displacement constraint prevents geometry explosions:
+\begin{equation}
+    \max_a \|\Delta\xx_a\| \leq d_{\text{trust}},
+\end{equation}
+where $d_{\text{trust}} \approx 0.3$--$0.35$\,\AA. If the GAD step exceeds
+this, it is uniformly scaled down:
+\begin{equation}
+    \Delta\xx \leftarrow \frac{d_{\text{trust}}}{\max_a \|\Delta\xx_a\|}
+    \cdot \Delta\xx.
+\end{equation}
+
+Additionally, a minimum interatomic distance constraint
+$\min_{a \neq b}\|\xx_a - \xx_b\| > d_{\min}$ (typically 0.5\,\AA) prevents
+atomic collisions.
+
+% =============================================================================
+\section{Computational Backend}
+\label{sec:backend}
+% =============================================================================
+
+\subsection{Calculator Interface}
+
+All algorithms interact with energy evaluators through a unified
+\texttt{predict\_fn} interface:
+\begin{equation*}
+    \texttt{predict\_fn}(\xx, Z, \texttt{do\_hessian}, \texttt{require\_grad})
+    \to \{E, \ff, \HH\},
+\end{equation*}
+where $\xx \in \R^{N \times 3}$ are coordinates, $Z \in \mathbb{Z}^N$ are
+atomic numbers, and the output contains energy $E$, forces
+$\ff = -\nabla E$, and optionally the Hessian $\HH = \nabla^2 E$.
+
+\subsection{HIP: Machine Learning Interatomic Potential}
+\label{sec:hip}
+
+HIP~\cite{hip2024} (\url{https://github.com/burgerandreas/hip}) is an
+Equiformer-based machine learning potential that predicts energies, forces,
+and Hessians directly from atomic coordinates and species. Key features:
+\begin{itemize}
+    \item GPU-accelerated inference
+    \item Differentiable through PyTorch autograd (enables eigenvalue descent)
+    \item Direct Hessian prediction (no finite differences needed)
+    \item Trained on DFT-level data
+\end{itemize}
+
+The HIP adapter (\texttt{make\_hip\_predict\_fn}) wraps the model into the
+standard \texttt{predict\_fn} interface with proper tensor handling and device
+management.
+
+\subsection{SCINE/Sparrow: Semi-Empirical Calculator}
+\label{sec:scine}
+
+SCINE/Sparrow~\cite{scine2024} (\url{https://scine.ethz.ch/download/}) provides
+CPU-based semi-empirical calculations at DFTB0, PM6, or AM1 levels:
+\begin{itemize}
+    \item CPU-only computation (no GPU required)
+    \item Analytical Hessians via SCINE's internal implementation
+    \item Element-specific mass-weighting using SCINE's periodic table
+    \item Significantly faster per evaluation than HIP for small molecules
+    (2.9\,s vs.\ 96.9\,s average wall time)
+\end{itemize}
+
+The SCINE adapter (\texttt{make\_scine\_predict\_fn}) handles the
+Python--C++ interface, coordinate transformations (Bohr $\leftrightarrow$
+\AA), and force sign conventions.
+
+\subsection{Performance Comparison}
+
+\begin{center}
+\begin{tabular}{lrrr}
+    \toprule
+    & \textbf{HIP} & \textbf{SCINE} & \textbf{Notes} \\
+    \midrule
+    Hardware & GPU & CPU & \\
+    Avg.\ wall time/sample & 96.9\,s & 2.9\,s & SCINE $\sim$33$\times$ faster \\
+    Hessian type & ML-predicted & Analytical & \\
+    Differentiable & Yes & No & \\
+    Best TS rate (Multi-Mode) & 93.3\% & 100\% & \\
+    Best TS rate (Sella) & 53.3\% & 66.7\% & \\
+    \bottomrule
+\end{tabular}
+\end{center}
+
+SCINE's analytical Hessians appear to be more reliable for saddle point
+characterization than HIP's ML-predicted Hessians, contributing to SCINE's
+superior convergence rates.
+
+% =============================================================================
+\section{Sella: Trust-Region Saddle Point Optimization}
+\label{sec:sella}
+% =============================================================================
+
+Sella~\cite{sella2021} is an established trust-region optimizer for saddle
+point search implemented in the ASE ecosystem. Key parameters include:
+
+\begin{itemize}
+    \item \textbf{delta0}: Initial trust radius
+    \item \textbf{sigma\_inc, sigma\_dec}: Trust radius adjustment factors
+    \item \textbf{rho\_inc, rho\_dec}: Model agreement thresholds
+    \item \textbf{fmax}: Force convergence threshold
+    \item \textbf{gamma}: Hessian convergence parameter (set to 0 for
+    tightest convergence)
+\end{itemize}
+
+Sella operates in internal coordinates and uses exact Hessians refreshed
+every step. The Eckart projection is applied before internal coordinate
+conversion.
+
+\subsection{Sella HPO Results}
+
+Hyperparameter optimization (500 Optuna trials) with SCINE/DFTB0 revealed:
+\begin{itemize}
+    \item Optimal \texttt{fmax} = 0.01 (80\% Sella convergence, 40\% TS rate)
+    \item Strong sensitivity to \texttt{sigma\_dec} (correlation $r = +0.55$
+    with success)
+    \item Best single trial: 66.7\% TS rate (SCINE), 53.3\% (HIP)
+    \item Global average across all trials: 47.0\% (SCINE), 30.1\% (HIP)
+\end{itemize}
+
+Compared to the Multi-Mode GAD algorithm (94.1\% global average, 100\% best
+trial with SCINE), Sella is significantly less effective for noisy starting
+geometries.
+
+% =============================================================================
+\section{Experimental Results}
+\label{sec:results}
+% =============================================================================
+
+\subsection{Dataset and Setup}
+
+All experiments use the Transition1x dataset~\cite{transition1x} stored in
+HDF5 format, containing reactant and transition state geometries for small
+organic molecules. Starting geometries are constructed as:
+\begin{equation}
+    \xx_0 = \frac{\xx_{\text{reactant}} + \xx_{\text{TS}}}{2}
+    + \sigma \cdot \bm{\xi}, \quad \bm{\xi} \sim \mathcal{N}(\bm{0}, \II),
+\end{equation}
+where $\sigma$ controls the noise level (0.0, 1.0, or 2.0\,\AA).
+
+Experiments run on the Digital Research Alliance of Canada (DRAC) cluster
+with 32 CPUs per node, parallelized across 8 workers (4 threads each).
+
+\subsection{Multi-Mode GAD HPO Results}
+
+Extensive hyperparameter optimization (500 Optuna/TPE trials) yielded:
+
+\begin{center}
+\begin{tabular}{lrr}
+    \toprule
+    \textbf{Metric} & \textbf{HIP} & \textbf{SCINE} \\
+    \midrule
+    Best TS rate (single trial) & 93.3\% & \textbf{100\%} \\
+    Global TS rate (all samples) & 74.9\% & \textbf{94.1\%} \\
+    Trials with $\geq$80\% success & 45 & \textbf{497} \\
+    Mean wall time & 96.9\,s & \textbf{2.9\,s} \\
+    \bottomrule
+\end{tabular}
+\end{center}
+
+\subsubsection{Optimal Hyperparameters (SCINE Multi-Mode)}
+
+Based on 212 trials achieving 100\% TS rate:
+
+\begin{center}
+\begin{tabular}{lrr}
+    \toprule
+    \textbf{Parameter} & \textbf{Optimal Mean} & \textbf{Range} \\
+    \midrule
+    dt & 0.00358 & [0.0005, 0.005] \\
+    dt\_max & 0.070 & [0.01, 0.1] \\
+    escape\_delta & 0.267 & [0.05, 0.3] \\
+    escape\_disp\_threshold & $5.66 \times 10^{-4}$ & [$10^{-5}$, $10^{-3}$] \\
+    escape\_neg\_vib\_std & 0.706 & [0.1, 1.0] \\
+    plateau\_patience & 9.9 & [3, 20] \\
+    plateau\_boost & 2.61 & [1.2, 3.0] \\
+    adaptive\_delta & False & --- \\
+    \bottomrule
+\end{tabular}
+\end{center}
+
+\subsubsection{The Adaptive Delta Paradox}
+
+A surprising finding: fixed escape magnitude (\texttt{adaptive\_delta=False})
+strongly outperforms adaptive scaling. Of SCINE trials achieving 100\%
+success, 99.1\% use fixed delta. This suggests that the simple,
+direction-specific perturbation along $\vv_2$ is more reliable than
+curvature-adapted scaling.
+
+\subsection{v2 Test Results (Current State)}
+
+The latest generation of experiments (v2 tests) with refined implementations
+achieved headline results:
+
+\begin{center}
+\begin{tabular}{lrl}
+    \toprule
+    \textbf{Method} & \textbf{Convergence} & \textbf{Noise Level} \\
+    \midrule
+    $\vv_2$ kicking + mode tracking & \textbf{100\%} & 2.0\,\AA \\
+    Adaptive dt control (path-based) & 92\% & 2.0\,\AA \\
+    State-based dt control & 80\% & 2.0\,\AA \\
+    \bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Comprehensive Method Comparison}
+
+\begin{center}
+\begin{tabular}{lrrrl}
+    \toprule
+    \textbf{Algorithm} & \textbf{Clean} & \textbf{1\,\AA} & \textbf{2\,\AA}
+    & \textbf{Key Feature} \\
+    \midrule
+    GAD-Euler (plain) & 91.3\% & 13\% & --- & Baseline \\
+    GAD-RK45 & 91.3\% & $<5$\% & --- & Adaptive RK \\
+    Eigenvalue Product & 92.7\% & $<5$\% & --- & Autograd loss \\
+    Direct Descent & 99.7\% & $\sim0$\% & --- & Sign enforcer \\
+    Sella (SCINE) & --- & 66.7\% & --- & Trust region \\
+    Sella (HIP) & --- & 53.3\% & --- & Trust region \\
+    Multi-Mode GAD (HIP) & --- & 93.3\% & --- & v$_2$ kick + HPO \\
+    Multi-Mode GAD (SCINE) & --- & 100\% & --- & v$_2$ kick + HPO \\
+    v$_2$ Kicking (v2) & --- & --- & \textbf{100\%} & Full pipeline \\
+    Adaptive dt (v2) & --- & --- & 92\% & Path-based \\
+    State-based dt (v2) & --- & --- & 80\% & Eigenvalue/gradient \\
+    \bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Key Experimental Findings}
+
+\begin{enumerate}
+    \item \textbf{SCINE consistently outperforms HIP} for saddle point search,
+    despite being CPU-only. Analytical Hessians appear more reliable than
+    ML-predicted ones for eigenvalue characterization.
+
+    \item \textbf{Multi-Mode GAD dramatically outperforms Sella} on noisy
+    starting geometries: 94.1\% vs.\ 47.0\% global TS rate.
+
+    \item \textbf{Adaptive $k = $ Morse index is fundamentally wrong} for
+    escaping high-index saddles (0\% success). Theorem~\ref{thm:khisd_stability}
+    proves this stabilizes the current saddle.
+
+    \item \textbf{$\vv_2$ kicking works as brute-force unsticking}, not
+    principled index reduction. Mean index changes only from 5.39 to 5.00
+    after kicks.
+
+    \item \textbf{Only 26\% of stalls occur near eigenvalue singularities.}
+    The majority are at genuine high-index saddles where the GAD direction
+    becomes weak.
+
+    \item \textbf{Fixed perturbation magnitude outperforms adaptive scaling}
+    in 99.1\% of successful trials.
+
+    \item \textbf{All 7 projection variants produce identical results},
+    confirming that Eckart projection is not a bottleneck.
+\end{enumerate}
+
+% =============================================================================
+\section{Adjoint Sampling for Reaction Generation}
+\label{sec:adjoint}
+% =============================================================================
+
+The second major component of \texttt{ts-tools} integrates adjoint sampling
+methods for diffusion-based generative modeling of molecular conformations.
+
+\subsection{Problem Formulation}
+
+The goal is to sample molecular conformations from a Boltzmann distribution:
+\begin{equation}
+    \mu(\xx) = \frac{1}{Z}\exp\!\left(-\frac{1}{\beta}E(\xx)\right),
+\end{equation}
+where $E(\xx)$ is the molecular energy function, $\beta$ is the inverse
+temperature, and $Z = \int \exp(-E/\beta)\,d\xx$ is the (unknown) partition
+function.
+
+\subsection{Stochastic Optimal Control Formulation}
+
+The sampling task is cast as a stochastic optimal control problem. Consider
+the controlled SDE:
+\begin{equation}
+    d\bm{X}_t = \bigl[\bm{b}(\bm{X}_t, t) + \sigma(t)\,\bm{u}(\bm{X}_t, t)\bigr]dt
+    + \sigma(t)\,d\bm{W}_t,
+\end{equation}
+where $\bm{u}(\cdot, \cdot)$ is a learned control (drift), $\bm{b}$ is the
+base drift, and $\sigma(t)$ is the diffusion coefficient. The objective is:
+\begin{equation}
+    \min_{\bm{u}} \; \mathbb{E}_{p^{\bm{u}}}\!\left[
+    \int_0^1 \frac{1}{2}\|\bm{u}(\bm{X}_t, t)\|^2\,dt + g(\bm{X}_1)
+    \right],
+    \label{eq:soc}
+\end{equation}
+where $g(\xx) = \log p^{\text{base}}(\xx) + \frac{1}{\beta}E(\xx)$ is the
+terminal cost encoding the target Boltzmann distribution.
+
+\subsection{Reciprocal Adjoint Matching}
+
+The practical training loss is the Reciprocal Adjoint Matching (RAM)
+objective:
+\begin{equation}
+    \mathcal{L}_{\text{RAM}}(\bm{u}) = \int_0^1 \lambda(t)\,
+    \mathbb{E}\!\left[\frac{1}{2}\|\bm{u}(\bm{X}_t, t) +
+    \sigma(t)\nabla g(\bm{X}_1)\|^2\right]dt,
+\end{equation}
+where the expectation is over pairs $(\bm{X}_t, \bm{X}_1)$ sampled from the
+current process. The key efficiency gain is that this objective requires
+sampling \emph{pairs}, not full trajectories, and decouples the terminal
+distribution sampling from regression updates.
+
+\subsection{Algorithm}
+
+\begin{algorithm}[H]
+\caption{Adjoint Sampling}
+\label{alg:adjoint}
+\begin{algorithmic}[1]
+    \Require Energy function $E(\xx)$, temperature $\beta$, base process
+    $p^{\text{base}}$
+    \For{outer iteration}
+        \State Sample terminal states $\{\bm{X}_1^{(i)}\}$ from current
+        process; compute $\nabla g^{(i)}$
+        \State Store in replay buffer $\mathcal{B}$
+        \For{inner iteration}
+            \State Sample $(t^{(j)}, \bm{X}_t^{(j)}, \nabla g^{(j)})$
+            from $\mathcal{B}$
+            \State Compute RAM loss:
+            $\|\bm{u}(\bm{X}_t^{(j)}, t^{(j)}) + \sigma(t)\nabla g^{(j)}\|^2$
+            \State Update $\bm{u}$ via optimizer
+        \EndFor
+    \EndFor
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Geometric Extensions for Molecular Systems}
+
+The method incorporates molecular symmetries:
+\begin{itemize}
+    \item \textbf{Graph conditioning:} Equivariant Graph Neural Networks
+    (EGNNs) for molecular-graph-conditioned sampling.
+    \item \textbf{Zero center of mass:} Projecting positions to the
+    CoM $= 0$ subspace.
+    \item \textbf{Rotational/translational invariance:} Ensuring
+    $G$-equivariance of the drift.
+    \item \textbf{Periodic boundaries:} Handling toroidal state spaces.
+\end{itemize}
+
+Two conformer sampling approaches are implemented:
+\begin{enumerate}
+    \item \textbf{Cartesian Adjoint Sampling:} Sample all $(x, y, z)$
+    coordinates for each atom.
+    \item \textbf{Torsional Adjoint Sampling:} Sample only torsion angles
+    (rotations around bonds), preserving bond structure.
+\end{enumerate}
+
+% =============================================================================
+\section{Codebase Architecture}
+\label{sec:architecture}
+% =============================================================================
+
+The \texttt{ts-tools} codebase is organized into the following modules:
+
+\begin{verbatim}
+ts-tools/
+  src/
+    core_algos/           # Algorithm implementations
+      gad.py              # GAD: Euler, RK45, mode tracking
+      eigenproduct.py     # Eigenvalue product descent
+      signenforcer.py     # Direct eigenvalue descent
+    dependencies/         # Shared utilities
+      differentiable_projection.py  # Eckart projection (7 variants)
+      hessian.py          # Hessian analysis, vibrational frequencies
+      calculators.py      # HIP and SCINE adapters
+      common_utils.py     # Geometry validation, convergence checks
+    runners/              # Integration drivers
+      gad_euler_core.py   # GAD-Euler with convergence logic
+      gad_rk45_core.py    # GAD-RK45 integration
+      eigenvalue_descent_core.py  # Eigenvalue descent driver
+    logging/              # Metrics and visualization
+    noisy/                # Noisy-start experiments
+      v2_tests/           # Latest generation
+        kick_experiments/ # 8 kick strategies
+        baselines/        # iHiSD, recursive HiSD, k-HiSD, GD
+        runners/          # Parallel experiment runners
+        scripts/          # SLURM templates (17 configurations)
+        logging/          # Extended metrics
+        analysis/         # Singularity and stall analysis
+      multi_mode_eckartmw.py      # Production algorithm
+    experiments/          # HPO and comparison experiments
+      Sella/              # Sella integration and HPO
+      2025/               # Multi-mode Eckart-MW experiments
+  documentation/
+    for_robots/           # Machine-readable codebase guide
+  supporting/             # LaTeX documents and presentations
+\end{verbatim}
+
+\subsection{Key Design Patterns}
+
+\begin{itemize}
+    \item \textbf{Adapter pattern:} \texttt{make\_hip\_predict\_fn()} and
+    \texttt{make\_scine\_predict\_fn()} wrap different calculators into a
+    uniform interface.
+
+    \item \textbf{Projection pipeline:}
+    Raw Hessian $\to$ mass-weighting $\to$ Eckart projection $\to$
+    eigendecomposition $\to$ mode tracking $\to$ GAD vector.
+
+    \item \textbf{Parallel processing:} \texttt{ParallelSCINEProcessor}
+    manages thread pools with per-worker thread limits via environment
+    variables.
+
+    \item \textbf{Convergence criteria:} Eigenvalue product ($\lambda_0
+    \lambda_1 < 0$) combined with force norm ($\|\nabla E\| < \epsilon$).
+\end{itemize}
+
+% =============================================================================
+\section{Conclusion}
+\label{sec:conclusion}
+% =============================================================================
+
+We have presented \texttt{ts-tools}, a comprehensive toolkit for transition
+state search that achieves near-perfect convergence from heavily noisy starting
+geometries---a regime where conventional methods fail catastrophically. The
+key innovations are:
+
+\begin{enumerate}
+    \item \textbf{$\vv_2$ kicking with plateau detection:} A simple but
+    highly effective escape mechanism that perturbs geometry along the
+    second vibrational eigenvector when the dynamics stalls at a high-index
+    saddle point. Combined with mode tracking and adaptive timestep control,
+    this achieves 100\% convergence on 2.0\,\AA{} noise.
+
+    \item \textbf{Systematic benchmarking:} We compared GAD-Euler, GAD-RK45,
+    eigenvector following, eigenvalue product descent, direct descent, Sella,
+    iHiSD, recursive HiSD, and multiple escape strategies, providing the
+    most comprehensive comparison to date for noisy-start TS search.
+
+    \item \textbf{Theoretical insights:} We identified that adaptive
+    $k = \text{Morse index}$ is fundamentally wrong for escaping high-index
+    saddles (Theorem~\ref{thm:khisd_stability}), that only 26\% of stalls
+    are near eigenvalue singularities, and that all projection variants
+    produce equivalent results.
+
+    \item \textbf{Dual-backend support:} The unified \texttt{predict\_fn}
+    interface enables seamless switching between ML (HIP) and semi-empirical
+    (SCINE) calculators, with SCINE proving surprisingly superior for
+    saddle point characterization.
+
+    \item \textbf{Adjoint sampling integration:} Diffusion-based generative
+    models for sampling molecular conformations from Boltzmann distributions,
+    enabling data-driven reaction pathway generation.
+\end{enumerate}
+
+The toolkit is designed for integration with generative molecular design
+pipelines where initial geometry guesses may be far from true saddle points.
+Future work includes extending to larger molecular systems, incorporating
+learned escape policies, and coupling with reaction network enumeration.
+
+% =============================================================================
+% References
+% =============================================================================
+\bibliographystyle{unsrtnat}
+
+\begin{thebibliography}{99}
+
+\bibitem{weinan2011}
+W.~E and X.~Zhou,
+\newblock The Gentlest Ascent Dynamics,
+\newblock \emph{Nonlinearity}, 24(6):1831, 2011.
+
+\bibitem{yin2019}
+J.~Yin, L.~Zhang, and P.~Zhang,
+\newblock High-Index Optimization-Based Shrinking Dimer Method for Finding
+High-Index Saddle Points,
+\newblock \emph{SIAM J.\ Sci.\ Comput.}, 41(6):A3576--A3595, 2019.
+
+\bibitem{ihisd2024}
+J.~Yin, Z.~Huang, and L.~Zhang,
+\newblock Improved High-index Saddle Dynamics with Crossover Dynamics,
+\newblock Preprint, 2024.
+
+\bibitem{eckart1935}
+C.~Eckart,
+\newblock Some Studies Concerning Rotating Axes and Polyatomic Molecules,
+\newblock \emph{Phys.\ Rev.}, 47:552, 1935.
+
+\bibitem{kabsch1976}
+W.~Kabsch,
+\newblock A Solution for the Best Rotation to Relate Two Sets of Vectors,
+\newblock \emph{Acta Crystallogr.\ A}, 32:922--923, 1976.
+
+\bibitem{levitt2015}
+A.~Levitt and C.~Ortner,
+\newblock Convergence and Cycling in Walker-type Saddle Search Algorithms,
+\newblock \emph{SIAM J.\ Numer.\ Anal.}, 55(5):2204--2227, 2017.
+
+\bibitem{sella2021}
+S.~Hermes, M.~Wander, and K.~R.~Biegasiewicz,
+\newblock Sella: A Python Package for Saddle Point Optimizations,
+\newblock 2021.
+
+\bibitem{hip2024}
+HIP: High-accuracy Interatomic Potential,
+\newblock \url{https://github.com/burgerandreas/hip}, 2024.
+
+\bibitem{scine2024}
+SCINE: Software for Chemical Interaction Networks,
+\newblock \url{https://scine.ethz.ch/download/}, 2024.
+
+\bibitem{transition1x}
+Transition1x Dataset,
+\newblock A dataset of molecular transition states and reaction barriers.
+
+\end{thebibliography}
+
+\end{document}
