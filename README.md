@@ -4,6 +4,8 @@
 
 **Robust saddle-point search from noisy starting geometries**
 
+**Paper (PDF): [`contributions.pdf`](contributions.pdf)** — important theory document and precursor to our two in-progress submissions.
+
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![PyTorch](https://img.shields.io/badge/pytorch-2.0+-ee4c2c.svg)](https://pytorch.org/)
 [![License: Research](https://img.shields.io/badge/license-research-green.svg)](#license)
