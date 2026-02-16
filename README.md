@@ -1,189 +1,161 @@
-# ts-tools
+<div align="center">
 
-**Robust Transition State Search from Noisy Starting Geometries**
+# Transition State Sampling
 
-A comprehensive toolkit for locating index-1 saddle points (transition states) on molecular potential energy surfaces, with emphasis on robustness to heavily displaced starting geometries. Implements and benchmarks GAD, eigenvector following, eigenvalue descent, Sella, iHiSD, recursive HiSD, and novel escape strategies that achieve **100% convergence from 2.0 Å noise**.
+**Robust saddle-point search from noisy starting geometries**
+
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![PyTorch](https://img.shields.io/badge/pytorch-2.0+-ee4c2c.svg)](https://pytorch.org/)
+[![License: Research](https://img.shields.io/badge/license-research-green.svg)](#license)
+
+*100% transition state convergence from molecules displaced by 2.0 Å of random noise*
+
+[Overview](#overview) &#8226; [Results](#results) &#8226; [Algorithms](#algorithms) &#8226; [Architecture](#architecture) &#8226; [Usage](#usage) &#8226; [Theory](#theory)
+
+</div>
 
 ---
 
 ## Overview
 
-Transition states (TSs) are first-order saddle points on the Born–Oppenheimer potential energy surface that govern reaction kinetics. Finding them reliably from noisy or coarse initial guesses—as commonly produced by generative models, interpolation schemes, or molecular dynamics—remains a central challenge in computational chemistry.
+Finding transition states — the index-1 saddle points governing chemical reaction rates — is one of the hardest problems in computational chemistry. Standard methods fail when the starting geometry is far from the true saddle point, a common scenario in generative molecular design, coarse interpolation, and noisy molecular dynamics.
 
-**ts-tools** addresses this through two contributions:
+This toolkit solves that problem. We implement, benchmark, and extend a suite of saddle-point search algorithms with a focus on **robustness to heavily displaced starting geometries**, achieving convergence rates that were previously considered impossible.
 
-1. **Robust saddle point search:** Systematic study of algorithms and escape mechanisms achieving near-perfect TS convergence from geometries perturbed by up to 2.0 Å of random noise—a regime where conventional methods fail catastrophically.
+**Two contributions:**
 
-2. **Adjoint sampling for reaction generation:** Integration of diffusion-based generative models that sample molecular conformations from Boltzmann distributions defined by energy functions.
+1. **Robust TS search from noise:** Novel escape mechanisms (v₂ kicking, adaptive timestep, mode tracking) that achieve **100% convergence from 2.0 Å noise** — a regime where Sella, iHiSD, and plain GAD all fail.
 
-### Headline Results
+2. **Adjoint sampling for reaction generation:** Diffusion-based generative models sampling molecular conformations from Boltzmann distributions for data-driven reaction pathway discovery.
 
-| Method | Noise Level | Convergence |
-|--------|-------------|-------------|
-| v₂ kicking + mode tracking + adaptive dt | **2.0 Å** | **100%** |
-| Adaptive dt control (path-based) | 2.0 Å | 92% |
-| State-based dt control | 2.0 Å | 80% |
-| Multi-Mode GAD (SCINE, HPO best) | 1.0 Å | 100% |
-| Multi-Mode GAD (HIP, HPO best) | 1.0 Å | 93.3% |
-| Sella (SCINE, HPO best) | 1.0 Å | 66.7% |
-| Sella (HIP, HPO best) | 1.0 Å | 53.3% |
+**Backends:** [HIP](https://github.com/burgerandreas/hip) (Equiformer ML potential, GPU) and [SCINE/Sparrow](https://scine.ethz.ch/download/) (semi-empirical DFTB0/PM6/AM1, CPU).
+
+---
+
+## Results
+
+### Convergence from Noisy Starting Geometries
+
+| Method | Noise | Convergence | Notes |
+|:-------|:-----:|:-----------:|:------|
+| **v₂ kicking + mode tracking + adaptive dt** | **2.0 Å** | **100%** | Our best method |
+| Adaptive dt control (path-based) | 2.0 Å | 92% | No kicking needed |
+| State-based dt control | 2.0 Å | 80% | No path history needed |
+| Multi-Mode GAD + HPO (SCINE) | 1.0 Å | 100% | 500 Optuna trials |
+| Multi-Mode GAD + HPO (HIP) | 1.0 Å | 93.3% | ML potential |
+| Sella trust-region + HPO (SCINE) | 1.0 Å | 66.7% | Best of 176 trials |
+| Sella trust-region + HPO (HIP) | 1.0 Å | 53.3% | Best of 181 trials |
+| Plain GAD-Euler | 1.0 Å | 13% | No escape mechanism |
+
+### From Clean Starting Geometries (Transition1x dataset)
+
+| Method | Convergence | Avg Steps | Avg Time |
+|:-------|:-----------:|:---------:|:--------:|
+| Direct Eigenvalue Descent | 99.7% | 1.8 | 3.1 s |
+| Eigenvalue Product Descent | 92.7% | 2.3 | 3.2 s |
+| GAD-Euler | 91.3% | 25.1 | 50 s |
+| GAD-RK45 | 91.3% | 7.3 | 64 s |
+
+### Backend Comparison (Multi-Mode GAD, 1.0 Å noise)
+
+| | SCINE (CPU) | HIP (GPU) |
+|:--|:-----------:|:---------:|
+| Global TS rate | **94.1%** | 74.9% |
+| Trials with ≥80% success | **497/500** | 45/102 |
+| Mean wall time / sample | **2.9 s** | 96.9 s |
+
+SCINE's analytical Hessians outperform HIP's ML-predicted Hessians for eigenvalue-based saddle characterization, while being 33x faster.
 
 ---
 
 ## Algorithms
 
-### Core Saddle Point Search
+### Core: Gentlest Ascent Dynamics (GAD)
 
-**Gentlest Ascent Dynamics (GAD)**
 Inverts the force component along the lowest Hessian eigenvector, creating a vector field whose stable fixed points are index-1 saddle points:
 
-$$\mathbf{F}_\text{GAD} = -\nabla E + 2(\nabla E \cdot \mathbf{v}_1)\mathbf{v}_1$$
+$$\mathbf{F}_{\text{GAD}} = -\nabla E + 2(\nabla E \cdot \mathbf{v}_1)\,\mathbf{v}_1$$
 
-Implemented with Euler and RK45 integration, continuous mode tracking, and Eckart-projected mass-weighted Hessians.
+Implemented with **Euler** and **RK45** integration, **continuous mode tracking** (maximum-overlap eigenvector selection across steps), and **Eckart-projected mass-weighted Hessians** (7 projection variants tested, all equivalent).
 
-**Eigenvector Following (Newton GAD)**
-Newton step on the GAD surface using the absolute-value Hessian: $\Delta\mathbf{x} = H_\text{abs}^{-1} \cdot F_\text{GAD}$. Provides quadratic convergence near saddle points.
+### Novel: v₂ Escape Mechanism
 
-**Eigenvalue Product Descent**
-Directly minimizes $\mathcal{L} = \lambda_0 \cdot \lambda_1$ via autograd through the eigendecomposition. Requires a differentiable calculator (HIP). Achieves 92.7% from clean starts in 2.3 steps.
+When GAD stalls at a high-index saddle (detected via displacement plateau monitoring), we perturb along the **second vibrational eigenvector**:
 
-**Direct Eigenvalue Descent (Sign Enforcer)**
-Adaptive loss based on current Morse index: pushes eigenvalues toward exactly one negative. Achieves 99.7% from clean starts in 1.8 steps.
+1. Detect plateau: mean displacement below threshold over sliding window, stable Morse index > 1
+2. Compute v₂ from Eckart-projected Hessian
+3. Try both ±δ·v₂, select direction with lower energy
+4. Reset adaptive timestep with boost factor
+5. Resume GAD dynamics
 
-### Escape Strategies for High-Index Saddle Points
+This achieves **100% convergence on 2.0 Å noise** — the first method to do so.
 
-**v₂ Kicking** — The primary innovation. When GAD stalls at a high-index saddle (detected via displacement plateau), perturbs geometry along the second vibrational eigenvector. Tries both ±v₂ directions and selects lower energy. Combined with mode tracking and adaptive dt, achieves **100% convergence on 2.0 Å noise**.
+### Also Implemented
 
-**Adaptive Timestep Control** — Two variants:
-- *Path-based:* Adapts dt using displacement history with grow/shrink/boost/reset logic and saddle-order tracking.
-- *State-based:* Adapts dt using only local quantities (eigenvalues, gradient norm, spectral gap).
-
-### Baseline Algorithms
-
-| Algorithm | Description |
-|-----------|-------------|
-| **Sella** | Trust-region saddle optimizer (ASE ecosystem) |
-| **iHiSD** | Improved HiSD with crossover parameter θ ∈ [0,1] |
-| **Recursive HiSD** | Systematic index descent: n → n-1 → ... → 1 |
-| **k-HiSD** | Generalized GAD with reflection operator |
-| **Gradient Descent** | Sanity-check baseline (finds minima) |
-| **Newton-Raphson** | Minimization with pseudoinverse Hessian |
+| Algorithm | Type | Key Idea |
+|:----------|:-----|:---------|
+| **Eigenvector Following** | Newton-like | $\Delta x = H_{\text{abs}}^{-1} \cdot F_{\text{GAD}}$ — quadratic convergence |
+| **Eigenvalue Product Descent** | Autograd | Minimize $\lambda_0 \cdot \lambda_1$ via backprop through eigendecomposition |
+| **Direct Eigenvalue Descent** | Autograd | Adaptive loss based on Morse index (sign enforcer) |
+| **Sella** | Trust-region | Industry-standard ASE saddle optimizer |
+| **iHiSD** | Crossover | Interpolates gradient flow → k-HiSD via θ ∈ [0,1] |
+| **Recursive HiSD** | Index descent | Systematic n → n-1 → ... → 1 saddle descent |
+| **k-HiSD** | Reflection | Generalized GAD with $R_k = I - 2\sum v_i v_i^T$ |
 
 ---
 
-## Eckart Projection
-
-All algorithms operate on projected Hessians with translation/rotation modes removed. Seven projection variants were tested—all produce statistically identical results:
-
-| Variant | Description |
-|---------|-------------|
-| `eckart_full` | Standard P·H·P in 3N space (default) |
-| `reduced_basis` | QR complement → full-rank (3N-6)×(3N-6) Hessian |
-| `+ purify` | Sum-rule purification for translational invariance |
-| `+ frame_tracking` | Kabsch alignment to reference frame |
-| `+ project_grad_v` | Project gradient and guide vector into vibrational subspace |
-
----
-
-## Computational Backends
-
-### HIP — Machine Learning Interatomic Potential
-[github.com/burgerandreas/hip](https://github.com/burgerandreas/hip)
-
-Equiformer-based ML potential providing GPU-accelerated, differentiable energy, force, and Hessian predictions. Required for eigenvalue descent methods (autograd through eigendecomposition).
-
-### SCINE/Sparrow — Semi-Empirical Calculator
-[scine.ethz.ch/download](https://scine.ethz.ch/download/)
-
-CPU-only semi-empirical quantum chemistry (DFTB0, PM6, AM1) with analytical Hessians. Consistently outperforms HIP for saddle point characterization: 94.1% vs 74.9% global TS rate, ~33× faster wall time.
-
-Both backends are wrapped into a unified `predict_fn(coords, atomic_nums, do_hessian, require_grad)` interface.
-
----
-
-## Repository Structure
+## Architecture
 
 ```
-ts-tools/
-├── src/
-│   ├── core_algos/                 # Algorithm implementations
-│   │   ├── gad.py                  # GAD: Euler, RK45, mode tracking
-│   │   ├── eigenproduct.py         # Eigenvalue product descent
-│   │   └── signenforcer.py         # Direct eigenvalue descent
-│   ├── dependencies/               # Shared infrastructure
-│   │   ├── differentiable_projection.py  # Eckart projection (7 variants)
-│   │   ├── hessian.py              # Hessian analysis, vibrational frequencies
-│   │   ├── calculators.py          # HIP and SCINE adapters
-│   │   └── common_utils.py         # Geometry validation, convergence checks
-│   ├── runners/                    # Integration drivers
-│   │   ├── gad_euler_core.py       # GAD-Euler with convergence logic
-│   │   ├── gad_rk45_core.py        # GAD-RK45 adaptive integration
-│   │   └── eigenvalue_descent_core.py
-│   ├── noisy/                      # Noisy-start experiments
-│   │   ├── multi_mode_eckartmw.py  # Production algorithm
-│   │   ├── v2_tests/               # Latest experiment generation
-│   │   │   ├── kick_experiments/   # 8 kick strategies
-│   │   │   ├── baselines/          # iHiSD, recursive HiSD, k-HiSD
-│   │   │   ├── runners/            # Parallel experiment runners
-│   │   │   ├── scripts/            # SLURM templates (17 configs)
-│   │   │   ├── logging/            # Extended metrics and diagnostics
-│   │   │   └── analysis/           # Singularity and stall analysis
-│   │   └── scine_*_parallel.py     # Parallel SCINE wrappers
-│   └── experiments/                # HPO and comparison studies
-│       ├── Sella/                  # Sella integration and HPO
-│       └── 2025/                   # Multi-mode Eckart-MW HPO
-├── documentation/
-│   └── for_robots/                 # Machine-readable codebase guide
-├── supporting/                     # LaTeX reports and presentations
-└── hpo_results_full/               # HPO analysis and figures
+src/
+├── core_algos/                          # Algorithm implementations
+│   ├── gad.py                           #   GAD: Euler, RK45, mode tracking
+│   ├── eigenproduct.py                  #   Eigenvalue product descent (autograd)
+│   └── signenforcer.py                  #   Direct eigenvalue descent
+├── dependencies/                        # Shared infrastructure
+│   ├── differentiable_projection.py     #   Eckart projection (7 variants)
+│   ├── hessian.py                       #   Vibrational frequency analysis
+│   ├── calculators.py                   #   HIP / SCINE adapter layer
+│   └── common_utils.py                  #   Geometry validation, convergence
+├── runners/                             # Integration drivers
+│   ├── gad_euler_core.py                #   GAD-Euler with convergence logic
+│   ├── gad_rk45_core.py                 #   Adaptive RK45 integration
+│   └── eigenvalue_descent_core.py       #   Eigenvalue descent driver
+├── noisy/                               # Noisy-start experiments
+│   ├── multi_mode_eckartmw.py           #   Production: v₂ kicking + mode tracking
+│   └── v2_tests/                        #   Experiment suite
+│       ├── kick_experiments/            #     8 perturbation strategies
+│       ├── baselines/                   #     iHiSD, recursive HiSD, k-HiSD, GD
+│       ├── runners/                     #     Parallel experiment runners
+│       ├── scripts/slurm_templates/     #     17 SLURM HPC configurations
+│       ├── logging/                     #     Extended metrics & diagnostics
+│       └── analysis/                    #     Singularity & stall analysis
+└── experiments/                         # Hyperparameter optimization
+    ├── Sella/                           #   Sella HPO (Optuna/TPE)
+    └── 2025/                            #   Multi-Mode Eckart-MW HPO
 ```
+
+All algorithms interact through a unified `predict_fn(coords, atomic_nums, do_hessian, require_grad)` interface that wraps both HIP and SCINE backends.
 
 ---
 
 ## Key Findings
 
-1. **v₂ kicking is the most effective escape mechanism** — but it works as brute-force "unsticking" rather than principled index reduction. Mean Morse index changes only from 5.39 → 5.00 after kicks.
+- **v₂ kicking works as brute-force unsticking**, not principled index reduction. Mean Morse index barely changes (5.39 → 5.00) after kicks — but it breaks the dt → 0 deadlock that traps GAD at high-index saddles.
 
-2. **Adaptive k = Morse index is fundamentally wrong** for escaping high-index saddles. k-HiSD theory proves this *stabilizes* the current saddle (0% escape rate).
+- **Adaptive k = Morse index is fundamentally wrong.** k-HiSD theory proves index-k saddles are *stable* fixed points of k-HiSD — using k = current index *stabilizes* the saddle you're trying to escape (0% success rate).
 
-3. **Only 26% of stalls occur near eigenvalue singularities.** The majority are at genuine high-index saddles where GAD direction becomes weak.
+- **Only 26% of stalls are near eigenvalue singularities.** Most are at genuine high-index saddles where the GAD direction vanishes, not at eigenvalue crossings.
 
-4. **Fixed perturbation magnitude outperforms adaptive scaling** in 99.1% of successful trials.
+- **Fixed perturbation magnitude beats adaptive scaling** in 99.1% of successful trials — simpler is better.
 
-5. **SCINE outperforms HIP across all metrics** — better convergence (94.1% vs 74.9%), 33× faster, despite being CPU-only. Analytical Hessians are more reliable than ML-predicted ones.
-
-6. **All 7 projection variants produce identical results** — Eckart projection implementation is not a bottleneck.
-
-7. **Multi-Mode GAD dramatically outperforms Sella** on noisy starts: 94.1% vs 47.0% global TS rate.
-
----
-
-## Installation
-
-```bash
-git clone https://github.com/<org>/ts-tools.git
-cd ts-tools
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-```
-
-### Calculator Setup
-
-**SCINE/Sparrow** (recommended):
-```bash
-pip install scine-sparrow scine-utilities
-```
-
-**HIP** (for differentiable eigenvalue descent):
-```bash
-# Follow instructions at https://github.com/burgerandreas/hip
-```
+- **All 7 Eckart projection variants produce identical results** — the projection implementation is never the bottleneck.
 
 ---
 
 ## Usage
 
-### Running GAD with v₂ Kicking (Production)
+### Quick Start
 
 ```python
 from src.noisy.multi_mode_eckartmw import run_multi_mode_eckartmw
@@ -193,84 +165,69 @@ predict_fn = make_scine_predict_fn(functional="DFTB0")
 
 result = run_multi_mode_eckartmw(
     predict_fn=predict_fn,
-    coords=initial_coords,
-    atomic_nums=atomic_nums,
-    scine_elements=elements,
+    coords=initial_coords,          # (N, 3) tensor
+    atomic_nums=atomic_nums,         # (N,) tensor
+    scine_elements=elements,         # list of element symbols
     n_steps=10000,
-    dt=0.003,
-    dt_max=0.07,
+    dt=0.003, dt_max=0.07,
     escape_delta=0.27,
     escape_disp_threshold=5.66e-4,
     max_atom_disp=0.35,
-    min_interatomic_dist=0.5,
 )
 ```
 
-### SLURM Submission (HPC)
+### HPC (SLURM)
 
 ```bash
-# Default: v₂ kicking with Eckart projection
-sbatch src/noisy/v2_tests/scripts/slurm_templates/gad_plain_run.slurm
+# v₂ kicking with Eckart projection (default production config)
+sbatch src/noisy/v2_tests/scripts/slurm_templates/kick_v2_run.slurm
 
-# With environment overrides
+# Override parameters via environment
 N_STEPS=15000 MAX_SAMPLES=50 START_FROM=midpoint_rt_noise2.0A \
     sbatch src/noisy/v2_tests/scripts/slurm_templates/kick_v2_run.slurm
-
-# Projection experiments
-PROJECTION_MODE=reduced_basis PURIFY_HESSIAN=true \
-    sbatch src/noisy/v2_tests/scripts/slurm_templates/gad_plain_run.slurm
 ```
 
-### Running HPO
+### Installation
 
 ```bash
-python src/experiments/2025/multi_mode_eckartmw.py \
-    --h5-path data/transition1x.h5 \
-    --n-trials 500 \
-    --max-samples 15 \
-    --scine-functional DFTB0
+git clone https://github.com/memo-ozdincer/transition-state-sampling.git
+cd transition-state-sampling
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+pip install scine-sparrow scine-utilities  # recommended backend
 ```
-
----
-
-## Data
-
-Experiments use the **Transition1x** dataset (HDF5 format) containing reactant and transition state geometries for small organic molecules. Starting geometries are constructed as:
-
-$$\mathbf{x}_0 = \frac{\mathbf{x}_\text{reactant} + \mathbf{x}_\text{TS}}{2} + \sigma \cdot \boldsymbol{\xi}, \quad \boldsymbol{\xi} \sim \mathcal{N}(0, I)$$
-
-where σ controls noise level (typically 1.0 or 2.0 Å).
 
 ---
 
 ## Theory
 
-The core algorithm solves GAD dynamics on Eckart-projected, mass-weighted Hessians with mode tracking:
+The core pipeline at each step:
 
-1. **Hessian projection:** Remove 6 translation/rotation modes via Eckart B-matrix projection
-2. **Mass-weighting:** $H_\text{mw} = M^{-1/2} H M^{-1/2}$
-3. **Eigendecomposition:** Extract vibrational modes, track lowest via maximum overlap
-4. **GAD step:** $\mathbf{x}_{n+1} = \mathbf{x}_n + \Delta t \cdot \mathbf{F}_\text{GAD}$
-5. **Plateau detection:** Monitor displacement window; trigger escape when stalled
-6. **v₂ escape:** Perturb along second vibrational eigenvector to exit high-index saddle
-7. **Adaptive dt:** Grow/shrink timestep based on displacement history and saddle order
+1. **Eckart projection** — Remove 6 translation/rotation modes: $\tilde{H} = P_{\text{vib}}\, M^{-1/2} H\, M^{-1/2}\, P_{\text{vib}}$
+2. **Eigendecomposition** — Extract vibrational modes, track lowest via maximum overlap with previous step
+3. **GAD step** — $\mathbf{x}_{n+1} = \mathbf{x}_n + \Delta t \cdot \mathbf{F}_{\text{GAD}}$
+4. **Plateau detection** — Sliding window over displacement; trigger escape when stalled at Morse index > 1
+5. **v₂ escape** — Perturb along second vibrational eigenvector
+6. **Adaptive dt** — Grow/shrink/reset timestep based on displacement history and saddle order improvement
 
-Convergence criterion: $\lambda_0 \cdot \lambda_1 < 0$ (exactly one negative vibrational eigenvalue).
+**Convergence criterion:** $\lambda_0 \cdot \lambda_1 < 0$ (exactly one negative vibrational eigenvalue).
 
-Full mathematical details, derivations, and proofs are in [`supporting/ts_tools_report.tex`](supporting/ts_tools_report.tex).
+Full derivations in [`supporting/ts_tools_report.tex`](supporting/ts_tools_report.tex).
 
 ---
 
 ## References
 
 - E, W. and Zhou, X. "The Gentlest Ascent Dynamics." *Nonlinearity* 24(6):1831, 2011.
-- Yin, J., Zhang, L., and Zhang, P. "High-Index Optimization-Based Shrinking Dimer Method." *SIAM J. Sci. Comput.* 41(6), 2019.
-- Levitt, A. and Ortner, C. "Convergence and Cycling in Walker-type Saddle Search Algorithms." *SIAM J. Numer. Anal.* 55(5), 2017.
-- HIP: [github.com/burgerandreas/hip](https://github.com/burgerandreas/hip)
-- SCINE: [scine.ethz.ch/download](https://scine.ethz.ch/download/)
+- Yin, J. et al. "High-Index Optimization-Based Shrinking Dimer Method." *SIAM J. Sci. Comput.* 41(6), 2019.
+- Levitt, A. and Ortner, C. "Convergence and Cycling in Walker-type Saddle Search." *SIAM J. Numer. Anal.* 55(5), 2017.
+- [HIP](https://github.com/burgerandreas/hip) — Equiformer ML interatomic potential
+- [SCINE](https://scine.ethz.ch/download/) — Semi-empirical quantum chemistry
 
 ---
 
-## License
+<div align="center">
 
-Research code — Aspuru-Guzik Group, University of Toronto.
+*Matter Lab — University of Toronto*
+
+</div>

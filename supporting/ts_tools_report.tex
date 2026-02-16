@@ -29,16 +29,13 @@
 \newcommand{\vv}{\bm{v}}
 \newcommand{\xx}{\bm{x}}
 \newcommand{\ff}{\bm{f}}
-\newcommand{\gg}{\bm{g}}
+\renewcommand{\gg}{\bm{g}}
 \newcommand{\HH}{\bm{H}}
 \newcommand{\PP}{\bm{P}}
 \newcommand{\BB}{\bm{B}}
 \newcommand{\II}{\bm{I}}
 \newcommand{\MM}{\bm{M}}
 \newcommand{\RR}{\bm{R}}
-\DeclareMathOperator{\diag}{diag}
-\DeclareMathOperator{\tr}{tr}
-\DeclareMathOperator{\sgn}{sgn}
 
 \newtheorem{theorem}{Theorem}
 \newtheorem{proposition}{Proposition}
@@ -60,8 +57,8 @@
 }
 
 \author{
-    Memo Ozdincer \\
-    \textit{Aspuru-Guzik Group} \\
+    Mehmet Ozdincer, Andreas Burger \\
+    \textit{Matter Lab} \\
     University of Toronto
 }
 
@@ -440,7 +437,7 @@ The projected Hessian in the full $3N$-dimensional space is:
     \label{eq:php}
 \end{equation}
 where $\HH_{\text{mw}} = \MM^{-1/2} \HH \MM^{-1/2}$ is the mass-weighted
-Hessian with $\MM = \diag(m_1, m_1, m_1, m_2, m_2, m_2, \ldots, m_N, m_N, m_N)$.
+Hessian with $\MM = diag(m_1, m_1, m_1, m_2, m_2, m_2, \ldots, m_N, m_N, m_N)$.
 This yields a $3N \times 3N$ matrix with exactly 6 zero eigenvalues (TR modes)
 and $3N - 6$ vibrational eigenvalues.
 
@@ -472,7 +469,7 @@ squared vibrational frequencies:
 \begin{equation}
     \HH_{\text{mw}} = \MM^{-1/2} \HH \MM^{-1/2},
 \end{equation}
-where $\MM = \diag(\underbrace{m_1, m_1, m_1}_{x,y,z}, \ldots,
+where $\MM = diag(\underbrace{m_1, m_1, m_1}_{x,y,z}, \ldots,
 \underbrace{m_N, m_N, m_N}_{x,y,z})$. The masses $m_a$ are the atomic
 masses of each atom. This ensures that heavy atoms contribute proportionally
 less to vibrational modes than light atoms, which is physically correct.
@@ -652,7 +649,7 @@ The path to robust noisy-start convergence involved systematic experimentation:
     Hybrid GAD + Product Descent & 33 & Switch algorithms \\
     L-BFGS Energy Minimizer & 10 & Minimize first \\
     Plateau Detection (v$_2$ kick) & 40 & First escape mechanism \\
-    Mode Tracking + Trust Radius & 92/71\tablefootnote{SCINE/HIP} & Continuous eigenvector tracking \\
+    Mode Tracking + Trust Radius & 92/71SCINE/HIP & Continuous eigenvector tracking \\
     v$_2$ Kicking (v2 tests) & \textbf{100} & 2.0\,\AA{} noise \\
     Adaptive dt Control & 92 & Path-based dt adaptation \\
     State-based dt Control & 80 & No path information needed \\
@@ -665,7 +662,7 @@ The path to robust noisy-start convergence involved systematic experimentation:
 \label{sec:escape}
 % =============================================================================
 
-\subsection{$\vv_2$ Kicking: The Primary Escape Mechanism}
+\subsection{$v_2$ Kicking: The Primary Escape Mechanism}
 \label{sec:v2_kick}
 
 The most effective escape strategy is perturbation along the second vibrational
@@ -716,7 +713,7 @@ $\Delta t \leftarrow \Delta t_{\text{boost}} \cdot \Delta t_0$, then
 $\Delta t \leftarrow \max(\Delta t \cdot \alpha_{\text{shrink}}, \Delta t_{\min})$
 each step.
 
-\subsubsection{Why $\vv_2$?}
+\subsubsection{Why $v_2$?}
 
 Analysis of diagnostic experiments revealed that $\vv_2$ kicking works
 primarily as a brute-force ``unsticking'' mechanism rather than systematic
