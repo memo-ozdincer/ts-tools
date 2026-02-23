@@ -88,16 +88,16 @@ FORCE_CONVERGED="${FORCE_CONVERGED:-1e-4}"
 MIN_INTERATOMIC_DIST="${MIN_INTERATOMIC_DIST:-0.5}"
 
 # =============================================================================
-# Grid search axes (focused around best-performing region)
+# Grid search axes (focused around best-performing region with Trust Region)
 # =============================================================================
-# Trust radius near the previous winner (1.0), with moderate exploration above/below.
-MAX_ATOM_DISP_GRID=("0.5" "0.8" "1.0" "1.3")
+# Trust radius acts as the *initial* trust radius and absolute cap in the new TR method.
+MAX_ATOM_DISP_GRID=("0.5" "1.0" "1.3" "1.5")
 
-# TR mode filtering near previous winners (1e-4 and 1e-5), plus intermediate values.
-TR_THRESHOLD_GRID=("3e-4" "1e-4" "5e-5" "1e-5")
+# TR mode filtering.
+TR_THRESHOLD_GRID=("1e-5" "5e-5" "1e-4" "3e-4")
 
-# Projection options (keep both: speeds up some high-performing regimes).
-PROJECT_GRAD_GRID=("true" "false")
+# Projection options (Now always active internally, but pass "true" to provide atomsymbols).
+PROJECT_GRAD_GRID=("true")
 
 # Previously no measurable effect in this benchmark; keep fixed to reduce combinatorics.
 PURIFY_HESS_GRID=("false")
