@@ -80,7 +80,7 @@ mkdir -p "$OUT_DIR"
 # Fixed configuration
 # =============================================================================
 N_STEPS="${N_STEPS:-20000}"
-MAX_SAMPLES="${MAX_SAMPLES:-20}"
+MAX_SAMPLES="${MAX_SAMPLES:-100}"
 START_FROM="${START_FROM:-midpoint_rt_noise2.0A}"
 NOISE_SEED="${NOISE_SEED:-42}"
 SCINE_FUNCTIONAL="${SCINE_FUNCTIONAL:-DFTB0}"
@@ -91,10 +91,10 @@ MIN_INTERATOMIC_DIST="${MIN_INTERATOMIC_DIST:-0.5}"
 # Grid search axes (focused around best-performing region with Trust Region)
 # =============================================================================
 # Trust radius acts as the *initial* trust radius and absolute cap in the new TR method.
-MAX_ATOM_DISP_GRID=("1.0" "1.3" "1.5")
+MAX_ATOM_DISP_GRID=("1.3" "1.5" "1.8")
 
 # TR mode filtering.
-TR_THRESHOLD_GRID=("5e-5" "1e-4" "3e-4")
+TR_THRESHOLD_GRID=("3e-4" "6e-4" "1e-3" "2e-3")
 
 # Projection options (Now always active internally, but pass "true" to provide atomsymbols).
 PROJECT_GRAD_GRID=("true")
@@ -194,4 +194,27 @@ echo "  Total combinations: $TOTAL_COMBOS"
 echo "  Completed: $((COMBO - FAILED))"
 echo "  Failed: $FAILED"
 echo "  Results in: $OUT_DIR"
+echo "=============================================="
+
+# =============================================================================
+# Run analysis and plotting
+# =============================================================================
+ANALYSIS_OUT="${OUT_DIR}/analysis"
+mkdir -p "$ANALYSIS_OUT"
+echo "Running analysis script..."
+python "$PROJECT_DIR/src/noisy/v2_tests/scripts/analyze_minimization_nr_grid.py" \
+    --grid-dir "$OUT_DIR" \
+    --output-dir "$ANALYSIS_OUT" \
+    --top-k 10 > "${ANALYSIS_OUT}/report.txt"
+
+echo "Analysis complete. Report saved to ${ANALYSIS_OUT}/report.txt"
+
+PLOTS_OUT="${OUT_DIR}/plots"
+mkdir -p "$PLOTS_OUT"
+echo "Generating trajectory plots..."
+python "$PROJECT_DIR/src/noisy/v2_tests/scripts/plot_nr_grid_trajectories.py" \
+    --grid-dir "$OUT_DIR" \
+    --output-dir "$PLOTS_OUT"
+
+echo "Plotting complete. PNGs saved to ${PLOTS_OUT}"
 echo "=============================================="

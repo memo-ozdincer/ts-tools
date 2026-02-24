@@ -315,17 +315,19 @@ def run_newton_raphson(
             )
 
         # Newton-Raphson step explicitly using the Hessian eigenvectors/values
-        # Instead of throwing away modes with |lam| < tr_threshold, 
-        # we clamp the absolute eigenvalues to a minimum value to avoid blowup.
-        # This acts like a regularizer and ensures we still step along flat modes (scaled gradient step).
-        # We don't filter out TR modes here because the gradient is already Eckart-projected,
-        # so coeffs for TR modes will be ~0 anyway.
-        
-        lam_mod = torch.clamp(torch.abs(evals), min=tr_threshold)
-        coeffs = evecs.T @ grad.to(evecs.dtype)
-        inv_lam = 1.0 / lam_mod
-        nr_step = evecs @ (inv_lam * coeffs)
-        delta_x = -nr_step 
+        vib_indices = torch.where(vib_mask)[0]
+        if vib_indices.numel() > 0:
+            V_vib = evecs[:, vib_indices]  
+            lam_vib = evals[vib_indices]   
+            coeffs = V_vib.T @ grad.to(V_vib.dtype)  
+            
+            # Use absolute value of eigenvalues to ensure descent direction!
+            inv_lam_min = 1.0 / torch.abs(lam_vib)
+            
+            nr_step = V_vib @ (inv_lam_min * coeffs)
+            delta_x = -nr_step 
+        else:
+            delta_x = forces.reshape(-1) * 0.001
 
         step_disp = delta_x.to(coords.dtype).reshape(-1, 3)
         
@@ -335,7 +337,8 @@ def run_newton_raphson(
         retries = 0
         
         while not accepted and retries < max_retries:
-            capped_disp = _cap_displacement(step_disp, current_trust_radius)
+            radius_used_for_step = current_trust_radius
+            capped_disp = _cap_displacement(step_disp, radius_used_for_step)
             
             # Predict energy change using explicit Hessian: dE = g^T dx + 0.5 dx^T H dx
             dx_flat = capped_disp.reshape(-1)
@@ -361,7 +364,7 @@ def run_newton_raphson(
                 # Update trust radius based on rho
                 rho = actual_dE / pred_dE if pred_dE < -1e-8 else 0.0
                 if rho > 0.75:
-                    current_trust_radius = min(current_trust_radius * 1.5, max_atom_disp * 2.0)
+                    current_trust_radius = min(current_trust_radius * 1.5, max_atom_disp)
                 elif rho < 0.25:
                     current_trust_radius = max(current_trust_radius * 0.5, 0.001)
                     
@@ -376,6 +379,11 @@ def run_newton_raphson(
             # If we failed to find a good step after retries, just take the smallest step and continue
             coords = new_coords.detach()
             out = out_new
+
+        actual_step_disp = float(capped_disp.reshape(-1, 3).norm(dim=1).max().item())
+        trajectory[-1]["actual_step_disp"] = actual_step_disp
+        trajectory[-1]["hit_trust_radius"] = bool(actual_step_disp >= radius_used_for_step * 0.99)
+        trajectory[-1]["retries"] = retries
 
         step += 1
 

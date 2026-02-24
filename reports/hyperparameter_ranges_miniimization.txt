@@ -1,0 +1,27 @@
+# Hyperparameter Analysis for Newton-Raphson Minimization & Trust Region
+Date: February 2026
+
+This report summarizes the findings from successive grid searches on the Newton-Raphson (NR) minimization algorithm, particularly focusing on the effects of step-size limits (Trust Radius) and mode filtering thresholds on navigating complex Potential Energy Surfaces (PES). These insights are highly transferable to Gradient Ascent Deflation (GAD) or other saddle-point search algorithms.
+
+## 1. Max Atom Displacement (`max_atom_disp` / Trust Radius Cap)
+**Finding: Bigger is significantly better.**
+- In early grids, pushing the displacement bound from 0.5 Å to 1.3 Å drastically improved the convergence rate (from 45% to 64%). 
+- In later grids with a formal Trust Region implementation, larger caps (`mad1.3` and `mad1.5`) dominated.
+- **Why?** Restricting the step size too strictly artificially stalls out the optimizer. When the local quadratic model (Hessian) accurately predicts a long, shallow valley, the optimizer needs the freedom to take a massive step. If capped too low, it exhausts step counts before reaching the minimum or fails to escape shallow local traps.
+- **Takeaway for GAD:** Don't handicap the optimizer with tiny max-step limits. Use a dynamic Trust Region that can grow large (e.g., up to 1.5 Å) when the quadratic model is trustworthy (i.e., ratio of actual to predicted energy change is good).
+
+## 2. TR Threshold (`tr_threshold` / Flat Mode Handling)
+**Finding: 3e-4 strongly outperformed 1e-5. Throwing away flat modes entirely acts as an essential dynamic dimensionality reduction!**
+- A tight threshold (`1e-5`) performed terribly (40% convergence), while a wider threshold (`3e-4`) dominated (90% mean convergence on the top configuration).
+- **The Danger of Flat Modes:** If a mode is very flat (e.g., `|λ| = 10^-5`), taking a pure Newton step means multiplying the gradient along that mode by `1/λ = 100,000`. This causes the update vector to be completely hijacked by a single noisy, flat mode, leading to explosive, unstable steps.
+- **The Revelation: Clamping vs. Filtering:** We tested an alternative hypothesis where, instead of completely ignoring flat modes (`|λ| < tr_threshold`), we clamped their eigenvalues to a minimum value (`max(|λ|, tr_threshold)`) to enforce a safe Gradient Descent step along them. **This caused performance to plummet from 90% down to 55%, and average step counts to triple (from ~2500 to ~9000).**
+- **Conclusion:** The "flat modes" in these TS systems (below `~3e-4`) are not smooth, navigable valleys. They are overwhelmingly composed of numerical noise, rattling, or unphysical modes that corrupt the search direction entirely if we try to step along them at all. Throwing them away entirely (using a pseudoinverse in the vibrational subspace) acts like a highly effective dynamic dimensionality reduction, which is exactly what the system needs to confidently walk down the real, chemically meaningful modes.
+
+## 3. Projection & Purification
+- **Eckart Projection (`project_gradient_and_v`):** Crucial to leave turned `True`. It prevents the optimizer from wandering into pure Translation/Rotation drift. Combined with throwing out the lowest eigenvalues, it ensures pure and near-zero TR modes do not corrupt the step.
+- **Purification (`purify_hessian`):** Showed no measurable impact on convergence rates or step counts across identical pairs. It can safely be left `False` to save compute if desired, provided Eckart projection handles the gradient.
+
+## Summary for GAD / Saddle Searches
+1. **Use an Adaptive Trust Region:** Start with a modest radius, evaluate the Dogleg / Trust-Region energy prediction ratio `ρ = dE_actual / dE_pred`. Grow the radius aggressively (up to 1.5 Å) if the prediction is accurate, shrink it if it is bad, and reject the step if the energy goes up.
+2. **Aggressively Filter Flat Modes:** Do not try to walk down flat modes or clamp their eigenvalues. Throw away any mode with `|λ| < 3e-4` when building your Newton step. This dimensionality reduction is critical to shielding the optimizer from numerical noise and rattling.
+3. **Eckart Projection is Mandatory:** Always project your gradients to keep the steps chemically sound.
