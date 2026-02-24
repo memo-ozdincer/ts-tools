@@ -91,10 +91,10 @@ MIN_INTERATOMIC_DIST="${MIN_INTERATOMIC_DIST:-0.5}"
 # Grid search axes (focused around best-performing region with Trust Region)
 # =============================================================================
 # Trust radius acts as the *initial* trust radius and absolute cap in the new TR method.
-MAX_ATOM_DISP_GRID=("0.5" "1.0" "1.3" "1.5")
+MAX_ATOM_DISP_GRID=("1.0" "1.3" "1.5")
 
 # TR mode filtering.
-TR_THRESHOLD_GRID=("1e-5" "5e-5" "1e-4" "3e-4")
+TR_THRESHOLD_GRID=("5e-5" "1e-4" "3e-4")
 
 # Projection options (Now always active internally, but pass "true" to provide atomsymbols).
 PROJECT_GRAD_GRID=("true")

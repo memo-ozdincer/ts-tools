@@ -315,19 +315,17 @@ def run_newton_raphson(
             )
 
         # Newton-Raphson step explicitly using the Hessian eigenvectors/values
-        vib_indices = torch.where(vib_mask)[0]
-        if vib_indices.numel() > 0:
-            V_vib = evecs[:, vib_indices]  
-            lam_vib = evals[vib_indices]   
-            coeffs = V_vib.T @ grad.to(V_vib.dtype)  
-            
-            # Use absolute value of eigenvalues to ensure descent direction!
-            inv_lam_min = 1.0 / torch.abs(lam_vib)
-            
-            nr_step = V_vib @ (inv_lam_min * coeffs)
-            delta_x = -nr_step 
-        else:
-            delta_x = forces.reshape(-1) * 0.001
+        # Instead of throwing away modes with |lam| < tr_threshold, 
+        # we clamp the absolute eigenvalues to a minimum value to avoid blowup.
+        # This acts like a regularizer and ensures we still step along flat modes (scaled gradient step).
+        # We don't filter out TR modes here because the gradient is already Eckart-projected,
+        # so coeffs for TR modes will be ~0 anyway.
+        
+        lam_mod = torch.clamp(torch.abs(evals), min=tr_threshold)
+        coeffs = evecs.T @ grad.to(evecs.dtype)
+        inv_lam = 1.0 / lam_mod
+        nr_step = evecs @ (inv_lam * coeffs)
+        delta_x = -nr_step 
 
         step_disp = delta_x.to(coords.dtype).reshape(-1, 3)
         
