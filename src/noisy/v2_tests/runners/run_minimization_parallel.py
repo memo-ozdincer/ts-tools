@@ -48,6 +48,7 @@ def run_single_sample(
     *,
     sample_id: str,
     formula: str,
+    known_ts_coords: Optional[torch.Tensor] = None,
 ) -> Dict[str, Any]:
     method = params["method"]
 
@@ -107,6 +108,7 @@ def run_single_sample(
                 atomsymbols=all_atomsymbols if project_gradient_and_v else None,
                 scine_elements=scine_elements,
                 purify_hessian=params.get("purify_hessian", False),
+                known_ts_coords=known_ts_coords,
             )
         else:
             raise ValueError(f"Unknown method: {method}")
@@ -171,6 +173,13 @@ def scine_worker_sample(predict_fn, payload) -> Dict[str, Any]:
         noise_seed=noise_seed,
         sample_index=sample_idx,
     ).detach().to("cpu")
+    
+    known_ts_coords = getattr(batch, "pos_transition", None)
+    if known_ts_coords is None:
+        known_ts_coords = getattr(batch, "pos", None)
+    if known_ts_coords is not None:
+        known_ts_coords = known_ts_coords.detach().to("cpu")
+
     formula = getattr(batch, "formula", "")
     result = run_single_sample(
         predict_fn,
@@ -180,6 +189,7 @@ def scine_worker_sample(predict_fn, payload) -> Dict[str, Any]:
         n_steps,
         sample_id=f"sample_{sample_idx:03d}",
         formula=str(formula),
+        known_ts_coords=known_ts_coords,
     )
     result["sample_idx"] = sample_idx
     result["formula"] = getattr(batch, "formula", "")

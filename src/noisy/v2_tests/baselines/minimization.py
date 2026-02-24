@@ -205,6 +205,7 @@ def run_newton_raphson(
     atomsymbols: Optional[list] = None,
     scine_elements=None,
     purify_hessian: bool = False,
+    known_ts_coords: Optional[torch.Tensor] = None,
 ) -> Tuple[Dict[str, Any], list]:
     """Newton-Raphson optimization to find energy minimum with Trust Region.
 
@@ -228,6 +229,14 @@ def run_newton_raphson(
     if coords.dim() == 3 and coords.shape[0] == 1:
         coords = coords[0]
     coords = coords.reshape(-1, 3)
+
+    coords0_reshaped = coords.clone()
+
+    if known_ts_coords is not None:
+        known_ts_coords = known_ts_coords.detach().clone().to(torch.float32).to(coords.device)
+        if known_ts_coords.dim() == 3 and known_ts_coords.shape[0] == 1:
+            known_ts_coords = known_ts_coords[0]
+        known_ts_coords = known_ts_coords.reshape(-1, 3)
 
     trajectory = []
     
@@ -261,6 +270,16 @@ def run_newton_raphson(
         vib_pos = vib_evals[vib_evals > tr_threshold]
         eff_step = float(1.0 / vib_pos.min().item()) if vib_pos.numel() > 0 else float("nan")
 
+        if vib_evals.numel() > 0:
+            min_abs_vib = float(torch.abs(vib_evals).min().item())
+            max_abs_vib = float(torch.abs(vib_evals).max().item())
+            cond_num = max_abs_vib / min_abs_vib if min_abs_vib > 0 else float("inf")
+        else:
+            cond_num = float("nan")
+
+        disp_from_start_max = float((coords - coords0_reshaped).norm(dim=1).max().item())
+        dist_to_ts_max = float((coords - known_ts_coords).norm(dim=1).max().item()) if known_ts_coords is not None else None
+
         trajectory.append({
             "step": step,
             "energy": energy,
@@ -268,9 +287,12 @@ def run_newton_raphson(
             "n_neg_evals": n_neg,
             "min_vib_eval": float(vib_evals.min().item()) if vib_evals.numel() > 0 else float("nan"),
             "max_vib_eval": float(vib_evals.max().item()) if vib_evals.numel() > 0 else float("nan"),
+            "cond_num": cond_num,
             "eff_step_size": eff_step,
             "min_dist": _min_interatomic_distance(coords),
             "trust_radius": current_trust_radius,
+            "disp_from_start_max": disp_from_start_max,
+            "dist_to_ts_max": dist_to_ts_max,
         })
 
         # Convergence criteria: ONLY ZERO NEGATIVE EIGENVALUES
