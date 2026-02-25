@@ -4,6 +4,27 @@
 Methods:
 - fixed_step_gd: Fixed-step gradient descent (no line search)
 - newton_raphson: Newton-Raphson with Hessian-preconditioned steps
+
+New in v2:
+- --lm-mu         Levenberg-Marquardt damping coefficient (0 = hard filter, default)
+- --anneal-force-threshold
+                  Force norm at which two-phase annealing kicks in (0 = off)
+- --cleanup-nr-threshold
+                  NR threshold used in cleanup phase (0 = full pseudoinverse)
+- --cleanup-max-steps
+                  Maximum extra steps in cleanup phase (default 50)
+- --eps-conv      Relaxed convergence tolerance: accept min_vib_eval > -eps_conv
+                  (0 = strict n_neg == 0, original behaviour)
+- --log-spectrum-k
+                  Number of bottom vibrational eigenvalues to log per step (default 10)
+
+Cascade evaluation:
+  Every trajectory step now contains "n_neg_at_<threshold>" fields for
+  thresholds [0.0, 1e-4, 5e-4, 1e-3, 2e-3, 5e-3, 8e-3, 1e-2].
+  The summary JSON includes a "cascade_table" whose rows are keyed by
+  nr_threshold and columns by eval_threshold, with values = convergence rate.
+  This lets the analysis script build the 2D diagnostic plot without
+  needing to re-read the full trajectories.
 """
 
 from __future__ import annotations
@@ -13,7 +34,7 @@ import json
 import os
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import torch
@@ -21,7 +42,11 @@ from torch_geometric.loader import DataLoader
 
 from src.dependencies.common_utils import Transition1xDataset, UsePos, parse_starting_geometry
 from src.noisy.multi_mode_eckartmw import get_vib_evals_evecs, _atomic_nums_to_symbols
-from src.noisy.v2_tests.baselines.minimization import run_fixed_step_gd, run_newton_raphson
+from src.noisy.v2_tests.baselines.minimization import (
+    CASCADE_THRESHOLDS,
+    run_fixed_step_gd,
+    run_newton_raphson,
+)
 from src.parallel.scine_parallel import ParallelSCINEProcessor
 from src.parallel.utils import run_batch_parallel
 
@@ -62,6 +87,19 @@ def run_single_sample(
         except Exception:
             return None
 
+    def _cascade_neg_vib(coords_local: torch.Tensor) -> Optional[Dict[str, int]]:
+        """Count n_neg at every cascade threshold for the final geometry."""
+        try:
+            out = predict_fn(coords_local, atomic_nums, do_hessian=True, require_grad=False)
+            evals_vib, _, _ = get_vib_evals_evecs(out["hessian"], coords_local, all_atomsymbols)
+            result: Dict[str, int] = {}
+            for thr in CASCADE_THRESHOLDS:
+                result[f"n_neg_at_{thr}"] = int((evals_vib < -thr).sum().item())
+            result["min_vib_eval"] = float(evals_vib.min().item()) if evals_vib.numel() > 0 else float("nan")
+            return result
+        except Exception:
+            return None
+
     t0 = time.time()
     try:
         start_neg_vib = _count_neg_vib(coords)
@@ -79,6 +117,8 @@ def run_single_sample(
                 min_interatomic_dist=params["min_interatomic_dist"],
                 project_gradient_and_v=project_gradient_and_v,
                 purify_hessian=params.get("purify_hessian", False),
+                eps_conv=params.get("eps_conv", 0.0),
+                log_spectrum_k=params.get("log_spectrum_k", 10),
             )
         elif method == "newton_raphson":
             result, trajectory = run_newton_raphson(
@@ -94,14 +134,21 @@ def run_single_sample(
                 project_gradient_and_v=project_gradient_and_v,
                 purify_hessian=params.get("purify_hessian", False),
                 known_ts_coords=known_ts_coords,
+                lm_mu=params.get("lm_mu", 0.0),
+                anneal_force_threshold=params.get("anneal_force_threshold", 0.0),
+                cleanup_nr_threshold=params.get("cleanup_nr_threshold", 0.0),
+                cleanup_max_steps=params.get("cleanup_max_steps", 50),
+                eps_conv=params.get("eps_conv", 0.0),
+                log_spectrum_k=params.get("log_spectrum_k", 10),
             )
         else:
             raise ValueError(f"Unknown method: {method}")
 
         final_coords = result.get("final_coords")
-        final_neg_vib = _count_neg_vib(
+        final_cascade = _cascade_neg_vib(
             final_coords.to(coords.device) if isinstance(final_coords, torch.Tensor) else coords
         )
+        final_neg_vib = final_cascade.get("n_neg_at_0.0") if final_cascade else None
 
         if params.get("log_dir"):
             log_dir = Path(params["log_dir"])
@@ -115,6 +162,11 @@ def run_single_sample(
                         "method": method,
                         "start_neg_vib": start_neg_vib,
                         "final_neg_vib": final_neg_vib,
+                        "final_cascade": final_cascade,
+                        "cascade_at_convergence": result.get("cascade_at_convergence", {}),
+                        "bottom_spectrum_at_convergence": result.get("bottom_spectrum_at_convergence", []),
+                        "final_min_vib_eval": result.get("final_min_vib_eval"),
+                        "cleanup_steps_taken": result.get("cleanup_steps_taken", 0),
                         "trajectory": trajectory,
                     },
                     f,
@@ -130,6 +182,11 @@ def run_single_sample(
             "total_steps": result.get("total_steps", n_steps),
             "start_neg_vib": start_neg_vib,
             "final_neg_vib": final_neg_vib,
+            "final_cascade": final_cascade,
+            "final_min_vib_eval": result.get("final_min_vib_eval"),
+            "cascade_at_convergence": result.get("cascade_at_convergence", {}),
+            "bottom_spectrum_at_convergence": result.get("bottom_spectrum_at_convergence", []),
+            "cleanup_steps_taken": result.get("cleanup_steps_taken", 0),
             "wall_time": wall_time,
             "error": None,
         }
@@ -143,6 +200,11 @@ def run_single_sample(
             "total_steps": 0,
             "start_neg_vib": None,
             "final_neg_vib": None,
+            "final_cascade": None,
+            "final_min_vib_eval": None,
+            "cascade_at_convergence": {},
+            "bottom_spectrum_at_convergence": [],
+            "cleanup_steps_taken": 0,
             "wall_time": wall_time,
             "error": str(e),
         }
@@ -158,7 +220,7 @@ def scine_worker_sample(predict_fn, payload) -> Dict[str, Any]:
         noise_seed=noise_seed,
         sample_index=sample_idx,
     ).detach().to("cpu")
-    
+
     known_ts_coords = getattr(batch, "pos_transition", None)
     if known_ts_coords is None:
         known_ts_coords = getattr(batch, "pos", None)
@@ -179,6 +241,44 @@ def scine_worker_sample(predict_fn, payload) -> Dict[str, Any]:
     result["sample_idx"] = sample_idx
     result["formula"] = getattr(batch, "formula", "")
     return result
+
+
+def _build_cascade_table(results: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Build a 2D convergence-rate table over cascade evaluation thresholds.
+
+    For each eval_threshold in CASCADE_THRESHOLDS, a sample is "converged at
+    that eval threshold" if its final_cascade["n_neg_at_<thresh>"] == 0.
+
+    This lets the analysis script answer: "If we relaxed the evaluation to
+    accept eigenvalues down to -<thresh>, what would our convergence rate be?"
+    WITHOUT changing the optimizer at all. The optimizer's nr_threshold is
+    the row key (passed in as a param label); columns are eval thresholds.
+
+    Returns a dict:
+      {
+        "eval_thresholds": [0.0, 1e-4, ...],
+        "n_samples": <int>,
+        "n_converged_at_thr": {"0.0": <int>, "0.0001": <int>, ...},
+        "rate_at_thr":        {"0.0": <float>, ...},
+      }
+    """
+    n = len(results)
+    n_converged_at: Dict[str, int] = {}
+    rate_at: Dict[str, float] = {}
+    for thr in CASCADE_THRESHOLDS:
+        key = f"n_neg_at_{thr}"
+        count = sum(
+            1 for r in results
+            if r.get("final_cascade") and r["final_cascade"].get(key, 1) == 0
+        )
+        n_converged_at[str(thr)] = count
+        rate_at[str(thr)] = count / max(n, 1)
+    return {
+        "eval_thresholds": CASCADE_THRESHOLDS,
+        "n_samples": n,
+        "n_converged_at_thr": n_converged_at,
+        "rate_at_thr": rate_at,
+    }
 
 
 def run_batch(
@@ -206,6 +306,8 @@ def run_batch(
     steps_when_success = [r["converged_step"] for r in results if r.get("converged_step") is not None]
     wall_times = [r["wall_time"] for r in results]
 
+    cascade_table = _build_cascade_table(results)
+
     return {
         "n_samples": n_samples,
         "n_converged": n_converged,
@@ -214,6 +316,7 @@ def run_batch(
         "mean_steps_when_converged": float(np.mean(steps_when_success)) if steps_when_success else float("nan"),
         "mean_wall_time": float(np.mean(wall_times)) if wall_times else float("nan"),
         "total_wall_time": float(sum(wall_times)),
+        "cascade_table": cascade_table,
         "results": results,
     }
 
@@ -246,8 +349,41 @@ def main() -> None:
     parser.add_argument("--min-interatomic-dist", type=float, default=0.5)
     parser.add_argument(
         "--nr-threshold", type=float, default=8e-3,
-        help="Eigenvalue cutoff for NR step filtering (|λ| < threshold → excluded from pseudoinverse). "
-             "Evaluation/convergence always uses all eigenvalues.",
+        help="Eigenvalue cutoff for NR step filtering (|λ| < threshold → excluded from "
+             "pseudoinverse). Evaluation/convergence uses eps-conv, not this threshold.",
+    )
+
+    # --- New v2 flags ---
+    parser.add_argument(
+        "--lm-mu", type=float, default=0.0,
+        help="Levenberg-Marquardt damping coefficient μ. 0 (default) = hard filter mode. "
+             ">0 = LM mode: step_i = (g·v_i)*|λ_i|/(λ_i²+μ²). "
+             "Sweep this with the same grid as --nr-threshold.",
+    )
+    parser.add_argument(
+        "--anneal-force-threshold", type=float, default=0.0,
+        help="Two-phase annealing: once force_norm < this value, switch from nr-threshold "
+             "to cleanup-nr-threshold for cleanup-max-steps steps. 0 = off (default).",
+    )
+    parser.add_argument(
+        "--cleanup-nr-threshold", type=float, default=0.0,
+        help="NR threshold used in the cleanup phase of two-phase annealing. "
+             "0 (default) = full pseudoinverse (no filtering). "
+             "Only used when --anneal-force-threshold > 0.",
+    )
+    parser.add_argument(
+        "--cleanup-max-steps", type=int, default=50,
+        help="Maximum extra steps in cleanup phase (default 50).",
+    )
+    parser.add_argument(
+        "--eps-conv", type=float, default=0.0,
+        help="Relaxed convergence tolerance. Accept evals_vib.min() > -eps_conv. "
+             "0 (default) = strict n_neg==0. "
+             "E.g. 1e-4 accepts geometries with all eigenvalues > -0.0001.",
+    )
+    parser.add_argument(
+        "--log-spectrum-k", type=int, default=10,
+        help="Number of bottom vibrational eigenvalues to log per step (default 10, 0 = none).",
     )
 
     # Gradient descent parameters
@@ -284,6 +420,13 @@ def main() -> None:
         "project_gradient_and_v": args.project_gradient_and_v,
         "purify_hessian": args.purify_hessian,
         "log_dir": str(diag_dir),
+        # v2 additions
+        "lm_mu": args.lm_mu,
+        "anneal_force_threshold": args.anneal_force_threshold,
+        "cleanup_nr_threshold": args.cleanup_nr_threshold,
+        "cleanup_max_steps": args.cleanup_max_steps,
+        "eps_conv": args.eps_conv,
+        "log_spectrum_k": args.log_spectrum_k,
     }
 
     processor = ParallelSCINEProcessor(
@@ -330,6 +473,20 @@ def main() -> None:
                 indent=2,
             )
         print(f"Results saved to: {results_path}")
+
+        # Print cascade table to stdout for quick inspection
+        ct = metrics.get("cascade_table", {})
+        print("\n--- Cascade Evaluation Table ---")
+        print(f"{'eval_threshold':<20} {'n_converged':<15} {'rate':<10}")
+        print("-" * 46)
+        for thr in CASCADE_THRESHOLDS:
+            key = str(thr)
+            n_conv = ct.get("n_converged_at_thr", {}).get(key, "?")
+            rate = ct.get("rate_at_thr", {}).get(key, float("nan"))
+            rate_str = f"{rate:.3f}" if isinstance(rate, float) else str(rate)
+            print(f"  {thr:<18} {n_conv:<15} {rate_str}")
+        print("")
+
     finally:
         processor.close()
 

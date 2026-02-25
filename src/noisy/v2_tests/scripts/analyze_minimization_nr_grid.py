@@ -2,7 +2,18 @@
 """Analyze Newton-Raphson minimization grid-search outputs.
 
 Expected directory layout:
-  <grid_dir>/mad*_tr*_pg*_ph*/minimization_newton_raphson_*_results.json
+  <grid_dir>/mad*_nrt*_pg*_ph*/minimization_newton_raphson_*_results.json
+
+(Legacy layout mad*_tr*_pg*_ph* is also accepted for backwards compatibility.)
+
+New in v2:
+  - Cascade evaluation table: rows = nr_threshold (optimizer param), columns =
+    eval_threshold (how strictly we count n_neg). Values = convergence rate.
+    Diagnoses whether failures are optimizer failures or evaluation strictness.
+  - LM damping analysis: when --lm-mu > 0 the folder tag contains lmmu* instead
+    of nrt*; detected automatically.
+  - Two-phase / eps-conv columns reported from the stored cascade_table in each
+    results JSON (no need to re-read trajectories).
 """
 
 from __future__ import annotations
@@ -13,15 +24,32 @@ import json
 import math
 import re
 from collections import defaultdict
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 
-COMBO_RE = re.compile(
+# ---------------------------------------------------------------------------
+# Folder-name regex — accept both legacy (tr) and new (nrt / lmmu) tags
+# ---------------------------------------------------------------------------
+# New format: mad<v>_nrt<v>_pg<bool>_ph<bool>
+# LM format:  mad<v>_lmmu<v>_pg<bool>_ph<bool>
+# Legacy:     mad<v>_tr<v>_pg<bool>_ph<bool>
+COMBO_RE_NRT = re.compile(
+    r"mad(?P<mad>[^_]+)_nrt(?P<nrt>[^_]+)_pg(?P<pg>true|false)_ph(?P<ph>true|false)"
+    r"(?:_ec(?P<ec>[^_]+))?(?:_af(?P<af>[^_]+))?(?:_ct(?P<ct>[^_]+))?$"
+)
+COMBO_RE_LM = re.compile(
+    r"mad(?P<mad>[^_]+)_lmmu(?P<lmmu>[^_]+)_pg(?P<pg>true|false)_ph(?P<ph>true|false)"
+    r"(?:_ec(?P<ec>[^_]+))?$"
+)
+COMBO_RE_LEGACY = re.compile(
     r"mad(?P<mad>[^_]+)_tr(?P<tr>[^_]+)_pg(?P<pg>true|false)_ph(?P<ph>true|false)$"
 )
+
+# Cascade thresholds must match CASCADE_THRESHOLDS in minimization.py
+CASCADE_THRESHOLDS: List[float] = [0.0, 1e-4, 5e-4, 1e-3, 2e-3, 5e-3, 8e-3, 1e-2]
 
 
 @dataclass
@@ -29,7 +57,10 @@ class ComboRecord:
     tag: str
     path: str
     max_atom_disp: float
-    tr_threshold: float
+    nr_threshold: float          # 0.0 for LM-damping runs
+    lm_mu: float                 # 0.0 for hard-filter runs
+    eps_conv: float              # 0.0 = strict
+    anneal_force_threshold: float
     project_gradient_and_v: bool
     purify_hessian: bool
     n_samples: int
@@ -39,8 +70,14 @@ class ComboRecord:
     mean_steps_when_converged: float
     mean_wall_time: float
     total_wall_time: float
-    results: List[Dict[str, Any]]
+    # cascade_table from the results JSON (may be empty for old runs)
+    cascade_table: Dict[str, Any] = field(default_factory=dict)
+    results: List[Dict[str, Any]] = field(default_factory=list)
 
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 def _safe_float(value: Any, default: float = float("nan")) -> float:
     try:
@@ -77,6 +114,58 @@ def _same_sample_outcomes(a: ComboRecord, b: ComboRecord) -> bool:
     return _map(a.results) == _map(b.results)
 
 
+# ---------------------------------------------------------------------------
+# Parsing folder names
+# ---------------------------------------------------------------------------
+
+def _parse_combo_tag(combo_tag: str) -> Optional[Dict[str, Any]]:
+    """Parse a combo folder name into a dict of hyperparameter values.
+
+    Returns None if the tag can't be matched.
+    """
+    m = COMBO_RE_NRT.fullmatch(combo_tag)
+    if m:
+        return {
+            "mad": _safe_float(m.group("mad")),
+            "nr_threshold": _safe_float(m.group("nrt")),
+            "lm_mu": 0.0,
+            "eps_conv": _safe_float(m.group("ec") or "0.0", 0.0),
+            "anneal_force_threshold": _safe_float(m.group("af") or "0.0", 0.0),
+            "project_gradient_and_v": m.group("pg") == "true",
+            "purify_hessian": m.group("ph") == "true",
+        }
+
+    m = COMBO_RE_LM.fullmatch(combo_tag)
+    if m:
+        return {
+            "mad": _safe_float(m.group("mad")),
+            "nr_threshold": 0.0,
+            "lm_mu": _safe_float(m.group("lmmu")),
+            "eps_conv": _safe_float(m.group("ec") or "0.0", 0.0),
+            "anneal_force_threshold": 0.0,
+            "project_gradient_and_v": m.group("pg") == "true",
+            "purify_hessian": m.group("ph") == "true",
+        }
+
+    m = COMBO_RE_LEGACY.fullmatch(combo_tag)
+    if m:
+        return {
+            "mad": _safe_float(m.group("mad")),
+            "nr_threshold": _safe_float(m.group("tr")),
+            "lm_mu": 0.0,
+            "eps_conv": 0.0,
+            "anneal_force_threshold": 0.0,
+            "project_gradient_and_v": m.group("pg") == "true",
+            "purify_hessian": m.group("ph") == "true",
+        }
+
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Loading
+# ---------------------------------------------------------------------------
+
 def load_records(grid_dir: Path, result_glob: str) -> List[ComboRecord]:
     records: List[ComboRecord] = []
 
@@ -85,12 +174,11 @@ def load_records(grid_dir: Path, result_glob: str) -> List[ComboRecord]:
             continue
 
         combo_tag = result_path.parent.name
-        match = COMBO_RE.fullmatch(combo_tag)
-        if not match:
-            raise ValueError(
-                f"Cannot parse combo tag from folder name: {combo_tag} "
-                f"(path: {result_path})"
-            )
+        parsed = _parse_combo_tag(combo_tag)
+        if parsed is None:
+            # Try treating the whole tag as unparseable but include with defaults
+            print(f"  [warn] Cannot parse combo tag: {combo_tag} — skipping")
+            continue
 
         with open(result_path) as f:
             payload = json.load(f)
@@ -100,10 +188,13 @@ def load_records(grid_dir: Path, result_glob: str) -> List[ComboRecord]:
             ComboRecord(
                 tag=combo_tag,
                 path=str(result_path),
-                max_atom_disp=_safe_float(match.group("mad")),
-                tr_threshold=_safe_float(match.group("tr")),
-                project_gradient_and_v=(match.group("pg") == "true"),
-                purify_hessian=(match.group("ph") == "true"),
+                max_atom_disp=parsed["mad"],
+                nr_threshold=parsed["nr_threshold"],
+                lm_mu=parsed["lm_mu"],
+                eps_conv=parsed["eps_conv"],
+                anneal_force_threshold=parsed["anneal_force_threshold"],
+                project_gradient_and_v=parsed["project_gradient_and_v"],
+                purify_hessian=parsed["purify_hessian"],
                 n_samples=int(metrics.get("n_samples", 0)),
                 n_converged=int(metrics.get("n_converged", 0)),
                 n_errors=int(metrics.get("n_errors", 0)),
@@ -111,12 +202,17 @@ def load_records(grid_dir: Path, result_glob: str) -> List[ComboRecord]:
                 mean_steps_when_converged=_safe_float(metrics.get("mean_steps_when_converged")),
                 mean_wall_time=_safe_float(metrics.get("mean_wall_time")),
                 total_wall_time=_safe_float(metrics.get("total_wall_time")),
+                cascade_table=metrics.get("cascade_table", {}),
                 results=list(metrics.get("results", [])),
             )
         )
 
     return records
 
+
+# ---------------------------------------------------------------------------
+# Ranking and main-effect summaries  (unchanged from v1)
+# ---------------------------------------------------------------------------
 
 def rank_records(records: List[ComboRecord]) -> List[ComboRecord]:
     def _key(r: ComboRecord) -> Tuple[float, int, float, float]:
@@ -147,20 +243,6 @@ def summarize_main_effect(records: List[ComboRecord], attr: str) -> List[Dict[st
             }
         )
     return rows
-
-
-def summarize_mad_tr_interaction(records: List[ComboRecord]) -> List[Dict[str, Any]]:
-    mads = sorted({r.max_atom_disp for r in records})
-    trs = sorted({r.tr_threshold for r in records})
-
-    table: List[Dict[str, Any]] = []
-    for mad in mads:
-        row: Dict[str, Any] = {"max_atom_disp": mad}
-        for tr in trs:
-            bucket = [r for r in records if r.max_atom_disp == mad and r.tr_threshold == tr]
-            row[f"tr_{tr:g}"] = _mean(r.convergence_rate for r in bucket)
-        table.append(row)
-    return table
 
 
 def summarize_sample_hardness(records: List[ComboRecord]) -> List[Dict[str, Any]]:
@@ -204,77 +286,132 @@ def summarize_sample_hardness(records: List[ComboRecord]) -> List[Dict[str, Any]
     return summary
 
 
-def summarize_toggle_effects(records: List[ComboRecord]) -> Dict[str, Any]:
-    by_key: Dict[Tuple[float, float, bool, bool], ComboRecord] = {}
-    for r in records:
-        by_key[(r.max_atom_disp, r.tr_threshold, r.project_gradient_and_v, r.purify_hessian)] = r
+# ---------------------------------------------------------------------------
+# NEW: cascade analysis — the 2D diagnostic table
+# ---------------------------------------------------------------------------
 
-    ph_total = 0
-    ph_identical = 0
-    for mad in sorted({r.max_atom_disp for r in records}):
-        for tr in sorted({r.tr_threshold for r in records}):
-            for pg in (False, True):
-                a = by_key.get((mad, tr, pg, False))
-                b = by_key.get((mad, tr, pg, True))
-                if a is None or b is None:
-                    continue
-                ph_total += 1
-                if _same_sample_outcomes(a, b):
-                    ph_identical += 1
+def build_cascade_cross_table(records: List[ComboRecord]) -> Dict[str, Any]:
+    """Build a 2D table: rows = nr_threshold (optimizer filter), columns =
+    eval_threshold (how strictly we count n_neg at the final geometry).
+    Values = convergence rate.
 
-    pg_deltas: List[Dict[str, Any]] = []
-    for mad in sorted({r.max_atom_disp for r in records}):
-        for tr in sorted({r.tr_threshold for r in records}):
-            for ph in (False, True):
-                off = by_key.get((mad, tr, False, ph))
-                on = by_key.get((mad, tr, True, ph))
-                if off is None or on is None:
-                    continue
-                off_steps = off.mean_steps_when_converged
-                on_steps = on.mean_steps_when_converged
-                delta_steps = (
-                    on_steps - off_steps
-                    if math.isfinite(off_steps) and math.isfinite(on_steps)
-                    else float("nan")
-                )
-                pg_deltas.append(
-                    {
-                        "max_atom_disp": mad,
-                        "tr_threshold": tr,
-                        "purify_hessian": ph,
-                        "delta_convergence_rate_pg_true_minus_false": (
-                            on.convergence_rate - off.convergence_rate
-                        ),
-                        "delta_mean_steps_pg_true_minus_false": delta_steps,
-                    }
-                )
+    Interpretation:
+      - If rate@eval_thr=0.0 is low but rate@eval_thr=2e-3 is high:
+        the OPTIMIZER IS WORKING. The gap is false rejection — tiny residual
+        negative eigenvalues at evaluation. A relaxed eps_conv would recover them.
+      - If rate is low at ALL eval thresholds:
+        the optimizer genuinely failed to find a stationary-point geometry.
+
+    The table is built from the "cascade_table" field in each results JSON
+    (populated by run_minimization_parallel.py v2). Old runs without this field
+    are silently skipped.
+    """
+    # Collect unique nr_threshold values (rows) and eval thresholds (cols)
+    nrt_values = sorted({r.nr_threshold for r in records if r.nr_threshold > 0})
+    lm_mu_values = sorted({r.lm_mu for r in records if r.lm_mu > 0})
+
+    # ---- Hard-filter runs (grouped by nr_threshold) ----
+    rows_nrt: List[Dict[str, Any]] = []
+    for nrt in nrt_values:
+        bucket = [r for r in records if math.isclose(r.nr_threshold, nrt, rel_tol=1e-6)
+                  and r.lm_mu == 0.0 and r.cascade_table]
+        if not bucket:
+            continue
+        row: Dict[str, Any] = {"optimizer_mode": f"hard_filter", "nr_threshold": nrt, "lm_mu": 0.0}
+        for thr in CASCADE_THRESHOLDS:
+            rates = []
+            for rec in bucket:
+                ct = rec.cascade_table
+                rate = ct.get("rate_at_thr", {}).get(str(thr))
+                if rate is not None:
+                    rates.append(float(rate))
+            row[f"eval_{thr}"] = _mean(rates)
+        row["optimizer_strict_rate"] = _mean(r.convergence_rate for r in bucket)
+        rows_nrt.append(row)
+
+    # ---- LM-damping runs (grouped by lm_mu) ----
+    rows_lm: List[Dict[str, Any]] = []
+    for mu in lm_mu_values:
+        bucket = [r for r in records if math.isclose(r.lm_mu, mu, rel_tol=1e-6)
+                  and r.cascade_table]
+        if not bucket:
+            continue
+        row = {"optimizer_mode": "lm_damping", "nr_threshold": 0.0, "lm_mu": mu}
+        for thr in CASCADE_THRESHOLDS:
+            rates = []
+            for rec in bucket:
+                ct = rec.cascade_table
+                rate = ct.get("rate_at_thr", {}).get(str(thr))
+                if rate is not None:
+                    rates.append(float(rate))
+            row[f"eval_{thr}"] = _mean(rates)
+        row["optimizer_strict_rate"] = _mean(r.convergence_rate for r in bucket)
+        rows_lm.append(row)
+
+    all_rows = rows_nrt + rows_lm
 
     return {
-        "purify_hessian_identical_pairs": ph_identical,
-        "purify_hessian_total_pairs": ph_total,
-        "project_gradient_deltas": pg_deltas,
+        "eval_thresholds": CASCADE_THRESHOLDS,
+        "nr_thresholds_tested": nrt_values,
+        "lm_mu_tested": lm_mu_values,
+        "table": all_rows,
     }
 
 
-def write_csv(path: Path, rows: List[Dict[str, Any]], fieldnames: List[str]) -> None:
-    with open(path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        for row in rows:
-            writer.writerow(row)
+def print_cascade_table(cross: Dict[str, Any]) -> None:
+    table = cross.get("table", [])
+    thresholds = cross.get("eval_thresholds", CASCADE_THRESHOLDS)
+    if not table:
+        print("  (no cascade data — need results from run_minimization_parallel.py v2)")
+        return
 
+    # Header
+    col_w = 10
+    opt_w = 32
+    header = f"{'optimizer':<{opt_w}}"
+    for thr in thresholds:
+        header += f"{'eval≥-'+str(thr):>{col_w}}"
+    header += f"{'strict':>{col_w}}"
+    print(header)
+    print("-" * len(header))
+
+    for row in table:
+        mode = row.get("optimizer_mode", "?")
+        nrt = row.get("nr_threshold", 0.0)
+        mu = row.get("lm_mu", 0.0)
+        if mode == "lm_damping":
+            label = f"LM  μ={mu:g}"
+        else:
+            label = f"HF  nrt={nrt:g}"
+        line = f"{label:<{opt_w}}"
+        for thr in thresholds:
+            v = row.get(f"eval_{thr}", float("nan"))
+            line += f"{v:>{col_w}.3f}" if math.isfinite(v) else f"{'nan':>{col_w}}"
+        v_strict = row.get("optimizer_strict_rate", float("nan"))
+        line += f"{v_strict:>{col_w}.3f}" if math.isfinite(v_strict) else f"{'nan':>{col_w}}"
+        print(line)
+
+    print("")
+    print("Columns = eval threshold (how strict we count n_neg at final geometry).")
+    print("'strict' = optimizer's own convergence flag (n_neg==0 or eps_conv).")
+    print("Gap between eval_0.0 and eval_2e-3 → false-rejection problem.")
+    print("Flat across all eval thresholds → optimizer genuinely failing.")
+
+
+# ---------------------------------------------------------------------------
+# Printing the main report
+# ---------------------------------------------------------------------------
 
 def print_report(
     records: List[ComboRecord],
     ranked: List[ComboRecord],
     top_k: int,
     main_effects: Dict[str, List[Dict[str, Any]]],
-    mad_tr_table: List[Dict[str, Any]],
     sample_hardness: List[Dict[str, Any]],
-    toggle_effects: Dict[str, Any],
+    cross_table: Dict[str, Any],
 ) -> None:
     print(f"Loaded {len(records)} configurations.")
-    print("Ranking metric: Convergence Rate (desc) -> Total Converged (desc) -> Mean Steps (asc) -> Mean Wall Time (asc)")
+    print("Ranking metric: Convergence Rate (desc) → Total Converged (desc) → Mean Steps (asc) → Wall Time (asc)")
     print("")
 
     if ranked:
@@ -288,24 +425,27 @@ def print_report(
         print("")
 
     actual_top_k = min(top_k, len(ranked))
-    print("=========================================================")
+    print("=" * 65)
     print(f"🥇 Top {actual_top_k} Configurations (Best First):")
-    print("=========================================================")
+    print("=" * 65)
     for row in ranked[:actual_top_k]:
         steps = row.mean_steps_when_converged
         steps_text = f"{steps:.1f}" if math.isfinite(steps) else "nan"
+        lm_info = f" lm_mu={row.lm_mu:g}" if row.lm_mu > 0 else ""
+        ec_info = f" eps_conv={row.eps_conv:g}" if row.eps_conv > 0 else ""
         print(
             f"  {row.tag}: conv={row.n_converged}/{row.n_samples} "
             f"({row.convergence_rate:.2f}), steps={steps_text}, "
             f"wall={row.mean_wall_time:.2f}s, errors={row.n_errors}"
+            f"{lm_info}{ec_info}"
         )
     print("")
 
     if len(ranked) > top_k:
         actual_bottom_k = min(top_k, len(ranked) - top_k)
-        print("=========================================================")
+        print("=" * 65)
         print(f"💀 Bottom {actual_bottom_k} Configurations (Worst First):")
-        print("=========================================================")
+        print("=" * 65)
         for row in reversed(ranked[-actual_bottom_k:]):
             steps = row.mean_steps_when_converged
             steps_text = f"{steps:.1f}" if math.isfinite(steps) else "nan"
@@ -328,17 +468,9 @@ def print_report(
             )
         print("")
 
-    print("Interaction: mean convergence rate by max_atom_disp x tr_threshold")
-    for row in mad_tr_table:
-        parts = [f"mad={row['max_atom_disp']:g}"]
-        for key in sorted(k for k in row if k.startswith("tr_")):
-            parts.append(f"{key.replace('tr_', 'tr=')}:{row[key]:.2f}")
-        print("  " + ", ".join(parts))
-    print("")
-
-    print("=========================================================")
+    print("=" * 65)
     print("Hardest samples (lowest convergence across configs):")
-    print("=========================================================")
+    print("=" * 65)
     for row in sample_hardness[: min(10, len(sample_hardness))]:
         print(
             f"  sample_{row['sample_idx']:03d}: {row['n_converged']}/{row['n_total']} "
@@ -347,13 +479,42 @@ def print_report(
         )
     print("")
 
-    ph_identical = toggle_effects["purify_hessian_identical_pairs"]
-    ph_total = toggle_effects["purify_hessian_total_pairs"]
-    print(
-        "Purify-Hessian toggle identical sample outcomes "
-        f"(converged + converged_step): {ph_identical}/{ph_total} pairs"
-    )
+    print("=" * 65)
+    print("📊 Cascade Evaluation Table (optimizer filter × eval threshold)")
+    print("=" * 65)
+    print_cascade_table(cross_table)
 
+
+# ---------------------------------------------------------------------------
+# CSV writers
+# ---------------------------------------------------------------------------
+
+def write_csv(path: Path, rows: List[Dict[str, Any]], fieldnames: List[str]) -> None:
+    with open(path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(row)
+
+
+def write_cascade_csv(path: Path, cross: Dict[str, Any]) -> None:
+    table = cross.get("table", [])
+    if not table:
+        return
+    thresholds = cross.get("eval_thresholds", CASCADE_THRESHOLDS)
+    fieldnames = ["optimizer_mode", "nr_threshold", "lm_mu"]
+    fieldnames += [f"eval_{t}" for t in thresholds]
+    fieldnames += ["optimizer_strict_rate"]
+    with open(path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+        writer.writeheader()
+        for row in table:
+            writer.writerow(row)
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Analyze minimization NR grid-search results")
@@ -361,7 +522,7 @@ def main() -> None:
         "--grid-dir",
         type=str,
         required=True,
-        help="Grid directory containing mad*_tr*_pg*_ph* subdirectories",
+        help="Grid directory containing combo subdirectories",
     )
     parser.add_argument(
         "--result-glob",
@@ -396,22 +557,25 @@ def main() -> None:
     ranked = rank_records(records)
     main_effects = {
         "max_atom_disp": summarize_main_effect(records, "max_atom_disp"),
-        "tr_threshold": summarize_main_effect(records, "tr_threshold"),
+        "nr_threshold": summarize_main_effect(records, "nr_threshold"),
+        "lm_mu": summarize_main_effect(records, "lm_mu"),
+        "eps_conv": summarize_main_effect(records, "eps_conv"),
         "project_gradient_and_v": summarize_main_effect(records, "project_gradient_and_v"),
         "purify_hessian": summarize_main_effect(records, "purify_hessian"),
     }
-    mad_tr_table = summarize_mad_tr_interaction(records)
+    # Drop main effects that are constant (only one unique value) to reduce noise
+    main_effects = {k: v for k, v in main_effects.items() if len(v) > 1}
+
     sample_hardness = summarize_sample_hardness(records)
-    toggle_effects = summarize_toggle_effects(records)
+    cross_table = build_cascade_cross_table(records)
 
     print_report(
         records=records,
         ranked=ranked,
         top_k=args.top_k,
         main_effects=main_effects,
-        mad_tr_table=mad_tr_table,
         sample_hardness=sample_hardness,
-        toggle_effects=toggle_effects,
+        cross_table=cross_table,
     )
 
     if args.output_dir:
@@ -425,9 +589,8 @@ def main() -> None:
             "n_configs": len(records),
             "best_config": asdict(ranked[0]),
             "main_effects": main_effects,
-            "mad_tr_interaction": mad_tr_table,
             "sample_hardness": sample_hardness,
-            "toggle_effects": toggle_effects,
+            "cascade_cross_table": cross_table,
             "ranked_configs": rows_for_json,
         }
         with open(out_dir / "nr_grid_summary.json", "w") as f:
@@ -438,7 +601,10 @@ def main() -> None:
                 "rank": idx + 1,
                 "tag": r.tag,
                 "max_atom_disp": r.max_atom_disp,
-                "tr_threshold": r.tr_threshold,
+                "nr_threshold": r.nr_threshold,
+                "lm_mu": r.lm_mu,
+                "eps_conv": r.eps_conv,
+                "anneal_force_threshold": r.anneal_force_threshold,
                 "project_gradient_and_v": r.project_gradient_and_v,
                 "purify_hessian": r.purify_hessian,
                 "n_samples": r.n_samples,
@@ -456,36 +622,28 @@ def main() -> None:
             out_dir / "nr_grid_ranked.csv",
             ranked_rows,
             [
-                "rank",
-                "tag",
-                "max_atom_disp",
-                "tr_threshold",
-                "project_gradient_and_v",
-                "purify_hessian",
-                "n_samples",
-                "n_converged",
-                "n_errors",
-                "convergence_rate",
-                "mean_steps_when_converged",
-                "mean_wall_time",
-                "total_wall_time",
-                "path",
+                "rank", "tag", "max_atom_disp", "nr_threshold", "lm_mu", "eps_conv",
+                "anneal_force_threshold", "project_gradient_and_v", "purify_hessian",
+                "n_samples", "n_converged", "n_errors", "convergence_rate",
+                "mean_steps_when_converged", "mean_wall_time", "total_wall_time", "path",
             ],
         )
         write_csv(
             out_dir / "nr_grid_sample_hardness.csv",
             sample_hardness,
             [
-                "sample_idx",
-                "n_converged",
-                "n_total",
-                "convergence_rate",
-                "best_converged_step",
-                "best_combo_tag",
+                "sample_idx", "n_converged", "n_total", "convergence_rate",
+                "best_converged_step", "best_combo_tag",
             ],
         )
+        write_cascade_csv(out_dir / "nr_grid_cascade_table.csv", cross_table)
+
         print("")
         print(f"Wrote analysis artifacts to: {out_dir}")
+        print("  nr_grid_summary.json         — full summary (JSON)")
+        print("  nr_grid_ranked.csv           — ranked configurations")
+        print("  nr_grid_sample_hardness.csv  — per-sample convergence rates")
+        print("  nr_grid_cascade_table.csv    — 2D cascade diagnostic table")
 
 
 if __name__ == "__main__":

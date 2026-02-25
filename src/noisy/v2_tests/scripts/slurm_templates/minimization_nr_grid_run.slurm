@@ -10,31 +10,65 @@
 #SBATCH --account=rrg-aspuru
 
 # =============================================================================
-# Newton-Raphson Minimization - Grid Search
+# Newton-Raphson Minimization — Algorithmic Improvements Grid Search (v2)
 # =============================================================================
 #
 # x_{k+1} = x_k - H(x_k)^{-1} * grad E(x_k)
 #
-# Full Hessian is computed at every step. The NR step and convergence check
-# both use the reduced vibrational basis (exact 3N-k dimensional subspace via
-# Eckart projection), so TR zero-modes are removed by construction — no
-# threshold filtering, no blind zone for soft negative modes.
+# The Hessian pseudoinverse is computed in the reduced vibrational basis
+# (exact 3N-k dimensional subspace via Eckart projection), so TR zero-modes
+# are removed by construction.
 #
-# Most impactful hyperparameters for NR:
-#   1. max_atom_disp  - Trust radius; caps the NR step per atom.
-#                       Too small = slow convergence, too large = overshoot.
-#   2. project_gradient_and_v - Eckart-project gradient before NR step.
-#   3. purify_hessian - Enforce translational sum rules on Hessian.
+# ── What changed in v2 ────────────────────────────────────────────────────
 #
-# NOTE: --tr-threshold is accepted by the CLI for legacy compatibility but is
-# NOT forwarded to the algorithm. TR mode removal is handled by construction
-# through the reduced basis; no threshold is needed or used.
+# 1. CASCADING EVALUATION (mandatory, always on)
+#    Every trajectory step now stores n_neg_at_<threshold> for
+#    thresholds [0.0, 1e-4, 5e-4, 1e-3, 2e-3, 5e-3, 8e-3, 1e-2].
+#    The analysis script builds a 2D table (optimizer_threshold × eval_threshold)
+#    to separate "optimizer failed" from "evaluation too strict".
+#    This is PURE DIAGNOSTICS — it never changes the step or convergence logic.
 #
-# Refinement grid (based on previous 80-combo sweep):
-#   - Best region was around max_atom_disp=1.3.
-#   - purify_hessian produced identical outcomes across all matched pairs.
+# 2. LEVENBERG-MARQUARDT DAMPING (new grid axis: LM_MU_GRID)
+#    step_i = (g·v_i) * |λ_i| / (λ_i² + μ²)
+#    |λ|>>μ → 1/|λ| (pure Newton); |λ|<<μ → 0 (flat modes vanish smoothly).
+#    No hard cutoff, no discontinuity when modes drift across the threshold.
+#    Run with the same μ values as nr_threshold to make the cascade comparison
+#    directly interpretable.
+#    Folder tag: mad<v>_lmmu<v>_pg<bool>_ph<bool>
 #
-# Grid: 1 (mad) x 4 (nr_threshold) x 1 (project_grad) x 1 (purify) = 4 combinations
+# 3. TWO-PHASE THRESHOLD ANNEALING (new grid axis: ANNEAL_GRID)
+#    Phase 1: hard-filter NR with nr_threshold (bulk, proven safe at 8e-3).
+#    Phase 2: once force_norm < anneal_force_threshold, switch to
+#             cleanup_nr_threshold (default 0 = full pseudoinverse) for
+#             cleanup_max_steps steps. Near a stationary point the Hessian is
+#             better-conditioned, so lower thresholds won't cause explosion.
+#    Folder tag: mad<v>_nrt<v>_pg<bool>_ph<bool>_af<anneal_force>
+#
+# 4. RELAXED CONVERGENCE CRITERION (new axis: EPS_CONV_GRID)
+#    Accept evals_vib.min() > -eps_conv instead of n_neg == 0.
+#    Directly addresses false rejection when λ_min ≈ -0.001.
+#    eps_conv = 0 reproduces the old strict behaviour exactly.
+#    Folder tag: mad<v>_nrt<v>_pg<bool>_ph<bool>_ec<eps_conv>
+#
+# 5. FULL SPECTRUM LOGGING (always on, --log-spectrum-k 10)
+#    Bottom-10 vibrational eigenvalues stored in each trajectory step.
+#    Invaluable post-hoc: know exactly what's happening at failure/convergence.
+#
+# ── Grid layout ───────────────────────────────────────────────────────────
+#
+# Phase A — Cascade baseline (replays proven best config, adds cascade data):
+#   1 (mad) × 4 (nrt) × 1 (pg) × 1 (ph)  = 4 combos
+#
+# Phase B — Relaxed convergence (eps_conv sweep, best nrt=8e-3):
+#   1 (mad) × 1 (nrt=8e-3) × 1 (pg) × 1 (ph) × 5 (eps_conv) = 5 combos
+#
+# Phase C — Two-phase annealing (anneal_force sweep, best nrt=8e-3):
+#   1 (mad) × 1 (nrt=8e-3) × 1 (pg) × 1 (ph) × 4 (anneal_force) = 4 combos
+#
+# Phase D — LM damping (μ sweep):
+#   1 (mad) × 4 (lm_mu) × 1 (pg) × 1 (ph)  = 4 combos
+#
+# Total: 4 + 5 + 4 + 4 = 17 combinations
 # =============================================================================
 
 set -e
@@ -65,7 +99,7 @@ export FONTCONFIG_FILE=/etc/fonts/fonts.conf
 mkdir -p "$TMPDIR" "$XDG_CACHE_HOME" "$MPLCONFIGDIR"
 
 # Thread configuration
-TOTAL_CPUS="${SLURM_CPUS_ON_NODE:-32}"
+TOTAL_CPUS="${SLURM_CPUS_ON_NODE:-192}"
 export OMP_NUM_THREADS="$TOTAL_CPUS"
 export OPENBLAS_NUM_THREADS="$TOTAL_CPUS"
 export MKL_NUM_THREADS="$TOTAL_CPUS"
@@ -89,150 +123,200 @@ NOISE_SEED="${NOISE_SEED:-42}"
 SCINE_FUNCTIONAL="${SCINE_FUNCTIONAL:-DFTB0}"
 FORCE_CONVERGED="${FORCE_CONVERGED:-1e-4}"
 MIN_INTERATOMIC_DIST="${MIN_INTERATOMIC_DIST:-0.5}"
+LOG_SPECTRUM_K="${LOG_SPECTRUM_K:-10}"
 
-# =============================================================================
-# Grid search axes (focused around best-performing region with Trust Region)
-# =============================================================================
-# Trust radius acts as the *initial* trust radius and absolute cap in the TR method.
-MAX_ATOM_DISP_GRID=("1.3")
-
-# NR step filter threshold: modes with |λ| < nr_threshold are excluded from the
-# pseudoinverse step (numerical noise / flat modes → explosive steps if inverted).
-# Evaluation/convergence always uses ALL eigenvalues (threshold = 0 there).
-NR_THRESHOLD_GRID=("2e-3" "5e-3" "8e-3" "1e-2")
-
-# Eckart projection is mandatory for stability; no measurable benefit to sweeping.
-PROJECT_GRAD_GRID=("true")
-
-# Previously no measurable effect in this benchmark; keep fixed to reduce combinatorics.
-PURIFY_HESS_GRID=("false")
-
-echo "=============================================="
-echo "Newton-Raphson Minimization - Grid Search"
-echo "=============================================="
-echo "Date: $(date)"
-echo "SLURM_JOB_ID: $SLURM_JOB_ID"
-echo "Node: $(hostname)"
-echo "CPUs available: $TOTAL_CPUS"
-echo "=============================================="
-echo "Fixed config:"
-echo "  N_STEPS: $N_STEPS"
-echo "  MAX_SAMPLES: $MAX_SAMPLES"
-echo "  START_FROM: $START_FROM"
-echo "  FORCE_CONVERGED: $FORCE_CONVERGED"
-echo "=============================================="
-echo "Grid axes:"
-echo "  max_atom_disp: ${MAX_ATOM_DISP_GRID[*]}"
-echo "  nr_threshold: ${NR_THRESHOLD_GRID[*]}"
-echo "  project_gradient: ${PROJECT_GRAD_GRID[*]}"
-echo "  purify_hessian: ${PURIFY_HESS_GRID[*]}"
-TOTAL_COMBOS=$(( ${#MAX_ATOM_DISP_GRID[@]} * ${#NR_THRESHOLD_GRID[@]} * ${#PROJECT_GRAD_GRID[@]} * ${#PURIFY_HESS_GRID[@]} ))
-echo "  Total combinations: $TOTAL_COMBOS"
-echo "=============================================="
-
-export PYTHONPATH="$PROJECT_DIR:$PYTHONPATH"
-
+# Parallel worker config
 THREADS_PER_WORKER="${THREADS_PER_WORKER:-4}"
 N_WORKERS=$((TOTAL_CPUS / THREADS_PER_WORKER))
 if [ "$N_WORKERS" -lt 1 ]; then N_WORKERS=1; fi
 
-echo "Parallel config:"
-echo "  Workers: $N_WORKERS"
-echo "  Threads per worker: $THREADS_PER_WORKER"
 echo "=============================================="
+echo "Newton-Raphson Minimization — v2 Grid Search"
+echo "=============================================="
+echo "Date:         $(date)"
+echo "SLURM_JOB_ID: $SLURM_JOB_ID"
+echo "Node:         $(hostname)"
+echo "CPUs:         $TOTAL_CPUS"
+echo "Workers:      $N_WORKERS  (${THREADS_PER_WORKER} threads each)"
+echo "=============================================="
+echo "Fixed config:"
+echo "  N_STEPS:            $N_STEPS"
+echo "  MAX_SAMPLES:        $MAX_SAMPLES"
+echo "  START_FROM:         $START_FROM"
+echo "  FORCE_CONVERGED:    $FORCE_CONVERGED"
+echo "  LOG_SPECTRUM_K:     $LOG_SPECTRUM_K"
+echo "=============================================="
+
+export PYTHONPATH="$PROJECT_DIR:$PYTHONPATH"
 
 COMBO=0
 FAILED=0
 
-for MAD in "${MAX_ATOM_DISP_GRID[@]}"; do
-    for NRT in "${NR_THRESHOLD_GRID[@]}"; do
-        for PG in "${PROJECT_GRAD_GRID[@]}"; do
-            for PH in "${PURIFY_HESS_GRID[@]}"; do
-                COMBO=$((COMBO + 1))
-                RUN_TAG="mad${MAD}_nrt${NRT}_pg${PG}_ph${PH}"
-                RUN_OUT_DIR="${OUT_DIR}/${RUN_TAG}"
-                mkdir -p "$RUN_OUT_DIR"
+# =============================================================================
+# Helper: run one combination and track pass/fail
+# =============================================================================
+run_combo() {
+    local tag="$1"
+    shift
+    local run_out="${OUT_DIR}/${tag}"
+    mkdir -p "$run_out"
 
-                echo "[${COMBO}/${TOTAL_COMBOS}] Running: $RUN_TAG"
+    COMBO=$((COMBO + 1))
+    echo "[combo ${COMBO}]  ${tag}"
 
-                # Build command
-                CMD=(
-                    python "$PROJECT_DIR/src/noisy/v2_tests/runners/run_minimization_parallel.py"
-                    --h5-path "$H5_PATH"
-                    --out-dir "$RUN_OUT_DIR"
-                    --scine-functional "$SCINE_FUNCTIONAL"
-                    --n-steps "$N_STEPS"
-                    --max-samples "$MAX_SAMPLES"
-                    --start-from "$START_FROM"
-                    --noise-seed "$NOISE_SEED"
-                    --n-workers "$N_WORKERS"
-                    --threads-per-worker "$THREADS_PER_WORKER"
-                    --method newton_raphson
-                    --max-atom-disp "$MAD"
-                    --force-converged "$FORCE_CONVERGED"
-                    --min-interatomic-dist "$MIN_INTERATOMIC_DIST"
-                    --nr-threshold "$NRT"
-                )
+    if python "$PROJECT_DIR/src/noisy/v2_tests/runners/run_minimization_parallel.py" \
+            --h5-path "$H5_PATH" \
+            --out-dir "$run_out" \
+            --scine-functional "$SCINE_FUNCTIONAL" \
+            --n-steps "$N_STEPS" \
+            --max-samples "$MAX_SAMPLES" \
+            --start-from "$START_FROM" \
+            --noise-seed "$NOISE_SEED" \
+            --n-workers "$N_WORKERS" \
+            --threads-per-worker "$THREADS_PER_WORKER" \
+            --method newton_raphson \
+            --max-atom-disp 1.3 \
+            --force-converged "$FORCE_CONVERGED" \
+            --min-interatomic-dist "$MIN_INTERATOMIC_DIST" \
+            --project-gradient-and-v \
+            --log-spectrum-k "$LOG_SPECTRUM_K" \
+            "$@"; then
+        echo "  -> OK"
+    else
+        echo "  -> FAILED (exit $?)"
+        FAILED=$((FAILED + 1))
+    fi
+    echo ""
+}
 
-                if [ "$PG" = "true" ]; then
-                    CMD+=(--project-gradient-and-v)
-                fi
-                if [ "$PH" = "true" ]; then
-                    CMD+=(--purify-hessian)
-                fi
+# =============================================================================
+# Phase A — Cascade baseline
+# Replays the proven NR hard-filter grid (nrt sweep) with cascade logging.
+# The cascade table will reveal whether failures are "eval too strict" vs
+# "optimizer failed". This is the most important diagnostic.
+# =============================================================================
+echo "=============================================="
+echo "Phase A — Cascade baseline (hard-filter NR, nrt sweep)"
+echo "  Axes: nrt ∈ {2e-3, 5e-3, 8e-3, 1e-2}"
+echo "  Note: n_neg logged at 8 eval thresholds per step (pure diagnostics)"
+echo "=============================================="
 
-                if "${CMD[@]}"; then
-                    echo "  -> Completed: $RUN_TAG"
-                else
-                    echo "  -> FAILED: $RUN_TAG (exit code $?)"
-                    FAILED=$((FAILED + 1))
-                fi
-                echo ""
-            done
-        done
-    done
+for NRT in "2e-3" "5e-3" "8e-3" "1e-2"; do
+    run_combo "mad1.3_nrt${NRT}_pgtrue_phfalse" \
+        --nr-threshold "$NRT"
 done
 
+# =============================================================================
+# Phase B — Relaxed convergence criterion
+# Best proven config (nrt=8e-3) + varying eps_conv.
+# eps_conv=0 reproduces original behaviour (strict n_neg==0).
+# If cascade shows λ_min ≈ -1e-3 causes most failures, eps_conv=1e-3 should
+# recover them directly.
+# =============================================================================
+echo "=============================================="
+echo "Phase B — Relaxed convergence (eps_conv sweep, nrt=8e-3)"
+echo "  Axes: eps_conv ∈ {1e-4, 5e-4, 1e-3, 2e-3, 5e-3}"
+echo "  (eps_conv=0 already covered by Phase A mad1.3_nrt8e-3_pgtrue_phfalse)"
+echo "=============================================="
+
+for EC in "1e-4" "5e-4" "1e-3" "2e-3" "5e-3"; do
+    run_combo "mad1.3_nrt8e-3_pgtrue_phfalse_ec${EC}" \
+        --nr-threshold "8e-3" \
+        --eps-conv "$EC"
+done
+
+# =============================================================================
+# Phase C — Two-phase threshold annealing
+# Bulk phase uses nrt=8e-3 (proven best).
+# Cleanup phase uses nrt=0 (full pseudoinverse) for up to 50 steps once
+# force_norm < anneal_force_threshold.
+# If near-minimum Hessian is better-conditioned, the tighter threshold is safe.
+# We sweep anneal_force_threshold: the force level at which we transition.
+# =============================================================================
+echo "=============================================="
+echo "Phase C — Two-phase annealing (anneal_force sweep, nrt=8e-3)"
+echo "  Axes: anneal_force ∈ {5e-4, 1e-3, 5e-3, 1e-2}"
+echo "  cleanup_nr_threshold=0  (full pseudoinverse in cleanup)"
+echo "  cleanup_max_steps=50"
+echo "=============================================="
+
+for AF in "5e-4" "1e-3" "5e-3" "1e-2"; do
+    run_combo "mad1.3_nrt8e-3_pgtrue_phfalse_af${AF}" \
+        --nr-threshold "8e-3" \
+        --anneal-force-threshold "$AF" \
+        --cleanup-nr-threshold "0" \
+        --cleanup-max-steps "50"
+done
+
+# =============================================================================
+# Phase D — Levenberg-Marquardt damping
+# step_i = (g·v_i) * |λ_i| / (λ_i² + μ²)
+# No hard cutoff; flat modes shrink smoothly to zero (vs hard-filter which
+# removes them entirely, vs clamping which was tested in the TeX and failed).
+# Sweep μ over the same values as the NR threshold grid in Phase A to make
+# Phase A vs Phase D comparison straightforward on the cascade table.
+# =============================================================================
+echo "=============================================="
+echo "Phase D — Levenberg-Marquardt damping (lm_mu sweep)"
+echo "  Axes: lm_mu ∈ {2e-3, 5e-3, 8e-3, 1e-2}"
+echo "  Note: all modes included; flat modes → near-zero contribution"
+echo "=============================================="
+
+for MU in "2e-3" "5e-3" "8e-3" "1e-2"; do
+    run_combo "mad1.3_lmmu${MU}_pgtrue_phfalse" \
+        --lm-mu "$MU"
+done
+
+# =============================================================================
+# Summary
+# =============================================================================
 echo "=============================================="
 echo "Grid search completed at $(date)"
-echo "  Total combinations: $TOTAL_COMBOS"
-echo "  Completed: $((COMBO - FAILED))"
-echo "  Failed: $FAILED"
-echo "  Results in: $OUT_DIR"
+echo "  Total combinations attempted: $COMBO"
+echo "  Completed successfully:       $((COMBO - FAILED))"
+echo "  Failed:                       $FAILED"
+echo "  Results directory:            $OUT_DIR"
 echo "=============================================="
 
 # =============================================================================
-# Run analysis and plotting
+# Analysis — main grid summary + 2D cascade table
 # =============================================================================
 ANALYSIS_OUT="${OUT_DIR}/analysis"
 mkdir -p "$ANALYSIS_OUT"
-echo "Running analysis script..."
+echo "Running analysis script (includes 2D cascade table) ..."
 python "$PROJECT_DIR/src/noisy/v2_tests/scripts/analyze_minimization_nr_grid.py" \
     --grid-dir "$OUT_DIR" \
+    --result-glob "*/minimization_newton_raphson_*_results.json" \
     --output-dir "$ANALYSIS_OUT" \
-    --top-k 10 > "${ANALYSIS_OUT}/report.txt"
+    --top-k 10 > "${ANALYSIS_OUT}/report.txt" 2>&1
+echo "Analysis complete.  Report: ${ANALYSIS_OUT}/report.txt"
+echo "Cascade 2D table:   ${ANALYSIS_OUT}/nr_grid_cascade_table.csv"
 
-echo "Analysis complete. Report saved to ${ANALYSIS_OUT}/report.txt"
-
+# =============================================================================
+# Trajectory plots
+# =============================================================================
 PLOTS_OUT="${OUT_DIR}/plots"
 mkdir -p "$PLOTS_OUT"
-echo "Generating trajectory plots..."
+echo "Generating trajectory plots ..."
 python "$PROJECT_DIR/src/noisy/v2_tests/scripts/plot_nr_grid_trajectories.py" \
     --grid-dir "$OUT_DIR" \
     --output-dir "$PLOTS_OUT"
+echo "Plots saved to: $PLOTS_OUT"
 
-echo "Plotting complete. PNGs saved to ${PLOTS_OUT}"
-
+# =============================================================================
+# Trajectory-level statistics
+# =============================================================================
 TRAJ_STATS_OUT="${OUT_DIR}/traj_stats"
 mkdir -p "$TRAJ_STATS_OUT"
-echo "Running trajectory-level statistics..."
+echo "Running trajectory-level statistics ..."
 python "$PROJECT_DIR/src/noisy/v2_tests/scripts/analyze_nr_trajectory_stats.py" \
     --grid-dir "$OUT_DIR" \
     --output-dir "$TRAJ_STATS_OUT" \
-    --top-k 10 > "${TRAJ_STATS_OUT}/traj_stats_report.txt"
-
-echo "Trajectory stats written to ${TRAJ_STATS_OUT}/traj_stats_report.txt"
+    --top-k 10 > "${TRAJ_STATS_OUT}/traj_stats_report.txt" 2>&1
+echo "Trajectory stats: ${TRAJ_STATS_OUT}/traj_stats_report.txt"
 echo "  • nr_traj_stats_per_sample.csv — one row per trajectory"
 echo "  • nr_traj_stats_per_combo.csv  — aggregated per hyperparameter combo"
 echo "  • nr_traj_stats_summary.json   — machine-readable summary"
+echo "=============================================="
+echo "All done.  Results in: $OUT_DIR"
 echo "=============================================="
