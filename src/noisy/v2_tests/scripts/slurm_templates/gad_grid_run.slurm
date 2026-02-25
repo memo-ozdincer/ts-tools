@@ -83,7 +83,7 @@ mkdir -p "$OUT_DIR"
 # Fixed configuration
 # =============================================================================
 N_STEPS="${N_STEPS:-10000}"
-MAX_SAMPLES="${MAX_SAMPLES:-30}"
+MAX_SAMPLES="${MAX_SAMPLES:-10}"
 START_FROM="${START_FROM:-midpoint_rt_noise2.0A}"
 NOISE_SEED="${NOISE_SEED:-42}"
 SCINE_FUNCTIONAL="${SCINE_FUNCTIONAL:-DFTB0}"
@@ -100,15 +100,15 @@ PURIFY_HESSIAN="false"
 # =============================================================================
 # Trust radius cap (Å). NR finding: bigger is significantly better (1.3 dominated).
 # Sweep around and above that optimal for GAD.
-MAX_ATOM_DISP_GRID=("0.5" "1.0" "1.3" "1.5")
+MAX_ATOM_DISP_GRID=("1.3")
 
 # Flat-mode eigenvalue cutoff. NR finding: 8e-3 dominated by a huge margin.
 # Sweep the nearby region to confirm/tune for GAD's different objective.
-TR_THRESHOLD_GRID=("2e-3" "5e-3" "8e-3" "1e-2")
+TR_THRESHOLD_GRID=("5e-3" "8e-3")
 
 # plain: always picks lowest eigenvector
 # mode_tracked: tracks v_1 across steps for continuity
-BASELINE_GRID=("plain" "mode_tracked")
+BASELINE_GRID=("mode_tracked")
 
 echo "=============================================="
 echo "GAD - Grid Search"
