@@ -220,26 +220,57 @@ def run_gad_baseline(
                 logger.save(log_dir)
             return result
 
-        step_disp = dt_eff * gad_vec
-        max_disp = float(step_disp.norm(dim=1).max().item())
-        if max_disp > max_atom_disp and max_disp > 0:
-            scale = max_atom_disp / max_disp
-            step_disp = scale * step_disp
-            if dt_control == "adaptive":
-                dt_eff = max(dt_eff * 0.8, dt_min)
-        else:
-            if dt_control == "adaptive":
-                dt_eff = min(dt_eff * 1.05, dt_max)
+        energy_curr = float(out["energy"].detach().reshape(-1)[0].item()) if isinstance(out["energy"], torch.Tensor) else float(out["energy"])
+        grad_flat = -forces.reshape(-1)
 
-        new_coords = coords + step_disp
-        if _min_interatomic_distance(new_coords) < min_interatomic_dist:
-            step_disp = step_disp * 0.5
+        accepted = False
+        max_retries = 5
+        retries = 0
+        
+        while not accepted and retries < max_retries:
+            step_disp = dt_eff * gad_vec
+            max_disp = float(step_disp.norm(dim=1).max().item())
+            
+            if max_disp > max_atom_disp and max_disp > 0:
+                step_disp = step_disp * (max_atom_disp / max_disp)
+                
             new_coords = coords + step_disp
-            if dt_control == "adaptive":
-                dt_eff = max(dt_eff * 0.5, dt_min)
-
+            
+            if _min_interatomic_distance(new_coords) < min_interatomic_dist:
+                if dt_control == "adaptive":
+                    dt_eff = max(dt_eff * 0.5, dt_min)
+                retries += 1
+                continue
+                
+            if dt_control != "adaptive":
+                accepted = True
+                break
+                
+            out_new = predict_fn(new_coords, atomic_nums, do_hessian=False, require_grad=False)
+            energy_new = float(out_new["energy"].detach().reshape(-1)[0].item()) if isinstance(out_new["energy"], torch.Tensor) else float(out_new["energy"])
+            
+            actual_dE = energy_new - energy_curr
+            dx_flat = step_disp.reshape(-1)
+            
+            pred_dE = float((grad_flat.dot(dx_flat) + 0.5 * dx_flat.dot(hessian @ dx_flat)).item())
+            
+            if abs(pred_dE) < 1e-8:
+                rho = 1.0
+            else:
+                rho = actual_dE / pred_dE
+                
+            if rho > 0.0:
+                accepted = True
+                if rho > 0.75:
+                    dt_eff = min(dt_eff * 1.5, dt_max)
+                elif rho < 0.25:
+                    dt_eff = max(dt_eff * 0.5, dt_min)
+            else:
+                dt_eff = max(dt_eff * 0.25, dt_min)
+                retries += 1
+                
         prev_pos = coords.clone()
-        prev_energy = float(out["energy"].detach().reshape(-1)[0].item()) if isinstance(out["energy"], torch.Tensor) else float(out["energy"])
+        prev_energy = energy_curr
         coords = new_coords.detach()
 
     result = {

@@ -64,10 +64,10 @@ DT="${DT:-0.02}"
 DT_CONTROL="${DT_CONTROL:-adaptive}"
 DT_MIN="${DT_MIN:-1e-6}"
 DT_MAX="${DT_MAX:-0.08}"
-MAX_ATOM_DISP="${MAX_ATOM_DISP:-0.35}"
+MAX_ATOM_DISP="${MAX_ATOM_DISP:-1.5}"
 MIN_INTERATOMIC_DIST="${MIN_INTERATOMIC_DIST:-0.5}"
 TS_EPS="${TS_EPS:-1e-5}"
-TR_THRESHOLD="${TR_THRESHOLD:-1e-6}"
+TR_THRESHOLD="${TR_THRESHOLD:-2e-3}"
 
 # Eckart projection options
 # Set to "true" to enable full projection (gradient + guide vector v)
