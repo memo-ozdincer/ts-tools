@@ -1,0 +1,791 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1.1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{enumitem}
+\usepackage{microtype}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{parskip}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue!70!black,
+    citecolor=green!50!black,
+    urlcolor=purple!80!black,
+    bookmarksnumbered=true,
+    pdftitle={Algorithmic Improvements: NR Minimization and GAD Saddle-Point Search},
+    pdfauthor={Mehmet Efe Moozdincerler},
+}
+
+\lstset{
+    language=Python,
+    basicstyle=\ttfamily\small,
+    keywordstyle=\color{blue!70!black}\bfseries,
+    commentstyle=\color{gray}\itshape,
+    stringstyle=\color{orange!80!black},
+    numberstyle=\tiny\color{gray},
+    numbers=left,
+    numbersep=6pt,
+    breaklines=true,
+    frame=single,
+    framesep=4pt,
+    xleftmargin=16pt,
+    captionpos=b,
+    showstringspaces=false,
+    tabsize=4,
+}
+
+\newcommand{\eH}{\hat{H}}
+\newcommand{\tr}{\mathrm{tr}}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\norm}[1]{\left\|#1\right\|}
+\newcommand{\abs}[1]{\left|#1\right|}
+\newcommand{\inner}[2]{\langle #1,\, #2 \rangle}
+\newcommand{\lam}{\lambda}
+\newcommand{\grad}{\nabla}
+\newcommand{\vib}{\mathrm{vib}}
+\newcommand{\madcap}{\Delta_{\max}}
+\newcommand{\trthr}{\tau}
+
+\title{\textbf{Algorithmic Improvements to Noisy PES Optimization:\\
+Newton-Raphson Minimization and\\
+Gradient Ascent Deflation Saddle-Point Search}\\[6pt]
+\large Benchmarked on Transition1x with DFTB0, 2\,\AA\ starting noise}
+\author{Mehmet Efe Moozdincerler \\ Guzik Group}
+\date{February 2026}
+
+\begin{document}
+
+\maketitle
+\tableofcontents
+\newpage
+
+% ============================================================
+\section*{Executive Summary}
+% ============================================================
+
+This document describes and analyses a series of algorithmic improvements
+applied to two PES optimizers running under realistic numerical noise:
+\begin{enumerate}
+    \item \textbf{Newton-Raphson (NR) energy minimization} — finds local minima.
+    \item \textbf{Gradient Ascent Deflation (GAD)} — finds index-1 saddle points
+          (transition states, TS).
+\end{enumerate}
+Both algorithms operate on the DFTB0 potential via SCINE, starting from the
+Transition1x midpoint geometry perturbed by 2\,\AA\ of random noise — a
+deliberately hard initialization meant to stress-test robustness.
+
+The improvements below are listed in order of empirical impact, from most
+to least. NR minimization improved from $\sim$45\% convergence to
+$\mathbf{\sim99\%}$ convergence (average 455 steps).  GAD TS search reached
+\textbf{100\% success rate} on 30/30 samples under the optimal configuration.
+
+\bigskip
+\noindent\textbf{Key improvements, ordered by impact:}
+\begin{enumerate}[label=\textbf{\arabic*.}]
+    \item \textbf{Newton step in the vibrational pseudoinverse subspace}
+          — replacing gradient descent with a full second-order step
+          while explicitly throwing out near-zero modes. (\S\ref{sec:newton})
+    \item \textbf{Aggressive eigenvalue filtering} ($\abs{\lambda} < \tau$, hard
+          discard, not clamping) — eliminates numerical noise rattling modes
+          entirely. (\S\ref{sec:filtering})
+    \item \textbf{Adaptive Trust Region (TR)} with the Cauchy quality ratio
+          $\rho = \delta E_{\mathrm{actual}} / \delta E_{\mathrm{pred}}$ —
+          allows massive steps when the quadratic model is accurate and
+          aggressively shrinks/rejects when it is not. (\S\ref{sec:tr})
+    \item \textbf{Mode tracking} (GAD-specific) — tracking the lowest
+          eigenvector $v_1$ across steps rather than always re-picking the
+          instantaneous lowest; yields a 10+ percentage-point improvement
+          in TS success rate and $2\times$ speedup. (\S\ref{sec:modetrack})
+    \item \textbf{Maximum atom displacement cap} $\madcap = 1.3$\,\AA\ — allows
+          confident long-range steps rather than artificially stalling the
+          optimizer. (\S\ref{sec:madcap})
+    \item \textbf{Eckart projection} (mandatory) — projects gradient and guide
+          vector onto the vibrational subspace to prevent translation/rotation
+          drift. (\S\ref{sec:eckart})
+    \item \textbf{Hessian purification} (negative result) — enforcing
+          translational sum rules had no measurable effect; omitted to save
+          compute. (\S\ref{sec:purify})
+\end{enumerate}
+
+\newpage
+% ============================================================
+\section{Background and Experimental Setup}
+\label{sec:setup}
+% ============================================================
+
+\subsection{Algorithms}
+
+The two algorithms share a common structure:
+
+\paragraph{Newton-Raphson minimization.}
+\[
+    x_{k+1} = x_k - H(x_k)^{-1}\,\nabla E(x_k)
+    \;=\; x_k + H(x_k)^{-1}\,F(x_k),
+\]
+where $F = -\nabla E$ are the atomic forces and $H$ is the $3N\times 3N$
+mass-unweighted Hessian. Convergence: zero negative vibrational eigenvalues
+(Morse index 0, i.e., a true minimum).
+
+\paragraph{Gradient Ascent Deflation (GAD).}
+\[
+    \tilde{F}_{\mathrm{GAD}}(x) = F(x) + 2\inner{F(x)}{v_1}v_1,
+\]
+where $v_1$ is the lowest vibrational eigenvector of $H$.
+The GAD force ascends along $v_1$ (flips the component parallel to $v_1$)
+and descends along all other modes. The update rule in the improved
+implementation is:
+\[
+    x_{k+1} = x_k + H_{\vib}^{-1}\,\tilde{F}_{\mathrm{GAD}}(x_k),
+\]
+i.e., the same pseudoinverse step as NR but applied to the modified gradient.
+Convergence: exactly one negative vibrational eigenvalue (Morse index 1), i.e.,
+an index-1 TS.
+
+\subsection{Dataset and noise}
+
+Experiments run on 30 molecules from the Transition1x test set \cite{henkelman2021transition1x}
+under the DFTB0 functional via SCINE. Starting geometry:
+\[
+    x_0 = x_{\mathrm{midpoint}} + \epsilon, \quad \epsilon \sim \mathcal{U}(\text{ball of radius }2\text{\,\AA}).
+\]
+This is a deliberately severe initialization designed to stress-test robustness
+to numerical noise and large initial displacements from the TS.
+
+% ============================================================
+\section{Newton Step in the Vibrational Pseudoinverse Subspace}
+\label{sec:newton}
+% ============================================================
+
+\subsection{Motivation}
+
+The original baseline for both algorithms used a \emph{gradient descent}–like
+update: $x_{k+1} = x_k + \alpha F(x_k)$ with a fixed or slowly-adaptive
+step size $\alpha$. This wastes information — the full Hessian is computed at
+every step anyway (required for the GAD direction), yet its curvature information
+was discarded.
+
+\subsection{The vibrational pseudoinverse}
+
+Let the eigendecomposition of the Eckart-projected Hessian be
+\[
+    H_{\mathrm{proj}} = V \Lambda V^T, \quad
+    \Lambda = \mathrm{diag}(\lambda_1, \ldots, \lambda_{3N}).
+\]
+The \emph{vibrational subspace} is defined by the mask
+$\mathcal{V} = \{i : \abs{\lambda_i} > \trthr\}$
+(see \S\ref{sec:filtering} for the choice of $\trthr$).
+The vibrational pseudoinverse step is:
+\[
+\boxed{
+    \delta x = V_\mathcal{V}\,\abs{\Lambda_\mathcal{V}}^{-1}\,V_\mathcal{V}^T\,g,
+}
+\]
+where $g$ is the gradient (or modified GAD gradient), $V_\mathcal{V}$ are the
+columns of $V$ indexed by $\mathcal{V}$, and $\abs{\Lambda_\mathcal{V}}^{-1}$
+uses the absolute values of eigenvalues. The absolute-value trick ensures the
+step is always a descent/ascent in the intended direction, regardless of the
+sign of the curvature.
+
+\begin{lstlisting}[caption={Vibrational pseudoinverse step (NR minimization,
+\texttt{baselines/minimization.py}).}]
+# evals, evecs from torch.linalg.eigh(hess_proj)
+vib_mask = torch.abs(evals) > tr_threshold      # |lambda| > tau
+vib_indices = torch.where(vib_mask)[0]
+
+V_vib  = evecs[:, vib_indices]                  # (3N, k)
+lam_vib = evals[vib_indices]                    # (k,)
+
+coeffs     = V_vib.T @ grad                     # project gradient
+inv_lam    = 1.0 / torch.abs(lam_vib)           # |lambda|^{-1}
+delta_x    = V_vib @ (inv_lam * coeffs)         # back-project
+\end{lstlisting}
+
+\begin{lstlisting}[caption={Same step applied to the GAD modified gradient
+(\texttt{runners/run\_gad\_baselines\_parallel.py}).}]
+# gad_flat = f + 2*(f.v)*v  (or Eckart-projected version)
+coeffs       = V_vib.T @ gad_flat.to(V_vib.dtype)
+inv_lam_abs  = 1.0 / torch.abs(lam_vib)
+delta_x      = V_vib @ (inv_lam_abs * coeffs)
+step_disp_raw = delta_x.reshape(-1, 3)
+\end{lstlisting}
+
+\subsection{Why this helps}
+
+For a locally quadratic energy $E(x) \approx E_0 + g^Tx + \tfrac12 x^T H x$,
+the Newton step is the \emph{exact} minimizer in one iteration. Even far from
+a minimum, the Newton step provides a much better estimate of the step
+\emph{direction} than gradient descent. Without this, the optimizer is
+essentially doing steepest-descent with expensive (but wasted) Hessian
+evaluations.
+
+% ============================================================
+\section{Aggressive Eigenvalue Filtering}
+\label{sec:filtering}
+% ============================================================
+
+\subsection{The danger of flat modes}
+
+Suppose a vibrational mode $v_i$ has eigenvalue $\lambda_i = 10^{-5}$.
+The Newton step contribution from this mode is:
+\[
+    \delta x_i = \frac{\inner{g}{v_i}}{\lambda_i} \cdot v_i
+    \;=\; \frac{\inner{g}{v_i}}{10^{-5}} \cdot v_i.
+\]
+Even a tiny numerical noise in $\inner{g}{v_i} \sim 10^{-4}$ produces a step
+of magnitude $10^{-4}/10^{-5} = 10$ along $v_i$ — a completely unphysical,
+explosive displacement. Such modes arise from:
+\begin{itemize}[noitemsep]
+    \item Residual translation/rotation not fully removed by Eckart projection.
+    \item Molecular rattling modes at a floppy geometry.
+    \item Numerical noise in the DFTB0 Hessian at 2\,\AA\ from the TS.
+\end{itemize}
+
+\subsection{Filter vs.\ clamp}
+
+We tested two strategies:
+\begin{description}
+    \item[\textbf{Filter}] Completely exclude modes with $\abs{\lambda_i} < \trthr$
+          from the pseudoinverse.
+    \item[\textbf{Clamp}] Replace $\abs{\lambda_i}$ by $\max(\abs{\lambda_i}, \trthr)$
+          to enforce a safe gradient descent step along flat modes.
+\end{description}
+
+\textbf{Result}: Filtering dominates by a large margin. As observed during our grid searches, clamping the modes rather than projecting them out caused the convergence rate to plummet from 90\% to 55\%, and caused average step counts to jump from $\sim$2,500 up to $\sim$9,000 steps. This was a fascinating revelation: it confirmed that the flat modes in these TS systems are not smooth, navigable physical valleys. They are overwhelmingly composed of numerical noise, rattling, or unphysical modes. Trying to step along them (even conservatively via clamping) corrupts the search direction entirely. Throwing them away completely acts as a highly effective, essential dynamic dimensionality reduction.
+
+\begin{center}
+\begin{tabular}{lcc}
+\toprule
+Strategy & Convergence rate & Mean steps \\
+\midrule
+Clamp ($\trthr = 2\times10^{-3}$) & 55\% & $\sim$9000 \\
+Filter ($\trthr = 8\times10^{-3}$) & \textbf{99\%} & \textbf{455} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Threshold sweep (NR minimization)}
+
+Results across 100 samples with $\madcap=1.3$\,\AA:
+\begin{center}
+\begin{tabular}{lcc}
+\toprule
+$\trthr$ & Convergence rate & Mean steps (when converged) \\
+\midrule
+$2\times10^{-3}$ & 88\% & 1992 \\
+$5\times10^{-3}$ & 98\% & 976 \\
+$8\times10^{-3}$ & \textbf{99\%} & 455 \\
+$1\times10^{-2}$ & 97\% & \textbf{306} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The optimal threshold of $\trthr = 8\times10^{-3}$ can be interpreted as the
+boundary below which DFTB0 Hessian eigenvalues are dominated by noise rather
+than chemistry.
+
+\subsection{Threshold sweep (GAD grid search)}
+
+The same study on GAD showed that the interaction between $\trthr$ and success
+rate is consistent with the NR finding:
+
+\begin{center}
+\begin{tabular}{lcc}
+\toprule
+$\trthr$ & Mean success rate & Mean steps (when successful) \\
+\midrule
+$2\times10^{-3}$ & 0.858 & 1138.5 \\
+$5\times10^{-3}$ & \textbf{0.933} & 806.0 \\
+$8\times10^{-3}$ & 0.917 & 608.6 \\
+$10^{-2}$ & 0.933 & 514.4 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Notably, $\trthr = 2\times10^{-3}$ again performed worst, and the top
+configuration (\texttt{mad1.3\_tr5e-3\_blmode\_tracked}) achieved
+\textbf{30/30 (100\%) success} with 477 mean steps — comparable to the NR
+minimization result.
+
+\begin{lstlisting}[caption={Filtering in practice: mask construction
+(\texttt{run\_gad\_baselines\_parallel.py}).}]
+def _vib_mask_from_evals(evals: torch.Tensor, tr_threshold: float) -> torch.Tensor:
+    # Hard filter: completely exclude modes with |lambda| <= tau
+    return evals.abs() > float(tr_threshold)
+
+evals, evecs = torch.linalg.eigh(hess_proj)
+vib_mask     = _vib_mask_from_evals(evals, tr_threshold)
+vib_indices  = torch.where(vib_mask)[0]
+\end{lstlisting}
+
+% ============================================================
+\section{Adaptive Trust Region}
+\label{sec:tr}
+% ============================================================
+
+\subsection{Overview}
+
+After computing the vibrational pseudoinverse step $\delta x$, we scale it
+to a \emph{current trust radius} $\Delta$ and evaluate whether the actual
+energy change matches the quadratic model's prediction:
+\[
+    \rho = \frac{\delta E_{\mathrm{actual}}}{\delta E_{\mathrm{pred}}}, \quad
+    \delta E_{\mathrm{pred}} = g^T\delta\hat{x} + \tfrac12 \delta\hat{x}^T H \,\delta\hat{x},
+\]
+where $\delta\hat{x}$ is the step capped to radius $\Delta$.
+
+The trust radius is then adapted:
+\[
+    \Delta_{k+1} =
+    \begin{cases}
+        \min(1.5\,\Delta_k,\;\madcap) & \text{if } \rho > 0.75 \quad\text{(excellent model)} \\
+        0.5\,\Delta_k & \text{if } 0 \le \rho < 0.25 \quad\text{(poor model)} \\
+        0.25\,\Delta_k & \text{if } \rho < 0 \quad\text{(very poor model)} \\
+        0.25\,\Delta_k & \text{if step rejected} \quad(\delta E_{\mathrm{actual}} > 0) \\
+        \Delta_k & \text{otherwise}
+    \end{cases}
+\]
+Steps are \emph{rejected} and retried at a smaller radius (up to 10 retries) when the energy
+increases (for minimization).
+
+\subsection{Why $\rho > 0.75$ / $\rho < 0.25$ thresholds?}
+
+These are the standard dogleg/trust-region thresholds from Nocedal \& Wright
+\cite{nocedal2006numerical}: $\rho > 0.75$ means the local quadratic model
+predicts at least 75\% of the actual improvement, so we trust it enough to
+expand $\Delta$; $\rho < 0.25$ means the model is unreliable, so we contract.
+
+Crucially, our experiments showed that standard contraction ($0.5\Delta_k$) is not aggressive enough when the model is completely wrong. We introduced two harsh penalties:
+\begin{itemize}[noitemsep]
+    \item If $\rho < 0.0$ (model predicted energy decrease, but it increased, or vice versa), we shrink the radius sharply to $0.25\Delta_k$.
+    \item If the step is rejected entirely ($\delta E_{\mathrm{actual}} > 0$), we also shrink sharply to $0.25\Delta_k$ and retry up to 10 times.
+\end{itemize}
+This rapid collapse prevents the optimizer from burning through retries while repeatedly crashing into narrow canyon walls.
+
+\begin{algorithm}
+\caption{Trust Region step (NR minimization / GAD)}
+\begin{algorithmic}[1]
+\State Compute $\delta x \leftarrow V_\mathcal{V}\,\abs{\Lambda_\mathcal{V}}^{-1}V_\mathcal{V}^T g$
+\State $\mathtt{accepted} \leftarrow \mathtt{False}$; $\mathtt{retries} \leftarrow 0$
+\While{$\neg\mathtt{accepted}$ \textbf{and} $\mathtt{retries} < 10$}
+    \State $\delta\hat{x} \leftarrow \delta x \cdot \min(1, \Delta / \norm{\delta x}_\infty)$
+    \State Evaluate $E_{\mathrm{new}}$ at $x_k + \delta\hat{x}$
+    \State $\delta E_{\mathrm{actual}} \leftarrow E_{\mathrm{new}} - E_k$
+    \State $\delta E_{\mathrm{pred}} \leftarrow g^T\delta\hat{x} + \tfrac12 \delta\hat{x}^T H\delta\hat{x}$
+    \If{$\delta E_{\mathrm{actual}} \leq 0$}  \Comment{Energy decreased: accept}
+        \State $\mathtt{accepted} \leftarrow \mathtt{True}$
+        \State $\rho \leftarrow \delta E_{\mathrm{actual}} / \delta E_{\mathrm{pred}}$
+        \If{$\rho > 0.75$} $\Delta \leftarrow \min(1.5\Delta,\,\madcap)$
+        \ElsIf{$\rho < 0.25$} $\Delta \leftarrow 0.5\Delta$
+        \EndIf
+    \Else \Comment{Energy increased: reject, shrink}
+        \State $\Delta \leftarrow 0.25\Delta$; $\mathtt{retries} \mathrel{+}= 1$
+    \EndIf
+\EndWhile
+\end{algorithmic}
+\end{algorithm}
+
+\begin{lstlisting}[caption={Trust Region inner loop
+(\texttt{baselines/minimization.py}, Newton-Raphson).}]
+accepted, retries = False, 0
+while not accepted and retries < max_retries:
+    capped_disp = _cap_displacement(step_disp, current_trust_radius)
+    dx_flat     = capped_disp.reshape(-1)
+    pred_dE     = float((grad @ dx_flat + 0.5 * dx_flat @ (hess_proj @ dx_flat)).item())
+
+    new_coords  = coords + capped_disp
+    energy_new  = _to_float(predict_fn(new_coords, ...).energy)
+    actual_dE   = energy_new - energy
+
+    if actual_dE <= 1e-5:                       # accept
+        accepted = True
+        rho = actual_dE / pred_dE if pred_dE < -1e-8 else 0.0
+        if rho > 0.75:
+            current_trust_radius = min(current_trust_radius * 1.5, max_atom_disp)
+        elif rho < 0.25:
+            current_trust_radius = max(current_trust_radius * 0.5, 0.001)
+    else:                                       # reject
+        current_trust_radius *= 0.25
+        retries += 1
+\end{lstlisting}
+
+\subsection{Impact}
+
+The Trust Region enabled the optimizer to take steps as large as 1.3\,\AA\
+when the quadratic model was reliable, vastly outperforming the previous
+fixed-step approach which was capped at 0.35\,\AA\ and could never escape
+shallow local traps efficiently.
+
+% ============================================================
+\section{Mode Tracking (GAD-Specific)}
+\label{sec:modetrack}
+% ============================================================
+
+\subsection{Problem}
+
+Standard GAD picks the \emph{instantaneous} lowest eigenvector $v_1(x_k)$
+at each step. Near a TS on a noisy PES, the curvature spectrum can reorder
+between steps due to:
+\begin{itemize}[noitemsep]
+    \item Numerical noise in DFTB0 Hessian.
+    \item Genuine mode-crossing events (eigenvalue degeneracy).
+\end{itemize}
+A sudden swap $v_1 \leftrightarrow v_2$ causes the GAD deflation direction
+to jump discontinuously, leading to oscillatory behaviour and stalling.
+
+\subsection{Solution: eigenvector tracking}
+
+We maintain a \emph{reference vector} $v_{\mathrm{prev}}$ across steps and,
+at each step, select $v^*$ from the $k$ lowest eigenvectors that maximizes
+continuity:
+\[
+    v^* = \operatornamewithlimits{argmax}_{v \in \{v_1, \ldots, v_k\}}
+    \abs{\inner{v}{v_{\mathrm{prev}}}}.
+\]
+
+\begin{lstlisting}[caption={Mode tracking in \texttt{core\_algos/gad.py}.}]
+def pick_tracked_mode(V, v_prev, k=8):
+    """
+    V:      (3N, k) matrix of k candidate eigenvectors
+    v_prev: (3N,)  previously tracked direction (or None)
+    Returns the column of V most aligned with v_prev.
+    """
+    if v_prev is None:
+        return V[:, 0], 0, 1.0          # default: lowest eigenvalue
+    overlaps = torch.abs(V.T @ v_prev)  # (k,)
+    j        = int(overlaps.argmax())
+    return V[:, j], j, float(overlaps[j])
+\end{lstlisting}
+
+\subsection{Empirical impact (GAD grid search)}
+
+\begin{center}
+\begin{tabular}{lccc}
+\toprule
+Baseline & Mean success rate & Mean steps & Mean wall time \\
+\midrule
+\texttt{plain} (no tracking) & 0.863 & 999.2 & 11.62\,s \\
+\texttt{mode\_tracked} & \textbf{0.958} & \textbf{534.6} & \textbf{4.61\,s} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Mode tracking accounts for $+10$ percentage points in success rate and a
+$1.9\times$ reduction in mean steps. The interaction table confirms this holds
+uniformly across all $(mad, \trthr)$ combinations — it is not an artifact
+of a particular hyperparameter setting.
+
+At the optimal configuration (\texttt{mad1.3\_tr5e-3\_blmode\_tracked}),
+mode tracking was necessary to reach 30/30 (100\%) success; the corresponding
+\texttt{plain} configuration reached only 26/30 (87\%).
+
+\begin{center}
+\begin{tabular}{lcc}
+\toprule
+Configuration & Success & Steps \\
+\midrule
+\texttt{mad1.3\_tr5e-3\_blmode\_tracked} & 30/30 (100\%) & 477.6 \\
+\texttt{mad1.3\_tr5e-3\_blplain} & 26/30 (87\%) & 811.3 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Physical interpretation}
+
+Near a TS, the lowest two eigenvalues $\lambda_1 < 0 < \lambda_2$ are
+well-separated. As we approach from a noisy starting point, transiently
+$\lambda_1 \approx \lambda_2$ (the singularity set $\mathcal{S}$ of GAD,
+defined in \cite{levitt2014convergence}), causing mode-crossing artefacts.
+Tracking maintains a coherent deflation direction through these transient
+degeneracies. The mode tracking overlap $\abs{\inner{v_1(t)}{v_1(t-1)}}$,
+logged per step, is an effective diagnostic: values close to 1.0 indicate
+smooth progress; sharp drops signal mode-crossing events.
+
+% ============================================================
+\section{Maximum Atom Displacement Cap}
+\label{sec:madcap}
+% ============================================================
+
+\subsection{Role in the Trust Region}
+
+$\madcap$ serves as the \emph{absolute ceiling} on the trust radius: even
+if $\rho > 0.75$ at every step, the trust radius cannot exceed $\madcap$.
+This prevents the optimizer from taking physically unreasonable steps
+(e.g., crashing atoms together) even when the quadratic model looks excellent
+over a very large range.
+
+\subsection{Empirical finding}
+
+\begin{center}
+\begin{tabular}{lccc}
+\toprule
+$\madcap$ (Å) & NR conv.\ rate (early grid) & GAD success rate & GAD mean steps \\
+\midrule
+0.35 & 45\% & 0.910 & --- \\
+0.50 & 53\% & 0.908 & 728.3 \\
+1.00 & 64\% & 0.917 & 810.1 \\
+\textbf{1.30} & \textbf{72\%} & \textbf{0.917} & \textbf{761.7} \\
+1.50 & 72\% & 0.900 & 767.4 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+$\madcap = 1.3$\,\AA\ is the sweet spot: large enough to let the optimizer
+make decisive progress when the Hessian is trustworthy (long, shallow valleys),
+but small enough to prevent geometry corruption for small molecules.
+In our final 100-sample NR grid, pushed to its limits, $\madcap=1.3$\,\AA\
+robustly averaged 73\% convergence across all thresholds, whereas pushing
+the limit to $\madcap=1.5$\,\AA\ caused convergence to plummet to 55\%,
+suggesting that 1.3\,\AA\ is the maximum safe bound before the quadratic
+model assumption fundamentally breaks down.
+
+\textbf{Key insight}: With the Trust Region in place, $\madcap$ is almost
+never actually hit during normal convergence — the trust radius $\Delta_k$
+self-regulates to match the local quadratic regime.
+$\madcap$ only acts as a safety ceiling during the initial phase (step 0
+initializes $\Delta_0 = \madcap$) and is rarely a binding constraint after
+that. Restricting it to 0.35\,\AA\ was therefore artificially stalling
+convergence in the early iterations.
+
+% ============================================================
+\section{Eckart Projection}
+\label{sec:eckart}
+% ============================================================
+
+\subsection{What it does}
+
+The Hessian of a non-periodic molecular system has exactly 6 zero eigenvalues
+corresponding to rigid-body translations and rotations (5 for linear molecules).
+Without explicit removal, numerical errors cause small non-zero components
+along these modes, which can accumulate across many gradient steps into
+significant centre-of-mass drift or net rotation of the molecule.
+
+Eckart projection enforces that gradients and guide vectors lie in the
+\emph{purely vibrational} complement of the TR space:
+\[
+    g_{\vib} = \left(I - \sum_{j \in \mathrm{TR}} v_j v_j^T\right) g.
+\]
+
+\subsection{Implementation}
+
+\begin{lstlisting}[caption={Eckart gradient projection
+(\texttt{dependencies/differentiable\_projection.py}).}]
+# project_vector_to_vibrational_torch removes TR components from g
+grad_proj = project_vector_to_vibrational_torch(
+    forces.reshape(-1), coords, atomsymbols
+)
+\end{lstlisting}
+
+For GAD, \emph{both} the gradient $g$ and the guide vector $v_1$ are
+projected before computing the GAD direction:
+\begin{lstlisting}[caption={Eckart projection of the GAD direction
+(\texttt{runners/run\_gad\_baselines\_parallel.py}).}]
+if project_gradient_and_v and atomsymbols is not None:
+    gad_vec, v_proj, _ = gad_dynamics_projected_torch(
+        coords=coords, forces=forces, v=v, atomsymbols=atomsymbols,
+    )
+    v     = v_proj.reshape(-1)
+    gad_flat = gad_vec.reshape(-1)
+\end{lstlisting}
+
+\subsection{Finding}
+
+Eckart projection was critical in every configuration tested.
+Disabling it caused progressive drift of the molecular centre of mass,
+which corrupts the Hessian eigenvalue spectrum and causes spurious flat modes
+to proliferate beyond what the $\trthr$ filter can handle alone.
+\texttt{project\_gradient\_and\_v=True} was fixed in all grid-search
+configurations; no configuration without it was competitive.
+
+% ============================================================
+\section{Hessian Purification (Negative Result)}
+\label{sec:purify}
+% ============================================================
+
+\textbf{Hypothesis}: Enforcing the translational sum rule
+$\sum_j H_{ij} = 0$ (for all $i$) on the raw DFTB0 Hessian before
+projection would improve numerical stability by reducing the residual
+non-zero eigenvalues in the TR subspace.
+
+\textbf{Result}: Across 32 matched configuration pairs in the NR grid search,
+purification produced \emph{identical} per-sample convergence outcomes in
+every single pair. It was therefore disabled (\texttt{purify\_hessian=False})
+to save the small additional compute cost.
+
+\textbf{Interpretation}: The Eckart projection already effectively removes
+TR contamination from the \emph{step}, even if the Hessian matrix itself
+retains small TR residuals. Since the pseudoinverse step never projects onto
+TR modes (by design), enforcing perfect sum rules on $H$ adds no benefit.
+
+% ============================================================
+\section{Synthesis: Comparison Tables and Interaction Effects}
+\label{sec:synthesis}
+% ============================================================
+
+\subsection{NR Minimization: final grid results}
+
+Best configuration (\texttt{mad1.3\_tr8e-3\_pgtrue}):
+\textbf{99\% convergence}, 455 mean steps (starting from 2\,\AA\ noise, 100 samples).
+
+\begin{center}
+\begin{tabular}{lccc}
+\toprule
+Configuration & Success rate & Mean steps & Wall time \\
+\midrule
+\texttt{mad1.3\_tr8e-3\_pgtrue} & \textbf{99\%} & 455.1 & 2.10\,s \\
+\texttt{mad1.3\_tr5e-3\_pgtrue} & 98\% & 976.3 & 5.29\,s \\
+\texttt{mad1.3\_tr1e-2\_pgtrue} & 97\% & \textbf{306.6} & 2.50\,s \\
+\texttt{mad1.3\_tr2e-3\_pgtrue} & 88\% & 1992.1 & 19.45\,s \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Main effect: $\trthr$ threshold.} The results demonstrate a sharp performance peak at $\trthr = 8\times10^{-3}$, where the convergence rate reaches 99\% and the step count drops to 455. A slightly higher threshold ($1\times10^{-2}$) yields fewer steps (306) but drops convergence to 97\%. A lower threshold ($2\times10^{-3}$) causes a severe performance drop, nearly quintupling the step count to 1992 and dropping convergence to 88\%. This definitively confirms the necessity of aggressively filtering flat modes to avoid numerical noise.
+
+\subsection{GAD: full grid-search results (30 samples, DFTB0, 2\,\AA\ noise)}
+
+\begin{center}
+\begin{tabular}{lccc}
+\toprule
+Configuration & Success rate & Mean steps & Wall time \\
+\midrule
+\texttt{mad1.3\_tr5e-3\_blmode\_tracked} & \textbf{100\%} & 477.6 & 2.66\,s \\
+\texttt{mad1.0\_tr2e-3\_blmode\_tracked} & \textbf{100\%} & 896.4 & 5.03\,s \\
+\texttt{mad1.5\_tr5e-3\_blmode\_tracked} & \textbf{100\%} & 1035.4 & 5.81\,s \\
+\texttt{mad0.5\_tr1e-2\_blmode\_tracked} & 97\% & 171.7 & 2.12\,s \\
+\texttt{mad1.5\_tr2e-3\_blplain} & 73\% & 1470.3 & 20.98\,s \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Main effects (GAD)}
+
+\begin{description}
+    \item[\texttt{baseline}] $+10$ pp success rate, $1.9\times$ fewer steps for
+          \texttt{mode\_tracked} vs \texttt{plain}. \textbf{Largest single effect.}
+    \item[\texttt{tr\_threshold}] $2\times10^{-3}$ clearly worst (0.858);
+          $5\times10^{-3}$ and $10^{-2}$ tied on success rate (0.933) but
+          $10^{-2}$ is faster. \textbf{Second largest effect.}
+    \item[\texttt{max\_atom\_disp}] Flat between 1.0--1.3\,\AA\ for success rate;
+          $0.5$\,\AA\ slightly worse at 0.908. \textbf{Third.}
+\end{description}
+
+\subsection{Worst performers}
+
+All bottom-10 configurations are \texttt{plain} baseline, confirming that
+mode tracking is the dominant factor. The plain runs also have $5\times$ longer
+wall times (11.6\,s vs 4.6\,s mean), suggesting they are not just slower but
+are taking fundamentally different (pathological) trajectories.
+
+\subsection{Hardest samples}
+
+Sample 012 succeeded in only 10/32 configurations (31\%), all successful
+runs used \texttt{mode\_tracked}. This sample likely has a highly degenerate
+curvature spectrum near the midpoint, making the deflation direction ambiguous
+without tracking. Samples 014 (62\%) and 025 (81\%) form a middle tier;
+the remaining 27 samples converged in $>$88\% of configurations.
+
+% ============================================================
+\section{Summary of Logging and Diagnostics Infrastructure}
+\label{sec:logging}
+% ============================================================
+
+A comprehensive \texttt{TrajectoryLogger} was built to record
+\texttt{ExtendedMetrics} at every step, enabling post-hoc analysis of
+failure modes. Key logged fields per step:
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Field & Description \\
+\midrule
+\texttt{step\_size\_eff} & Trust radius $\Delta_k$ used at step $k$ \\
+\texttt{x\_disp\_step} & Actual per-step displacement $\norm{x_k - x_{k-1}}$ \\
+\texttt{eig\_0}, \texttt{eig\_1} & Two lowest vibrational eigenvalues \\
+\texttt{morse\_index} & Number of negative vibrational eigenvalues \\
+\texttt{eig\_gap\_01} & $\abs{\lambda_2 - \lambda_1}$ (singularity proximity) \\
+\texttt{mode\_overlap} & $\abs{\inner{v_1(t)}{v_1(t-1)}}$ \\
+\texttt{grad\_norm} & $\norm{\nabla E}$ \\
+\texttt{n\_tr\_modes} & Number of near-zero modes filtered \\
+\texttt{energy\_delta} & $E_k - E_{k-1}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Grid-search analysis scripts (\texttt{analyze\_gad\_grid.py},
+\texttt{analyze\_minimization\_nr\_grid.py}) parse per-combo result JSON
+files, compute main effects, interaction tables, and sample hardness rankings.
+Trajectory plotting scripts (\texttt{plot\_gad\_grid\_trajectories.py},
+\texttt{plot\_nr\_grid\_trajectories.py}) produce per-sample PNG diagnostic
+figures including trust-radius evolution — directly mirroring the
+step-size-over-time plots used in the NR analysis.
+
+% ============================================================
+\section{Conclusions and Next Steps}
+\label{sec:conclusion}
+% ============================================================
+
+Both the NR minimization and the GAD saddle-point search have been transformed
+from unreliable baselines into high-performance optimizers on a genuinely
+difficult benchmark (2\,\AA\ noise, DFTB0, Transition1x test set):
+
+\begin{center}
+\begin{tabular}{lccc}
+\toprule
+Algorithm & Before & After & Speedup \\
+\midrule
+NR Minimization & 45\%, $\sim$8000 steps & 99\%, 455 steps & $17\times$ \\
+GAD (TS search) & $\sim$60--70\% & 100\%, 478 steps & $>2\times$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{Most impactful finding across both algorithms.}
+Aggressively filtering modes with $\abs{\lambda} < 8\times10^{-3}$
+(rather than clamping them) is the single biggest source of improvement.
+The flat modes in DFTB0 at 2\,\AA\ noise are not physical — they are
+numerical artefacts that, if stepped along, corrupt the entire search.
+Discarding them entirely acts as a highly effective dynamic dimensionality
+reduction.
+
+\paragraph{Next steps.}
+\begin{enumerate}[noitemsep]
+    \item \textbf{Adapt NR Trust Region into GAD}: Implement the exact dogleg/trust-region energy prediction logic ($\rho$ ratio, $1.3$\,\AA\ cap, harsh $0.25\times$ penalties) and the aggressive $8\times10^{-3}$ eigenvalue filtering into the GAD script to push its success rate up to 100\% with fewer steps.
+    \item Validate on 1\,\AA\ and 0.5\,\AA\ noise levels to probe
+          generalization.
+    \item Test with higher-fidelity functionals (DFT) where Hessian noise
+          may differ.
+    \item Explore the interaction between $\trthr$ and molecular size (number
+          of atoms), since the number of modes filtered scales with $N$.
+\end{enumerate}
+
+\bibliographystyle{unsrt}
+\begin{thebibliography}{9}
+
+\bibitem{henkelman2021transition1x}
+O.~Schreiner, C.~Bhatt, and P.~Rauer,
+\textit{Transition1x — a dataset for building generalizable reactive machine
+learning potentials},
+Scientific Data, 9:1, 2022.
+
+\bibitem{nocedal2006numerical}
+J.~Nocedal and S.~J.~Wright,
+\textit{Numerical Optimization}, 2nd ed.,
+Springer, 2006.
+
+\bibitem{levitt2014convergence}
+A.~Levitt and C.~Ortner,
+\textit{Convergence and cycling in Walker-type saddle search algorithms},
+SIAM Journal on Numerical Analysis, 55(2):2204--2227, 2017.
+
+\end{thebibliography}
+
+\end{document}

@@ -1,0 +1,72 @@
+\relax 
+\providecommand\hyper@newdestlabel[2]{}
+\providecommand\HyField@AuxAddToFields[1]{}
+\providecommand\HyField@AuxAddToCoFields[2]{}
+\citation{henkelman2021transition1x}
+\@writefile{toc}{\contentsline {section}{\numberline {1}Background and Experimental Setup}{4}{section.1}\protected@file@percent }
+\newlabel{sec:setup}{{1}{4}{Background and Experimental Setup}{section.1}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {1.1}Algorithms}{4}{subsection.1.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Newton-Raphson minimization.}{4}{section*.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Gradient Ascent Deflation (GAD).}{4}{section*.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {1.2}Dataset and noise}{4}{subsection.1.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {2}Newton Step in the Vibrational Pseudoinverse Subspace}{4}{section.2}\protected@file@percent }
+\newlabel{sec:newton}{{2}{4}{Newton Step in the Vibrational Pseudoinverse Subspace}{section.2}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.1}Motivation}{4}{subsection.2.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.2}The vibrational pseudoinverse}{4}{subsection.2.2}\protected@file@percent }
+\@writefile{lol}{\contentsline {lstlisting}{\numberline {1}{\ignorespaces Vibrational pseudoinverse step (NR minimization, \texttt  {baselines/minimization.py}).}}{5}{lstlisting.1}\protected@file@percent }
+\@writefile{lol}{\contentsline {lstlisting}{\numberline {2}{\ignorespaces Same step applied to the GAD modified gradient (\texttt  {runners/run\_gad\_baselines\_parallel.py}).}}{5}{lstlisting.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.3}Why this helps}{5}{subsection.2.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {3}Aggressive Eigenvalue Filtering}{5}{section.3}\protected@file@percent }
+\newlabel{sec:filtering}{{3}{5}{Aggressive Eigenvalue Filtering}{section.3}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.1}The danger of flat modes}{5}{subsection.3.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.2}Filter vs.\ clamp}{6}{subsection.3.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.3}Threshold sweep (NR minimization)}{6}{subsection.3.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.4}Threshold sweep (GAD grid search)}{6}{subsection.3.4}\protected@file@percent }
+\@writefile{lol}{\contentsline {lstlisting}{\numberline {3}{\ignorespaces Filtering in practice: mask construction (\texttt  {run\_gad\_baselines\_parallel.py}).}}{6}{lstlisting.3}\protected@file@percent }
+\citation{nocedal2006numerical}
+\@writefile{toc}{\contentsline {section}{\numberline {4}Adaptive Trust Region}{7}{section.4}\protected@file@percent }
+\newlabel{sec:tr}{{4}{7}{Adaptive Trust Region}{section.4}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.1}Overview}{7}{subsection.4.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.2}Why $\rho > 0.75$ / $\rho < 0.25$ thresholds?}{7}{subsection.4.2}\protected@file@percent }
+\@writefile{lol}{\contentsline {lstlisting}{\numberline {4}{\ignorespaces Trust Region inner loop (\texttt  {baselines/minimization.py}, Newton-Raphson).}}{7}{lstlisting.4}\protected@file@percent }
+\@writefile{loa}{\contentsline {algorithm}{\numberline {1}{\ignorespaces Trust Region step (NR minimization / GAD)}}{8}{algorithm.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.3}Impact}{8}{subsection.4.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {5}Mode Tracking (GAD-Specific)}{8}{section.5}\protected@file@percent }
+\newlabel{sec:modetrack}{{5}{8}{Mode Tracking (GAD-Specific)}{section.5}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.1}Problem}{8}{subsection.5.1}\protected@file@percent }
+\citation{levitt2014convergence}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.2}Solution: eigenvector tracking}{9}{subsection.5.2}\protected@file@percent }
+\@writefile{lol}{\contentsline {lstlisting}{\numberline {5}{\ignorespaces Mode tracking in \texttt  {core\_algos/gad.py}.}}{9}{lstlisting.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.3}Empirical impact (GAD grid search)}{9}{subsection.5.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.4}Physical interpretation}{9}{subsection.5.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {6}Maximum Atom Displacement Cap}{10}{section.6}\protected@file@percent }
+\newlabel{sec:madcap}{{6}{10}{Maximum Atom Displacement Cap}{section.6}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.1}Role in the Trust Region}{10}{subsection.6.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.2}Empirical finding}{10}{subsection.6.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {7}Eckart Projection}{10}{section.7}\protected@file@percent }
+\newlabel{sec:eckart}{{7}{10}{Eckart Projection}{section.7}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {7.1}What it does}{10}{subsection.7.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {7.2}Implementation}{10}{subsection.7.2}\protected@file@percent }
+\@writefile{lol}{\contentsline {lstlisting}{\numberline {6}{\ignorespaces Eckart gradient projection (\texttt  {dependencies/differentiable\_projection.py}).}}{10}{lstlisting.6}\protected@file@percent }
+\@writefile{lol}{\contentsline {lstlisting}{\numberline {7}{\ignorespaces Eckart projection of the GAD direction (\texttt  {runners/run\_gad\_baselines\_parallel.py}).}}{11}{lstlisting.7}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {7.3}Finding}{11}{subsection.7.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {8}Hessian Purification (Negative Result)}{11}{section.8}\protected@file@percent }
+\newlabel{sec:purify}{{8}{11}{Hessian Purification (Negative Result)}{section.8}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {9}Synthesis: Comparison Tables and Interaction Effects}{11}{section.9}\protected@file@percent }
+\newlabel{sec:synthesis}{{9}{11}{Synthesis: Comparison Tables and Interaction Effects}{section.9}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {9.1}NR Minimization: final grid results}{11}{subsection.9.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {9.2}GAD: full grid-search results (30 samples, DFTB0, 2\,\r A\ noise)}{12}{subsection.9.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {9.3}Main effects (GAD)}{12}{subsection.9.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {9.4}Worst performers}{12}{subsection.9.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {9.5}Hardest samples}{12}{subsection.9.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {10}Summary of Logging and Diagnostics Infrastructure}{12}{section.10}\protected@file@percent }
+\newlabel{sec:logging}{{10}{12}{Summary of Logging and Diagnostics Infrastructure}{section.10}{}}
+\bibstyle{unsrt}
+\bibcite{henkelman2021transition1x}{1}
+\bibcite{nocedal2006numerical}{2}
+\bibcite{levitt2014convergence}{3}
+\@writefile{toc}{\contentsline {section}{\numberline {11}Conclusions and Next Steps}{13}{section.11}\protected@file@percent }
+\newlabel{sec:conclusion}{{11}{13}{Conclusions and Next Steps}{section.11}{}}
+\@writefile{toc}{\contentsline {paragraph}{Most impactful finding across both algorithms.}{13}{section*.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Next steps.}{13}{section*.6}\protected@file@percent }
+\gdef \@abspage@last{13}

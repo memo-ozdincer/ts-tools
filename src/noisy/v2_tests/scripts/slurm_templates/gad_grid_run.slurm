@@ -225,4 +225,17 @@ python "$PROJECT_DIR/src/noisy/v2_tests/scripts/plot_gad_grid_trajectories.py" \
     --output-dir "$PLOTS_OUT"
 
 echo "Plotting complete. PNGs saved to ${PLOTS_OUT}"
+
+TRAJ_STATS_OUT="${OUT_DIR}/traj_stats"
+mkdir -p "$TRAJ_STATS_OUT"
+echo "Running trajectory-level statistics..."
+python "$PROJECT_DIR/src/noisy/v2_tests/scripts/analyze_gad_trajectory_stats.py" \
+    --grid-dir "$OUT_DIR" \
+    --output-dir "$TRAJ_STATS_OUT" \
+    --top-k 10 > "${TRAJ_STATS_OUT}/traj_stats_report.txt"
+
+echo "Trajectory stats written to ${TRAJ_STATS_OUT}/traj_stats_report.txt"
+echo "  • gad_traj_stats_per_sample.csv — one row per trajectory"
+echo "  • gad_traj_stats_per_combo.csv  — aggregated per hyperparameter combo"
+echo "  • gad_traj_stats_summary.json   — machine-readable summary"
 echo "=============================================="
