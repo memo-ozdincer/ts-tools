@@ -32,17 +32,22 @@
 # Key hyperparameters informed by NR minimization findings:
 #   1. max_atom_disp  - Trust radius cap (Å). Bigger → larger confident steps.
 #                       Sweep: 0.5, 1.0, 1.3, 1.5 Å.
-#   2. tr_threshold   - Eigenvalue cutoff for flat-mode filtering.
-#                       NR winner: 8e-3. Sweep nearby region for GAD.
-#                       Sweep: 2e-3, 5e-3, 8e-3, 1e-2.
-#   3. baseline       - plain (always lowest eigenvec) vs mode_tracked (tracks
+#   2. baseline       - plain (always lowest eigenvec) vs mode_tracked (tracks
 #                       eigenvec across steps for smoother TS search).
+#
+# NOTE on tr_threshold: the GAD step and convergence check use the reduced
+# vibrational basis (exact 3N-k eigenvalues, no threshold). The --tr-threshold
+# arg is accepted by the runner and forwarded to the trajectory logger ONLY
+# for TR residual diagnostics (monitoring how many modes look near-zero).
+# It does NOT affect the GAD direction, trust radius, or convergence criterion.
+# The sweep below is kept for diagnostic sensitivity analysis; do not interpret
+# it as an algorithmic hyperparameter sweep.
 #
 # Fixed (from NR findings):
 #   - project_gradient_and_v=true (Eckart projection: mandatory)
 #   - purify_hessian=false       (no measurable impact, saves compute)
 #
-# Grid: 4 (mad) x 4 (tr) x 2 (baseline) = 32 combinations x 30 samples
+# Grid: 4 (mad) x 2 (baseline) = 8 algorithmic combinations x 4 (tr diagnostic) x 30 samples
 # =============================================================================
 
 set -e
@@ -110,8 +115,8 @@ PURIFY_HESSIAN="false"
 # Sweep the full range for GAD to characterize the trust-radius dynamics.
 MAX_ATOM_DISP_GRID=("0.5" "1.0" "1.3" "1.5")
 
-# Flat-mode eigenvalue cutoff. NR finding: 8e-3 dominated.
-# Sweep the same region for GAD to measure the same effect on saddle search.
+# Logger-only diagnostic threshold. Does NOT affect GAD algorithm behaviour.
+# Sweep kept to characterize TR residual sensitivity in logged diagnostics.
 TR_THRESHOLD_GRID=("2e-3" "5e-3" "8e-3" "1e-2")
 
 # plain: always picks lowest eigenvector

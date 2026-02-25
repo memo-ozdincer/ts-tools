@@ -20,8 +20,7 @@ import torch
 from torch_geometric.loader import DataLoader
 
 from src.dependencies.common_utils import Transition1xDataset, UsePos, parse_starting_geometry
-from src.dependencies.hessian import get_scine_elements_from_predict_output
-from src.noisy.multi_mode_eckartmw import get_projected_hessian, _atomic_nums_to_symbols
+from src.noisy.multi_mode_eckartmw import get_vib_evals_evecs, _atomic_nums_to_symbols
 from src.noisy.v2_tests.baselines.minimization import run_fixed_step_gd, run_newton_raphson
 from src.parallel.scine_parallel import ParallelSCINEProcessor
 from src.parallel.utils import run_batch_parallel
@@ -51,46 +50,34 @@ def run_single_sample(
     known_ts_coords: Optional[torch.Tensor] = None,
 ) -> Dict[str, Any]:
     method = params["method"]
+    project_gradient_and_v = params.get("project_gradient_and_v", False)
+    # Atom symbols are always needed: reduced-basis eigendecomposition requires them.
+    all_atomsymbols = _atomic_nums_to_symbols(atomic_nums)
 
     def _count_neg_vib(coords_local: torch.Tensor) -> Optional[int]:
         try:
             out = predict_fn(coords_local, atomic_nums, do_hessian=True, require_grad=False)
-            scine_elements = get_scine_elements_from_predict_output(out)
-            hess_proj = get_projected_hessian(out["hessian"], coords_local, atomic_nums, scine_elements)
-            evals, _ = torch.linalg.eigh(hess_proj)
-            tr_threshold = float(params.get("tr_threshold", 1e-6))
-            vib_mask = torch.abs(evals) > tr_threshold
-            vib_evals = evals[vib_mask]
-            return int((vib_evals < -tr_threshold).sum().item())
+            evals_vib, _, _ = get_vib_evals_evecs(out["hessian"], coords_local, all_atomsymbols)
+            return int((evals_vib < 0.0).sum().item())
         except Exception:
             return None
-
-    project_gradient_and_v = params.get("project_gradient_and_v", False)
 
     t0 = time.time()
     try:
         start_neg_vib = _count_neg_vib(coords)
-
-        # Pre-fetch scine_elements (needed for Hessian projection in both methods)
-        init_out = predict_fn(coords, atomic_nums, do_hessian=True, require_grad=False)
-        scine_elements = get_scine_elements_from_predict_output(init_out)
-        all_atomsymbols = _atomic_nums_to_symbols(atomic_nums)
 
         if method == "fixed_step_gd":
             result, trajectory = run_fixed_step_gd(
                 predict_fn,
                 coords,
                 atomic_nums,
-                get_projected_hessian,
+                all_atomsymbols,
                 n_steps=n_steps,
                 step_size=params["step_size"],
                 max_atom_disp=params["max_atom_disp"],
                 force_converged=params["force_converged"],
                 min_interatomic_dist=params["min_interatomic_dist"],
-                tr_threshold=params["tr_threshold"],
                 project_gradient_and_v=project_gradient_and_v,
-                atomsymbols=all_atomsymbols if project_gradient_and_v else None,
-                scine_elements=scine_elements,
                 purify_hessian=params.get("purify_hessian", False),
             )
         elif method == "newton_raphson":
@@ -98,15 +85,12 @@ def run_single_sample(
                 predict_fn,
                 coords,
                 atomic_nums,
-                get_projected_hessian,
+                all_atomsymbols,
                 n_steps=n_steps,
                 max_atom_disp=params["max_atom_disp"],
                 force_converged=params["force_converged"],
                 min_interatomic_dist=params["min_interatomic_dist"],
-                tr_threshold=params["tr_threshold"],
                 project_gradient_and_v=project_gradient_and_v,
-                atomsymbols=all_atomsymbols if project_gradient_and_v else None,
-                scine_elements=scine_elements,
                 purify_hessian=params.get("purify_hessian", False),
                 known_ts_coords=known_ts_coords,
             )
@@ -259,7 +243,6 @@ def main() -> None:
     parser.add_argument("--max-atom-disp", type=float, default=1.3)
     parser.add_argument("--force-converged", type=float, default=1e-4)
     parser.add_argument("--min-interatomic-dist", type=float, default=0.5)
-    parser.add_argument("--tr-threshold", type=float, default=8e-3)
 
     # Gradient descent parameters
     parser.add_argument("--step-size", type=float, default=0.01,
@@ -291,7 +274,6 @@ def main() -> None:
         "max_atom_disp": args.max_atom_disp,
         "force_converged": args.force_converged,
         "min_interatomic_dist": args.min_interatomic_dist,
-        "tr_threshold": args.tr_threshold,
         "project_gradient_and_v": args.project_gradient_and_v,
         "purify_hessian": args.purify_hessian,
         "log_dir": str(diag_dir),

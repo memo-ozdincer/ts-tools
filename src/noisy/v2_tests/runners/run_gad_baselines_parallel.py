@@ -29,7 +29,7 @@ from src.dependencies.differentiable_projection import (
     get_mass_weights_torch,
 )
 from src.dependencies.hessian import get_scine_elements_from_predict_output, prepare_hessian
-from src.noisy.multi_mode_eckartmw import get_projected_hessian, _min_interatomic_distance, _atomic_nums_to_symbols
+from src.noisy.multi_mode_eckartmw import get_projected_hessian, get_vib_evals_evecs, _min_interatomic_distance, _atomic_nums_to_symbols
 from src.noisy.v2_tests.logging import TrajectoryLogger
 from src.parallel.scine_parallel import ParallelSCINEProcessor
 from src.parallel.utils import run_batch_parallel
@@ -46,9 +46,6 @@ def create_dataloader(h5_path: str, split: str, max_samples: int):
         raise RuntimeError("No Transition1x samples loaded. Check h5 path and split.")
     return DataLoader(dataset, batch_size=1, shuffle=False)
 
-
-def _vib_mask_from_evals(evals: torch.Tensor, tr_threshold: float) -> torch.Tensor:
-    return evals.abs() > float(tr_threshold)
 
 
 def _cap_displacement(step_disp: torch.Tensor, max_atom_disp: float) -> torch.Tensor:
@@ -94,9 +91,9 @@ def run_gad_baseline(
     prev_pos = coords.clone()
     prev_energy: Optional[float] = None
 
-    # Pre-compute atom symbols if needed for reduced_basis or project_gradient_and_v
-    need_symbols = projection_mode == "reduced_basis" or project_gradient_and_v
-    atomsymbols = _atomic_nums_to_symbols(atomic_nums) if need_symbols else None
+    # Always compute atom symbols: needed for reduced-basis eigendecomposition on
+    # every step, regardless of projection_mode or project_gradient_and_v.
+    atomsymbols = _atomic_nums_to_symbols(atomic_nums)
 
     # Frame tracking reference
     ref_coords = coords.clone() if frame_tracking else None
@@ -141,29 +138,29 @@ def run_gad_baseline(
 
         # ---- Original eckart_full path ----
         else:
+            # Projected Hessian (3N×3N) is still needed for the trust-radius
+            # quadratic-model prediction (dE_pred = g·dx + ½ dx^T H dx).
             hess_proj = get_projected_hessian(hessian, coords, atomic_nums, scine_elements,
                                               purify_hessian=purify_hessian)
             if hess_proj.dim() != 2 or hess_proj.shape[0] != 3 * num_atoms:
                 hess_proj = prepare_hessian(hess_proj, num_atoms)
 
-            evals, evecs = torch.linalg.eigh(hess_proj)
-            vib_mask = _vib_mask_from_evals(evals, tr_threshold)
-            vib_indices = torch.where(vib_mask)[0]
+            # Vibrational eigenvalues via reduced basis — exactly 3N-k values,
+            # no threshold, no silent exclusion of soft or near-zero modes.
+            evals_vib, evecs_vib_3N, _Q_vib = get_vib_evals_evecs(
+                hessian, coords, atomsymbols, purify_hessian=purify_hessian,
+            )
+            evals_vib = evals_vib.to(device=forces.device, dtype=forces.dtype)
+            evecs_vib_3N = evecs_vib_3N.to(device=forces.device, dtype=forces.dtype)
 
-            if int(vib_indices.numel()) == 0:
-                evals_vib = evals
-                candidate_indices = torch.arange(min(8, evecs.shape[1]), device=evecs.device)
-            else:
-                evals_vib = evals[vib_mask]
-                candidate_indices = vib_indices[: min(8, int(vib_indices.numel()))]
-
-            V = evecs[:, candidate_indices].to(device=forces.device, dtype=forces.dtype)
+            n_candidates = min(8, int(evals_vib.numel()))
+            V = evecs_vib_3N[:, :n_candidates]
             v_prev_local = v_prev.to(device=forces.device, dtype=forces.dtype).reshape(-1) if (track_mode and v_prev is not None) else None
             v_new, mode_index, _overlap = pick_tracked_mode(V, v_prev_local, k=int(V.shape[1]))
             v = v_new
 
             # Compute GAD direction with optional vector projection
-            if project_gradient_and_v and atomsymbols is not None:
+            if project_gradient_and_v:
                 gad_vec, v_proj, _proj_info = gad_dynamics_projected_torch(
                     coords=coords,
                     forces=forces,
@@ -190,7 +187,7 @@ def run_gad_baseline(
                 eig_product = float("inf")
                 evals_vib_0 = float("nan")
                 evals_vib_1 = float("nan")
-            neg_vib_count = int((evals_vib < -float(tr_threshold)).sum().item()) if int(evals_vib.numel()) > 0 else -1
+            neg_vib_count = int((evals_vib < 0.0).sum().item()) if int(evals_vib.numel()) > 0 else -1
 
         disp_from_last = float((coords - prev_pos).norm(dim=1).mean().item()) if step > 0 else 0.0
         if step > 0:
@@ -214,6 +211,9 @@ def run_gad_baseline(
                 energy_prev=prev_energy,
                 mode_index=mode_index,
                 x_disp_window=x_disp_window,
+                tr_threshold=tr_threshold,
+                vib_evals=evals_vib,
+                vib_evecs_full=evecs_vib_3N,
             )
 
         if stop_at_ts and np.isfinite(eig_product) and eig_product < -abs(ts_eps):

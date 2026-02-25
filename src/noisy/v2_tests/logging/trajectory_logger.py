@@ -85,6 +85,8 @@ class TrajectoryLogger:
         mode_index: Optional[int] = None,
         x_disp_window: Optional[float] = None,
         tr_threshold: float = 1e-6,
+        vib_evals: Optional[torch.Tensor] = None,
+        vib_evecs_full: Optional[torch.Tensor] = None,
     ) -> ExtendedMetrics:
         """Log a single GAD step with extended metrics.
 
@@ -117,6 +119,8 @@ class TrajectoryLogger:
             x_disp_window=x_disp_window,
             tr_threshold=tr_threshold,
             known_ts_coords=self.known_ts_coords,
+            vib_evals=vib_evals,
+            vib_evecs_full=vib_evecs_full,
         )
 
         # Compute v1-v2 overlap for mode swap detection

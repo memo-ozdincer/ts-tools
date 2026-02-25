@@ -182,6 +182,8 @@ def compute_extended_metrics(
     tr_threshold: float = 1e-6,
     n_eigs_to_compute: int = 6,
     known_ts_coords: Optional[torch.Tensor] = None,
+    vib_evals: Optional[torch.Tensor] = None,
+    vib_evecs_full: Optional[torch.Tensor] = None,
 ) -> Tuple[ExtendedMetrics, torch.Tensor, torch.Tensor]:
     """Compute extended metrics for a single GAD step.
 
@@ -215,12 +217,12 @@ def compute_extended_metrics(
     forces_flat = forces.reshape(-1)  # (3N,)
     grad_flat = -forces_flat  # ∇E = -forces
 
-    # Eigendecomposition of projected Hessian
-    evals, evecs = torch.linalg.eigh(hessian_proj)
+    # Eigendecomposition of projected Hessian — used only for TR diagnostics.
+    evals_full, evecs_full = torch.linalg.eigh(hessian_proj)
 
-    # TR mode diagnostics: track near-zero eigenvalues to verify projection
-    tr_mask = torch.abs(evals) <= tr_threshold
-    tr_evals = evals[tr_mask]
+    # TR mode diagnostics: how well did the Eckart projection zero the TR modes?
+    tr_mask = torch.abs(evals_full) <= tr_threshold
+    tr_evals = evals_full[tr_mask]
     n_tr_modes = int(tr_mask.sum().item())
 
     if n_tr_modes > 0:
@@ -233,23 +235,30 @@ def compute_extended_metrics(
         tr_eig_mean = float("nan")
         tr_eig_std = float("nan")
 
-    # Filter out TR modes (near-zero eigenvalues) for vibrational analysis
-    vib_mask = ~tr_mask
-    vib_indices = torch.where(vib_mask)[0]
-
-    if len(vib_indices) < n_eigs_to_compute:
-        # Not enough vibrational modes, use all
-        vib_evals = evals
-        vib_evecs = evecs
+    # Vibrational modes for spectrum / Morse index / eigenvector extraction.
+    # Prefer the pre-computed reduced-basis eigenvalues (exact 3N-k, no threshold)
+    # when provided by the caller.  Fall back to threshold filtering otherwise.
+    if vib_evals is not None and vib_evecs_full is not None:
+        vib_evals_use = vib_evals
+        vib_evecs_use = vib_evecs_full
+        # Morse index: every eigenvalue < 0 is genuinely negative (no threshold dead-zone)
+        neg_mask = vib_evals_use < 0.0
     else:
-        vib_evals = evals[vib_indices]
-        vib_evecs = evecs[:, vib_indices]
+        vib_mask = ~tr_mask
+        vib_indices = torch.where(vib_mask)[0]
+        if len(vib_indices) < n_eigs_to_compute:
+            vib_evals_use = evals_full
+            vib_evecs_use = evecs_full
+        else:
+            vib_evals_use = evals_full[vib_indices]
+            vib_evecs_use = evecs_full[:, vib_indices]
+        neg_mask = vib_evals_use < -tr_threshold
 
     # Extract first 6 eigenvalues (or fewer if not available)
-    n_avail = min(n_eigs_to_compute, len(vib_evals))
+    n_avail = min(n_eigs_to_compute, int(vib_evals_use.numel()))
     eig_spectrum = [float("nan")] * n_eigs_to_compute
     for i in range(n_avail):
-        eig_spectrum[i] = float(vib_evals[i].item())
+        eig_spectrum[i] = float(vib_evals_use[i].item())
 
     eig_0, eig_1, eig_2, eig_3, eig_4, eig_5 = eig_spectrum
 
@@ -267,20 +276,19 @@ def compute_extended_metrics(
         eig_gap_12 = float("nan")
 
     # Morse index (count negative vibrational eigenvalues)
-    neg_mask = vib_evals < -tr_threshold
     morse_index = int(neg_mask.sum().item())
-    neg_eig_sum = float(vib_evals[neg_mask].sum().item()) if neg_mask.any() else 0.0
+    neg_eig_sum = float(vib_evals_use[neg_mask].sum().item()) if neg_mask.any() else 0.0
 
     # Singularity metric: minimum gap between adjacent eigenvalue pairs
     if n_avail >= 2:
-        gaps = torch.abs(vib_evals[1:n_avail] - vib_evals[:n_avail-1])
+        gaps = torch.abs(vib_evals_use[1:n_avail] - vib_evals_use[:n_avail-1])
         singularity_metric = float(gaps.min().item()) if len(gaps) > 0 else float("nan")
     else:
         singularity_metric = float("nan")
 
     # Extract v1 and v2 from vibrational modes
-    v1 = vib_evecs[:, 0] if n_avail >= 1 else torch.zeros(3 * num_atoms, device=coords.device)
-    v2 = vib_evecs[:, 1] if n_avail >= 2 else torch.zeros(3 * num_atoms, device=coords.device)
+    v1 = vib_evecs_use[:, 0] if n_avail >= 1 else torch.zeros(3 * num_atoms, device=coords.device)
+    v2 = vib_evecs_use[:, 1] if n_avail >= 2 else torch.zeros(3 * num_atoms, device=coords.device)
 
     # Normalize
     v1 = v1 / (v1.norm() + 1e-12)

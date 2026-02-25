@@ -295,10 +295,17 @@ def load_all_trajectories(grid_dir: Path, traj_glob: str) -> List[Dict[str, Any]
             continue
 
         sample_id = traj_path.stem.replace("_trajectory", "")
-        # Infer convergence: any step where eig0 < 0 and eig1 > 0
-        eig0 = np.array(data.get("eig_0", []), dtype=float)
-        eig1 = np.array(data.get("eig_1", []), dtype=float)
-        converged = bool(np.any((eig0 < 0) & (eig1 > 0)))
+
+        # Read convergence from the paired summary JSON (authoritative source).
+        # Fallback: any step where morse_index == 1 (exactly one negative vib mode).
+        summary_path = traj_path.with_name(traj_path.name.replace("_trajectory.json", "_summary.json"))
+        if summary_path.exists():
+            with open(summary_path) as sf:
+                summary_data = json.load(sf)
+            converged = bool(summary_data.get("converged_to_ts", False))
+        else:
+            morse = np.array(data.get("morse_index", []), dtype=float)
+            converged = bool(np.any(morse == 1))
 
         stats = compute_trajectory_stats(data, converged)
         stats.update({

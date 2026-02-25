@@ -26,6 +26,7 @@ import torch
 from src.dependencies.differentiable_projection import (
     project_vector_to_vibrational_torch,
 )
+from src.noisy.multi_mode_eckartmw import get_vib_evals_evecs
 
 
 def _to_float(x) -> float:
@@ -67,17 +68,14 @@ def run_fixed_step_gd(
     predict_fn,
     coords0: torch.Tensor,
     atomic_nums: torch.Tensor,
-    get_projected_hessian_fn,
+    atomsymbols: list,
     *,
     n_steps: int = 5000,
     step_size: float = 0.01,
     max_atom_disp: float = 0.3,
     force_converged: float = 1e-4,
     min_interatomic_dist: float = 0.5,
-    tr_threshold: float = 1e-6,
     project_gradient_and_v: bool = False,
-    atomsymbols: Optional[list] = None,
-    scine_elements=None,
     purify_hessian: bool = False,
 ) -> Tuple[Dict[str, Any], list]:
     """Fixed-step gradient descent to find energy minimum.
@@ -125,15 +123,10 @@ def run_fixed_step_gd(
 
         force_norm = _force_mean(forces)
 
-        # Compute Hessian eigenvalues to check for minimum (n_neg == 0)
-        hess_proj = get_projected_hessian_fn(
-            hessian, coords, atomic_nums, scine_elements,
-            purify_hessian=purify_hessian,
-        )
-        evals, _ = torch.linalg.eigh(hess_proj)
-        vib_mask = torch.abs(evals) > tr_threshold
-        vib_evals = evals[vib_mask] if vib_mask.any() else evals
-        n_neg = int((vib_evals < -tr_threshold).sum().item())
+        # Vibrational eigenvalues via reduced basis — no threshold filtering.
+        evals_vib, _, _ = get_vib_evals_evecs(hessian, coords, atomsymbols,
+                                              purify_hessian=purify_hessian)
+        n_neg = int((evals_vib < 0.0).sum().item())
 
         trajectory.append({
             "step": step,
@@ -158,7 +151,7 @@ def run_fixed_step_gd(
 
         # Optionally project gradient to remove TR components
         forces_flat = forces.reshape(-1)
-        if project_gradient_and_v and atomsymbols is not None:
+        if project_gradient_and_v:
             forces_flat = project_vector_to_vibrational_torch(
                 forces_flat, coords, atomsymbols,
             )
@@ -194,16 +187,13 @@ def run_newton_raphson(
     predict_fn,
     coords0: torch.Tensor,
     atomic_nums: torch.Tensor,
-    get_projected_hessian_fn,
+    atomsymbols: list,
     *,
     n_steps: int = 5000,
     max_atom_disp: float = 0.3,
     force_converged: float = 1e-4,
     min_interatomic_dist: float = 0.5,
-    tr_threshold: float = 1e-6,
     project_gradient_and_v: bool = True,
-    atomsymbols: Optional[list] = None,
-    scine_elements=None,
     purify_hessian: bool = False,
     known_ts_coords: Optional[torch.Tensor] = None,
 ) -> Tuple[Dict[str, Any], list]:
@@ -257,22 +247,18 @@ def run_newton_raphson(
 
         force_norm = _force_mean(forces)
 
-        hess_proj = get_projected_hessian_fn(
-            hessian, coords, atomic_nums, scine_elements,
-            purify_hessian=purify_hessian,
+        # Vibrational eigenvalues via reduced basis — exactly 3N-k values, no threshold.
+        evals_vib, evecs_vib_3N, _ = get_vib_evals_evecs(
+            hessian, coords, atomsymbols, purify_hessian=purify_hessian,
         )
+        n_neg = int((evals_vib < 0.0).sum().item())
 
-        evals, evecs = torch.linalg.eigh(hess_proj)
-        vib_mask = torch.abs(evals) > tr_threshold
-        vib_evals = evals[vib_mask] if vib_mask.any() else evals
-        n_neg = int((vib_evals < -tr_threshold).sum().item())
-
-        vib_pos = vib_evals[vib_evals > tr_threshold]
+        vib_pos = evals_vib[evals_vib > 0]
         eff_step = float(1.0 / vib_pos.min().item()) if vib_pos.numel() > 0 else float("nan")
 
-        if vib_evals.numel() > 0:
-            min_abs_vib = float(torch.abs(vib_evals).min().item())
-            max_abs_vib = float(torch.abs(vib_evals).max().item())
+        if evals_vib.numel() > 0:
+            min_abs_vib = float(torch.abs(evals_vib).min().item())
+            max_abs_vib = float(torch.abs(evals_vib).max().item())
             cond_num = max_abs_vib / min_abs_vib if min_abs_vib > 0 else float("inf")
         else:
             cond_num = float("nan")
@@ -285,8 +271,8 @@ def run_newton_raphson(
             "energy": energy,
             "force_norm": force_norm,
             "n_neg_evals": n_neg,
-            "min_vib_eval": float(vib_evals.min().item()) if vib_evals.numel() > 0 else float("nan"),
-            "max_vib_eval": float(vib_evals.max().item()) if vib_evals.numel() > 0 else float("nan"),
+            "min_vib_eval": float(evals_vib.min().item()) if evals_vib.numel() > 0 else float("nan"),
+            "max_vib_eval": float(evals_vib.max().item()) if evals_vib.numel() > 0 else float("nan"),
             "cond_num": cond_num,
             "eff_step_size": eff_step,
             "min_dist": _min_interatomic_distance(coords),
@@ -307,42 +293,42 @@ def run_newton_raphson(
                 "final_n_neg_evals": n_neg,
             }, trajectory
 
-        # ALWAYS use project_gradient_and_v for NR
+        # Optionally project gradient to remove TR components
         grad = -forces.reshape(-1)
-        if atomsymbols is not None:
+        if project_gradient_and_v:
             grad = -project_vector_to_vibrational_torch(
                 forces.reshape(-1), coords, atomsymbols,
             )
 
-        # Newton-Raphson step explicitly using the Hessian eigenvectors/values
-        vib_indices = torch.where(vib_mask)[0]
-        if vib_indices.numel() > 0:
-            V_vib = evecs[:, vib_indices]  
-            lam_vib = evals[vib_indices]   
-            coeffs = V_vib.T @ grad.to(V_vib.dtype)  
-            
-            # Use absolute value of eigenvalues to ensure descent direction!
-            inv_lam_min = 1.0 / torch.abs(lam_vib)
-            
-            nr_step = V_vib @ (inv_lam_min * coeffs)
-            delta_x = -nr_step 
+        # Newton-Raphson step using the reduced-basis eigenvectors.
+        # evecs_vib_3N: (3N, 3N-k) lifted to full Cartesian space.
+        # Use |λ| in the denominator to ensure a descent direction.
+        work_dtype = grad.dtype
+        V = evecs_vib_3N.to(device=grad.device, dtype=work_dtype)
+        lam = evals_vib.to(device=grad.device, dtype=work_dtype)
+        if V.shape[1] > 0:
+            coeffs = V.T @ grad
+            nr_step = V @ (coeffs / torch.abs(lam))
+            delta_x = -nr_step
         else:
             delta_x = forces.reshape(-1) * 0.001
 
-        step_disp = delta_x.to(coords.dtype).reshape(-1, 3)
-        
+        step_disp = delta_x.reshape(-1, 3)
+
         # Adaptive step sizing (Trust Region + Line search)
         accepted = False
         max_retries = 10
         retries = 0
-        
+
         while not accepted and retries < max_retries:
             radius_used_for_step = current_trust_radius
             capped_disp = _cap_displacement(step_disp, radius_used_for_step)
-            
-            # Predict energy change using explicit Hessian: dE = g^T dx + 0.5 dx^T H dx
-            dx_flat = capped_disp.reshape(-1)
-            pred_dE = float((grad.dot(dx_flat) + 0.5 * dx_flat.dot(hess_proj @ dx_flat)).item())
+
+            # Predict energy change using spectral form (TR modes contribute zero):
+            # dE ≈ g·dx + ½ Σ_i λ_i (v_i·dx)²
+            dx_flat = capped_disp.reshape(-1).to(work_dtype)
+            dx_red = V.T @ dx_flat
+            pred_dE = float((grad.dot(dx_flat) + 0.5 * (lam * dx_red * dx_red).sum()).item())
             
             new_coords = coords + capped_disp
             

@@ -390,6 +390,41 @@ def get_projected_hessian(
     return project_hessian_remove_rigid_modes(hess, coords, atomic_nums)
 
 
+def get_vib_evals_evecs(
+    hessian_raw: torch.Tensor,
+    coords: torch.Tensor,
+    atomsymbols: list,
+    purify_hessian: bool = False,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Vibrational eigenvalues and 3N-space eigenvectors via the reduced basis.
+
+    Works directly in the (3N-k)-dimensional vibrational subspace, so every
+    returned eigenvalue is a genuine vibrational frequency.  There is no
+    threshold-based TR filtering — the TR modes are removed by construction
+    through the Eckart projector.
+
+    Args:
+        hessian_raw: Raw Cartesian Hessian (any shape broadcastable to (3N, 3N))
+        coords: Atomic coordinates (N, 3)
+        atomsymbols: Element symbols ['C', 'H', ...]
+        purify_hessian: If True, enforce translational sum rules before projecting
+
+    Returns:
+        evals_vib:    (3N-k,)     vibrational eigenvalues, ascending
+        evecs_vib_3N: (3N, 3N-k) eigenvectors in full Cartesian space
+        Q_vib:        (3N, 3N-k) orthonormal vibrational basis
+    """
+    from src.dependencies.differentiable_projection import reduced_basis_hessian_torch
+    n_atoms = coords.reshape(-1, 3).shape[0]
+    hess = hessian_raw.reshape(3 * n_atoms, 3 * n_atoms)
+    rb = reduced_basis_hessian_torch(hess, coords.reshape(-1, 3), atomsymbols, purify=purify_hessian)
+    H_red = rb["H_red"]   # (3N-k, 3N-k), full-rank, float64
+    Q_vib = rb["Q_vib"]   # (3N, 3N-k), float64
+    evals_vib, evecs_red = torch.linalg.eigh(H_red)
+    evecs_vib_3N = Q_vib @ evecs_red  # (3N, 3N-k)
+    return evals_vib, evecs_vib_3N, Q_vib
+
+
 def _scine_project_hessian_full(
     hessian_raw: torch.Tensor,
     coords: torch.Tensor,
