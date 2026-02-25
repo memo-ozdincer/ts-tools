@@ -144,9 +144,13 @@ The GAD force ascends along $v_1$ (flips the component parallel to $v_1$)
 and descends along all other modes. The update rule in the improved
 implementation is:
 \[
-    x_{k+1} = x_k + H_{\vib}^{-1}\,\tilde{F}_{\mathrm{GAD}}(x_k),
+    x_{k+1} = x_k + \Delta_k \,\hat{g}_{\mathrm{GAD}}(x_k),
+    \quad \hat{g}_{\mathrm{GAD}} = \frac{\tilde{F}_{\mathrm{GAD}}}{\norm{\tilde{F}_{\mathrm{GAD}}}},
 \]
-i.e., the same pseudoinverse step as NR but applied to the modified gradient.
+where $\Delta_k$ is the adaptive trust radius. Note that the
+\emph{Hessian pseudoinverse preconditioner} ($H_\vib^{-1}$) used in NR
+minimization is \textbf{deliberately omitted} from the GAD step direction;
+see \S\ref{sec:tr} and \S\ref{sec:newton} for the reason.
 Convergence: exactly one negative vibrational eigenvalue (Morse index 1), i.e.,
 an index-1 TS.
 
@@ -209,13 +213,19 @@ inv_lam    = 1.0 / torch.abs(lam_vib)           # |lambda|^{-1}
 delta_x    = V_vib @ (inv_lam * coeffs)         # back-project
 \end{lstlisting}
 
-\begin{lstlisting}[caption={Same step applied to the GAD modified gradient
-(\texttt{runners/run\_gad\_baselines\_parallel.py}).}]
-# gad_flat = f + 2*(f.v)*v  (or Eckart-projected version)
-coeffs       = V_vib.T @ gad_flat.to(V_vib.dtype)
-inv_lam_abs  = 1.0 / torch.abs(lam_vib)
-delta_x      = V_vib @ (inv_lam_abs * coeffs)
-step_disp_raw = delta_x.reshape(-1, 3)
+\begin{lstlisting}[caption={GAD step direction: normalized GAD force, trust
+radius controls magnitude (\texttt{runners/run\_gad\_baselines\_parallel.py}).}]
+# gad_vec = Eckart-projected F_GAD  (shape: num_atoms x 3)
+# The Newton preconditioner 1/|lambda| is NOT applied: at Morse index > 1
+# the softest negative mode gets the largest amplification, driving the
+# algorithm to ascend along the wrong mode.  Direction = unit GAD vector;
+# trust radius Delta_k controls step length.
+gad_dir_norm = float(gad_vec.reshape(-1, 3).norm().item())
+if gad_dir_norm > 1e-10:
+    step_disp_raw = gad_vec.reshape(-1, 3) / gad_dir_norm
+else:
+    step_disp_raw = gad_vec.reshape(-1, 3)
+# _cap_displacement(step_disp_raw, dt_eff) then scales to radius dt_eff
 \end{lstlisting}
 
 \subsection{Why this helps}
@@ -333,45 +343,54 @@ vib_indices  = torch.where(vib_mask)[0]
 
 \subsection{Overview}
 
-After computing the vibrational pseudoinverse step $\delta x$, we scale it
-to a \emph{current trust radius} $\Delta$ and evaluate whether the actual
-energy change matches the quadratic model's prediction:
+In both algorithms the step $\delta\hat{x}$ is scaled to a \emph{current trust
+radius} $\Delta$ and evaluated against the quadratic model prediction:
 \[
     \rho = \frac{\delta E_{\mathrm{actual}}}{\delta E_{\mathrm{pred}}}, \quad
-    \delta E_{\mathrm{pred}} = g^T\delta\hat{x} + \tfrac12 \delta\hat{x}^T H \,\delta\hat{x},
+    \delta E_{\mathrm{pred}} = g^T\delta\hat{x} + \tfrac12 \delta\hat{x}^T H \,\delta\hat{x}.
 \]
-where $\delta\hat{x}$ is the step capped to radius $\Delta$.
 
-The trust radius is then adapted:
+The accept/reject criterion and radius adaptation differ between the two
+algorithms because NR must always descend, while GAD legitimately moves
+uphill along the climbing mode.
+
+\paragraph{NR minimization.} A step is accepted only when $\delta E_{\mathrm{actual}} \le 0$
+(energy decreased). The radius adapts on $\rho$:
 \[
     \Delta_{k+1} =
     \begin{cases}
-        \min(1.5\,\Delta_k,\;\madcap) & \text{if } \rho > 0.75 \quad\text{(excellent model)} \\
-        0.5\,\Delta_k & \text{if } 0 \le \rho < 0.25 \quad\text{(poor model)} \\
-        0.25\,\Delta_k & \text{if } \rho < 0 \quad\text{(very poor model)} \\
-        0.25\,\Delta_k & \text{if step rejected} \quad(\delta E_{\mathrm{actual}} > 0) \\
-        \Delta_k & \text{otherwise}
+        \min(1.5\,\Delta_k,\;\madcap) & \rho > 0.75 \\
+        0.5\,\Delta_k                 & 0 \le \rho < 0.25 \\
+        0.25\,\Delta_k                & \text{step rejected}\;(\delta E > 0)
     \end{cases}
 \]
-Steps are \emph{rejected} and retried at a smaller radius (up to 10 retries) when the energy
-increases (for minimization).
+
+\paragraph{GAD.} Because the energy can go up or down depending on position
+relative to the saddle, the accept criterion is instead based on the
+\emph{magnitude} of agreement: $\abs{\rho} > 0.1$ (the quadratic model and
+the actual change agree to within an order of magnitude). Radius adaptation
+uses $\abs{\rho}$:
+\[
+    \Delta_{k+1} =
+    \begin{cases}
+        \min(1.5\,\Delta_k,\;\madcap) & \abs{\rho} > 0.75 \\
+        0.5\,\Delta_k                 & \abs{\rho} < 0.25 \\
+        0.25\,\Delta_k                & \text{step rejected}\;(\abs{\rho} \le 0.1)
+    \end{cases}
+\]
 
 \subsection{Why $\rho > 0.75$ / $\rho < 0.25$ thresholds?}
 
 These are the standard dogleg/trust-region thresholds from Nocedal \& Wright
-\cite{nocedal2006numerical}: $\rho > 0.75$ means the local quadratic model
-predicts at least 75\% of the actual improvement, so we trust it enough to
-expand $\Delta$; $\rho < 0.25$ means the model is unreliable, so we contract.
-
-Crucially, our experiments showed that standard contraction ($0.5\Delta_k$) is not aggressive enough when the model is completely wrong. We introduced two harsh penalties:
-\begin{itemize}[noitemsep]
-    \item If $\rho < 0.0$ (model predicted energy decrease, but it increased, or vice versa), we shrink the radius sharply to $0.25\Delta_k$.
-    \item If the step is rejected entirely ($\delta E_{\mathrm{actual}} > 0$), we also shrink sharply to $0.25\Delta_k$ and retry up to 10 times.
-\end{itemize}
-This rapid collapse prevents the optimizer from burning through retries while repeatedly crashing into narrow canyon walls.
+\cite{nocedal2006numerical}: $\rho > 0.75$ means the quadratic model accounts
+for $\ge 75\%$ of the actual change, so we trust it enough to expand $\Delta$;
+$\rho < 0.25$ means the model is unreliable, so we contract. Standard
+contraction ($0.5\Delta_k$) is not aggressive enough when the model is
+completely wrong, so a harsh $0.25\Delta_k$ penalty is applied on rejection,
+preventing the optimizer from repeatedly crashing into canyon walls.
 
 \begin{algorithm}
-\caption{Trust Region step (NR minimization / GAD)}
+\caption{Trust Region inner loop (NR minimization)}
 \begin{algorithmic}[1]
 \State Compute $\delta x \leftarrow V_\mathcal{V}\,\abs{\Lambda_\mathcal{V}}^{-1}V_\mathcal{V}^T g$
 \State $\mathtt{accepted} \leftarrow \mathtt{False}$; $\mathtt{retries} \leftarrow 0$
@@ -380,13 +399,36 @@ This rapid collapse prevents the optimizer from burning through retries while re
     \State Evaluate $E_{\mathrm{new}}$ at $x_k + \delta\hat{x}$
     \State $\delta E_{\mathrm{actual}} \leftarrow E_{\mathrm{new}} - E_k$
     \State $\delta E_{\mathrm{pred}} \leftarrow g^T\delta\hat{x} + \tfrac12 \delta\hat{x}^T H\delta\hat{x}$
-    \If{$\delta E_{\mathrm{actual}} \leq 0$}  \Comment{Energy decreased: accept}
+    \If{$\delta E_{\mathrm{actual}} \leq 0$}  \Comment{energy decreased: accept}
         \State $\mathtt{accepted} \leftarrow \mathtt{True}$
         \State $\rho \leftarrow \delta E_{\mathrm{actual}} / \delta E_{\mathrm{pred}}$
         \If{$\rho > 0.75$} $\Delta \leftarrow \min(1.5\Delta,\,\madcap)$
         \ElsIf{$\rho < 0.25$} $\Delta \leftarrow 0.5\Delta$
         \EndIf
-    \Else \Comment{Energy increased: reject, shrink}
+    \Else \Comment{energy increased: reject, shrink}
+        \State $\Delta \leftarrow 0.25\Delta$; $\mathtt{retries} \mathrel{+}= 1$
+    \EndIf
+\EndWhile
+\end{algorithmic}
+\end{algorithm}
+
+\begin{algorithm}
+\caption{Trust Region inner loop (GAD — energy may go up or down)}
+\begin{algorithmic}[1]
+\State $\hat{g} \leftarrow \tilde{F}_{\mathrm{GAD}} / \norm{\tilde{F}_{\mathrm{GAD}}}$
+\State $\mathtt{accepted} \leftarrow \mathtt{False}$; $\mathtt{retries} \leftarrow 0$; $\rho \leftarrow 1$
+\While{$\neg\mathtt{accepted}$ \textbf{and} $\mathtt{retries} < 10$}
+    \State $\delta\hat{x} \leftarrow \hat{g} \cdot \min(\Delta, \madcap)$
+    \State Evaluate $E_{\mathrm{new}}$ at $x_k + \delta\hat{x}$
+    \State $\delta E_{\mathrm{actual}} \leftarrow E_{\mathrm{new}} - E_k$
+    \State $\delta E_{\mathrm{pred}} \leftarrow g^T\delta\hat{x} + \tfrac12 \delta\hat{x}^T H\delta\hat{x}$
+    \If{$\abs{\delta E_{\mathrm{pred}}} < 10^{-8}$ \textbf{or} $\abs{\rho} > 0.1$}
+        \State $\mathtt{accepted} \leftarrow \mathtt{True}$
+        \State $\rho \leftarrow \delta E_{\mathrm{actual}} / \delta E_{\mathrm{pred}}$
+        \If{$\abs{\rho} > 0.75$} $\Delta \leftarrow \min(1.5\Delta,\,\madcap)$
+        \ElsIf{$\abs{\rho} < 0.25$} $\Delta \leftarrow 0.5\Delta$
+        \EndIf
+    \Else \Comment{model badly wrong: shrink and retry}
         \State $\Delta \leftarrow 0.25\Delta$; $\mathtt{retries} \mathrel{+}= 1$
     \EndIf
 \EndWhile
@@ -758,13 +800,15 @@ reduction.
 
 \paragraph{Next steps.}
 \begin{enumerate}[noitemsep]
-    \item \textbf{Adapt NR Trust Region into GAD}: Implement the exact dogleg/trust-region energy prediction logic ($\rho$ ratio, $1.3$\,\AA\ cap, harsh $0.25\times$ penalties) and the aggressive $8\times10^{-3}$ eigenvalue filtering into the GAD script to push its success rate up to 100\% with fewer steps.
     \item Validate on 1\,\AA\ and 0.5\,\AA\ noise levels to probe
-          generalization.
+          generalization of both NR and GAD improvements.
     \item Test with higher-fidelity functionals (DFT) where Hessian noise
-          may differ.
+          may differ qualitatively.
     \item Explore the interaction between $\trthr$ and molecular size (number
           of atoms), since the number of modes filtered scales with $N$.
+    \item Characterize the trust-radius trajectory statistics (growth/shrink
+          rates, hit-cap fraction) to understand how the adaptive step size
+          evolves differently across configurations.
 \end{enumerate}
 
 \bibliographystyle{unsrt}

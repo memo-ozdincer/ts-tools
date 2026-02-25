@@ -4,7 +4,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=32
 #SBATCH --gpus-per-node=0
-#SBATCH --time=05:00:00
+#SBATCH --time=12:00:00
 #SBATCH --output=/scratch/memoozd/ts-tools-scratch/logs/gad_grid_%j.out
 #SBATCH --error=/scratch/memoozd/ts-tools-scratch/logs/gad_grid_%j.err
 #SBATCH --account=rrg-aspuru
@@ -13,28 +13,36 @@
 # GAD (Gradient Ascent Deflation) - Grid Search
 # =============================================================================
 #
-# GAD dynamics: x_{k+1} = x_k + H^{-1}(x_k) * GAD(x_k)
-#   where GAD(x) = -grad E(x) + 2 * (grad E(x) . v) * v
-#   and v is the lowest eigenvector of the Hessian.
+# GAD dynamics:
+#   ĝ_GAD = F_GAD / ||F_GAD||,   F_GAD = F + 2*(F·v)v  (Eckart-projected)
+#   x_{k+1} = x_k + Δ_k * ĝ_GAD(x_k)
 #
-# The inverse Hessian step uses the pseudoinverse in the vibrational subspace
-# (same dimensionality-reduction logic proven to work in NR minimization).
-# An adaptive Trust Region (rho = dE_actual / dE_pred) controls the step.
+#   where Δ_k is the adaptive trust radius (initialized to max_atom_disp).
+#   Trust radius is adapted via |ρ| = |dE_actual / dE_pred|:
+#     |ρ| > 0.75  → grow  Δ by 1.5x  (good quadratic fit)
+#     |ρ| < 0.25  → shrink Δ by 0.5x (poor fit)
+#     |ρ| < 0.1   → reject step, shrink by 0.25x, retry up to 10 times
+#
+# NOTE: unlike NR minimization, the Newton preconditioner (H_vib^{-1} * F_GAD)
+# is intentionally NOT used here. At Morse index > 1 the second-most-negative
+# mode has larger 1/|λ| amplification than the tracked climbing mode, causing
+# the algorithm to ascend along the wrong mode and get stuck. The GAD force
+# direction + trust radius is the correct formulation.
 #
 # Key hyperparameters informed by NR minimization findings:
-#   1. max_atom_disp  - Trust radius cap (Å). Bigger is better for GAD too.
+#   1. max_atom_disp  - Trust radius cap (Å). Bigger → larger confident steps.
 #                       Sweep: 0.5, 1.0, 1.3, 1.5 Å.
 #   2. tr_threshold   - Eigenvalue cutoff for flat-mode filtering.
-#                       NR winner was 8e-3; sweep nearby region for GAD.
+#                       NR winner: 8e-3. Sweep nearby region for GAD.
 #                       Sweep: 2e-3, 5e-3, 8e-3, 1e-2.
 #   3. baseline       - plain (always lowest eigenvec) vs mode_tracked (tracks
 #                       eigenvec across steps for smoother TS search).
 #
 # Fixed (from NR findings):
-#   - project_gradient_and_v=true (Eckart projection mandatory)
-#   - purify_hessian=false (no measurable impact, saves compute)
+#   - project_gradient_and_v=true (Eckart projection: mandatory)
+#   - purify_hessian=false       (no measurable impact, saves compute)
 #
-# Grid: 4 (mad) x 4 (tr) x 2 (baseline) x 1 (pg) = 32 combinations
+# Grid: 4 (mad) x 4 (tr) x 2 (baseline) = 32 combinations x 30 samples
 # =============================================================================
 
 set -e
@@ -83,7 +91,7 @@ mkdir -p "$OUT_DIR"
 # Fixed configuration
 # =============================================================================
 N_STEPS="${N_STEPS:-10000}"
-MAX_SAMPLES="${MAX_SAMPLES:-10}"
+MAX_SAMPLES="${MAX_SAMPLES:-30}"
 START_FROM="${START_FROM:-midpoint_rt_noise2.0A}"
 NOISE_SEED="${NOISE_SEED:-42}"
 SCINE_FUNCTIONAL="${SCINE_FUNCTIONAL:-DFTB0}"
@@ -99,16 +107,16 @@ PURIFY_HESSIAN="false"
 # Grid search axes
 # =============================================================================
 # Trust radius cap (Å). NR finding: bigger is significantly better (1.3 dominated).
-# Sweep around and above that optimal for GAD.
-MAX_ATOM_DISP_GRID=("1.3")
+# Sweep the full range for GAD to characterize the trust-radius dynamics.
+MAX_ATOM_DISP_GRID=("0.5" "1.0" "1.3" "1.5")
 
-# Flat-mode eigenvalue cutoff. NR finding: 8e-3 dominated by a huge margin.
-# Sweep the nearby region to confirm/tune for GAD's different objective.
-TR_THRESHOLD_GRID=("5e-3" "8e-3")
+# Flat-mode eigenvalue cutoff. NR finding: 8e-3 dominated.
+# Sweep the same region for GAD to measure the same effect on saddle search.
+TR_THRESHOLD_GRID=("2e-3" "5e-3" "8e-3" "1e-2")
 
 # plain: always picks lowest eigenvector
-# mode_tracked: tracks v_1 across steps for continuity
-BASELINE_GRID=("mode_tracked")
+# mode_tracked: tracks v_1 across steps for continuity (expected to dominate)
+BASELINE_GRID=("plain" "mode_tracked")
 
 echo "=============================================="
 echo "GAD - Grid Search"
