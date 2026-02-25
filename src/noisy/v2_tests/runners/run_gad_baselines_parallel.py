@@ -4,6 +4,36 @@
 Baselines:
 - plain: no mode tracking (always lowest eigenvector)
 - mode_tracked: track v1 across steps
+
+New in v2:
+- Cascading evaluation: at every convergence check the runner records
+  n_neg_at_<thr> for the SET of evaluation thresholds
+  [0.0, 1e-4, 5e-4, 1e-3, 2e-3, 5e-3, 8e-3, 1e-2].
+
+  GAD convergence criterion: n_neg == 1 (Morse index 1 = true TS).
+  The cascade asks  "if we accepted n_neg_at_threshold <= 1, would this
+  sample count as converged?"  Values < 1 would mean we've overshot into
+  a minimum; values > 1 mean we're still above index-1.
+
+  Separately, the existing ts_eps criterion
+  (eig_product = λ_0 * λ_1 < -ts_eps)
+  is the actual algorithmic gate and is unchanged.
+
+- Negative eigenvalue magnitude logging: at convergence (or failure) the
+  runner records:
+    lambda_0        — the most-negative eigenvalue (climbing mode)
+    lambda_1        — the second eigenvalue (first of the positive ladder)
+    abs_lambda_0    — |lambda_0| (magnitude of the climbing mode)
+    lambda_gap_ratio — |lambda_0| / |lambda_1|  (how separated is the TS
+                       mode from the noise floor?)
+    bottom_spectrum — bottom-K sorted vibrational eigenvalues
+  This directly tests the user's hypothesis: "is λ_0 meaningfully different
+  from the rest of the eigenvalues that we call noise?"  A large gap_ratio
+  means it is; a gap_ratio ≈ 1 means the TS mode is buried in noise and the
+  convergence claim is suspect.
+
+- --log-spectrum-k: number of bottom eigenvalues to record per step (default 10).
+- cascade_table in results JSON: rows=tr_threshold, cols=eval_threshold → success_rate.
 """
 
 from __future__ import annotations
@@ -14,7 +44,7 @@ import math
 import os
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -29,10 +59,76 @@ from src.dependencies.differentiable_projection import (
     get_mass_weights_torch,
 )
 from src.dependencies.hessian import get_scine_elements_from_predict_output, prepare_hessian
-from src.noisy.multi_mode_eckartmw import get_projected_hessian, get_vib_evals_evecs, _min_interatomic_distance, _atomic_nums_to_symbols
+from src.noisy.multi_mode_eckartmw import (
+    get_projected_hessian,
+    get_vib_evals_evecs,
+    _min_interatomic_distance,
+    _atomic_nums_to_symbols,
+)
 from src.noisy.v2_tests.logging import TrajectoryLogger
 from src.parallel.scine_parallel import ParallelSCINEProcessor
 from src.parallel.utils import run_batch_parallel
+
+
+# ---------------------------------------------------------------------------
+# Cascade evaluation thresholds
+# ---------------------------------------------------------------------------
+# These are applied to the NEGATIVE eigenvalue count at final geometry.
+# GAD target is n_neg == 1 (Morse index 1 = transition state).
+# For the cascade we ask: "for eval threshold T, n_neg_at_T <= 1?"
+# (i.e. all eigenvalues > -T except possibly one).
+CASCADE_THRESHOLDS: List[float] = [0.0, 1e-4, 5e-4, 1e-3, 2e-3, 5e-3, 8e-3, 1e-2]
+
+
+def _cascade_n_neg(evals_vib: torch.Tensor) -> Dict[str, int]:
+    """Count eigenvalues < -threshold for each cascade threshold.
+
+    n_neg_at_0.0 is the strict count (eigenvalues strictly < 0).
+    GAD convergence at eval threshold T means n_neg_at_T <= 1.
+    """
+    result: Dict[str, int] = {}
+    for thr in CASCADE_THRESHOLDS:
+        result[f"n_neg_at_{thr}"] = int((evals_vib < -thr).sum().item())
+    return result
+
+
+def _neg_eval_info(evals_vib: torch.Tensor) -> Dict[str, float]:
+    """Extract magnitude info about the most-negative eigenvalue(s).
+
+    Returns:
+      lambda_0        — most negative eigenvalue (the TS climbing mode)
+      lambda_1        — second eigenvalue (first of the positive ladder, or
+                        the second-most-negative if Morse index > 1)
+      abs_lambda_0    — |lambda_0|
+      lambda_gap_ratio — |lambda_0| / max(|lambda_1|, 1e-10)
+                         Large ratio → TS mode well-separated from noise floor.
+                         Ratio ≈ 1   → TS mode buried in noise.
+    """
+    if evals_vib.numel() == 0:
+        return {
+            "lambda_0": float("nan"),
+            "lambda_1": float("nan"),
+            "abs_lambda_0": float("nan"),
+            "lambda_gap_ratio": float("nan"),
+        }
+    sorted_evals, _ = torch.sort(evals_vib)
+    lam0 = float(sorted_evals[0].item())
+    lam1 = float(sorted_evals[1].item()) if sorted_evals.numel() > 1 else float("nan")
+    abs_lam0 = abs(lam0)
+    gap_ratio = abs_lam0 / max(abs(lam1), 1e-10) if math.isfinite(lam1) else float("nan")
+    return {
+        "lambda_0": lam0,
+        "lambda_1": lam1,
+        "abs_lambda_0": abs_lam0,
+        "lambda_gap_ratio": gap_ratio,
+    }
+
+
+def _bottom_k_spectrum(evals_vib: torch.Tensor, k: int = 10) -> List[float]:
+    """Return the k smallest vibrational eigenvalues as a sorted Python list."""
+    vals = evals_vib.detach().cpu()
+    sorted_vals, _ = torch.sort(vals)
+    return [float(v) for v in sorted_vals[:k].tolist()]
 
 
 def create_dataloader(h5_path: str, split: str, max_samples: int):
@@ -47,13 +143,13 @@ def create_dataloader(h5_path: str, split: str, max_samples: int):
     return DataLoader(dataset, batch_size=1, shuffle=False)
 
 
-
 def _cap_displacement(step_disp: torch.Tensor, max_atom_disp: float) -> torch.Tensor:
     disp_3d = step_disp.reshape(-1, 3)
     max_disp = float(disp_3d.norm(dim=1).max().item())
     if max_disp > max_atom_disp and max_disp > 0:
         disp_3d = disp_3d * (max_atom_disp / max_disp)
     return disp_3d.reshape(step_disp.shape)
+
 
 def run_gad_baseline(
     predict_fn,
@@ -78,6 +174,7 @@ def run_gad_baseline(
     projection_mode: str = "eckart_full",
     purify_hessian: bool = False,
     frame_tracking: bool = False,
+    log_spectrum_k: int = 10,
 ) -> Dict[str, Any]:
     coords = coords0.detach().clone().to(torch.float32)
     if coords.dim() == 3 and coords.shape[0] == 1:
@@ -131,6 +228,8 @@ def run_gad_baseline(
             eig_product = rb_info["eig_product"]
             neg_vib_count = rb_info["neg_vib"]
             mode_index = rb_info["mode_index"]
+            # For cascade/spectrum we need the full eigenvalue tensor
+            evals_vib_full = rb_info.get("evals_vib", None)
             if track_mode:
                 v_prev = v_next.detach().clone().reshape(-1)
             else:
@@ -152,6 +251,7 @@ def run_gad_baseline(
             )
             evals_vib = evals_vib.to(device=forces.device, dtype=forces.dtype)
             evecs_vib_3N = evecs_vib_3N.to(device=forces.device, dtype=forces.dtype)
+            evals_vib_full = evals_vib
 
             n_candidates = min(8, int(evals_vib.numel()))
             V = evecs_vib_3N[:, :n_candidates]
@@ -216,13 +316,28 @@ def run_gad_baseline(
                 vib_evecs_full=evecs_vib_3N,
             )
 
+        # Convergence check: eig_product < -ts_eps means λ_0 < 0 and λ_1 > 0,
+        # i.e. we have exactly one negative mode (Morse index = 1 = transition state).
         if stop_at_ts and np.isfinite(eig_product) and eig_product < -abs(ts_eps):
             final_morse_index = neg_vib_count
+
+            # --- Cascade evaluation at convergence ---
+            ev_full = evals_vib_full
+            cascade = _cascade_n_neg(ev_full) if ev_full is not None else {}
+            neg_info = _neg_eval_info(ev_full) if ev_full is not None else {}
+            spectrum = _bottom_k_spectrum(ev_full, log_spectrum_k) if ev_full is not None and log_spectrum_k > 0 else []
+
             result = {
                 "converged": True,
                 "converged_step": step,
                 "final_morse_index": final_morse_index,
                 "total_steps": step + 1,
+                # Cascade: n_neg at every eval threshold
+                **cascade,
+                # Negative eigenvalue magnitude diagnostics
+                **neg_info,
+                "bottom_spectrum_at_convergence": spectrum,
+                "eig_product_at_convergence": float(eig_product),
             }
             if logger is not None:
                 logger.finalize(
@@ -308,11 +423,22 @@ def run_gad_baseline(
         prev_energy = current_energy
         coords = new_coords.detach()
 
+    # --- Failure path: log cascade and spectrum at final geometry ---
+    ev_full_final = evals_vib_full if "evals_vib_full" in locals() and evals_vib_full is not None else None
+    cascade_final = _cascade_n_neg(ev_full_final) if ev_full_final is not None else {}
+    neg_info_final = _neg_eval_info(ev_full_final) if ev_full_final is not None else {}
+    spectrum_final = _bottom_k_spectrum(ev_full_final, log_spectrum_k) if ev_full_final is not None and log_spectrum_k > 0 else []
+    neg_vib_final = int((ev_full_final < 0.0).sum().item()) if ev_full_final is not None else -1
+
     result = {
         "converged": False,
         "converged_step": None,
-        "final_morse_index": -1,
+        "final_morse_index": neg_vib_final,
         "total_steps": n_steps,
+        **cascade_final,
+        **neg_info_final,
+        "bottom_spectrum_at_convergence": spectrum_final,
+        "eig_product_at_convergence": float(eig_product) if "eig_product" in locals() and np.isfinite(eig_product) else float("nan"),
     }
     if logger is not None:
         logger.finalize(
@@ -358,8 +484,17 @@ def run_single_sample(
             projection_mode=params.get("projection_mode", "eckart_full"),
             purify_hessian=params.get("purify_hessian", False),
             frame_tracking=params.get("frame_tracking", False),
+            log_spectrum_k=params.get("log_spectrum_k", 10),
         )
         wall_time = time.time() - t0
+
+        # Extract cascade fields from result
+        cascade_fields = {k: v for k, v in result.items() if k.startswith("n_neg_at_")}
+        neg_info_fields = {
+            k: result.get(k)
+            for k in ["lambda_0", "lambda_1", "abs_lambda_0", "lambda_gap_ratio"]
+        }
+
         return {
             "final_neg_vib": result.get("final_morse_index", -1),
             "steps_taken": result.get("total_steps", n_steps),
@@ -367,6 +502,10 @@ def run_single_sample(
             "success": bool(result.get("converged")),
             "wall_time": wall_time,
             "error": None,
+            "cascade": cascade_fields,
+            "neg_eval_info": neg_info_fields,
+            "bottom_spectrum_at_convergence": result.get("bottom_spectrum_at_convergence", []),
+            "eig_product_at_convergence": result.get("eig_product_at_convergence", float("nan")),
         }
     except Exception as e:
         wall_time = time.time() - t0
@@ -377,6 +516,10 @@ def run_single_sample(
             "success": False,
             "wall_time": wall_time,
             "error": str(e),
+            "cascade": {},
+            "neg_eval_info": {},
+            "bottom_spectrum_at_convergence": [],
+            "eig_product_at_convergence": float("nan"),
         }
 
 
@@ -403,6 +546,69 @@ def scine_worker_sample(predict_fn, payload) -> Dict[str, Any]:
     result["sample_idx"] = sample_idx
     result["formula"] = getattr(batch, "formula", "")
     return result
+
+
+def _build_gad_cascade_table(results: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Build a 2D success-rate table over cascade evaluation thresholds.
+
+    GAD success at eval_threshold T means  n_neg_at_T <= 1  (Morse index ≤ 1
+    at the final geometry, evaluated as if any eigenvalue more positive than
+    -T counts as zero).
+
+    For each T in CASCADE_THRESHOLDS, count successes = samples where
+    n_neg_at_T <= 1 (in practice 0 or 1 — a strict minimum would be 0,
+    which shouldn't count as a TS success).
+
+    Actually we split into two sub-counts:
+      success_at_thr_eq1  — n_neg_at_T == 1  (exactly one mode below -T)
+      success_at_thr_le1  — n_neg_at_T <= 1  (at most one mode below -T)
+
+    The difference between these tells us how many samples ended up at
+    a minimum (n_neg==0) rather than a TS (n_neg==1).
+    """
+    n = len(results)
+    eq1: Dict[str, int] = {}
+    le1: Dict[str, int] = {}
+    rate_eq1: Dict[str, float] = {}
+    rate_le1: Dict[str, float] = {}
+
+    for thr in CASCADE_THRESHOLDS:
+        key = f"n_neg_at_{thr}"
+        count_eq1 = sum(
+            1 for r in results
+            if r.get("cascade", {}).get(key, -1) == 1
+        )
+        count_le1 = sum(
+            1 for r in results
+            if r.get("cascade", {}).get(key, -1) <= 1 and r.get("cascade", {}).get(key, -1) >= 0
+        )
+        eq1[str(thr)] = count_eq1
+        le1[str(thr)] = count_le1
+        rate_eq1[str(thr)] = count_eq1 / max(n, 1)
+        rate_le1[str(thr)] = count_le1 / max(n, 1)
+
+    # Negative eigenvalue gap stats across successful samples
+    successful = [r for r in results if r.get("success")]
+    gap_ratios = [r["neg_eval_info"]["lambda_gap_ratio"] for r in successful
+                  if r.get("neg_eval_info") and math.isfinite(r["neg_eval_info"].get("lambda_gap_ratio", float("nan")))]
+    abs_lam0s = [r["neg_eval_info"]["abs_lambda_0"] for r in successful
+                 if r.get("neg_eval_info") and math.isfinite(r["neg_eval_info"].get("abs_lambda_0", float("nan")))]
+    abs_lam1s = [abs(r["neg_eval_info"]["lambda_1"]) for r in successful
+                 if r.get("neg_eval_info") and math.isfinite(r["neg_eval_info"].get("lambda_1", float("nan")))]
+
+    return {
+        "eval_thresholds": CASCADE_THRESHOLDS,
+        "n_samples": n,
+        "n_success_strict": sum(1 for r in results if r.get("success")),
+        "n_neg_eq1_at_thr": eq1,
+        "n_neg_le1_at_thr": le1,
+        "rate_eq1_at_thr": rate_eq1,
+        "rate_le1_at_thr": rate_le1,
+        "mean_gap_ratio_at_success": float(np.mean(gap_ratios)) if gap_ratios else float("nan"),
+        "mean_abs_lambda0_at_success": float(np.mean(abs_lam0s)) if abs_lam0s else float("nan"),
+        "mean_abs_lambda1_at_success": float(np.mean(abs_lam1s)) if abs_lam1s else float("nan"),
+        "n_successful_with_gap_data": len(gap_ratios),
+    }
 
 
 def run_batch(
@@ -435,6 +641,8 @@ def run_batch(
     for v in final_neg_vibs:
         neg_vib_counts[v] = neg_vib_counts.get(v, 0) + 1
 
+    cascade_table = _build_gad_cascade_table(results)
+
     return {
         "n_samples": n_samples,
         "n_success": n_success,
@@ -444,6 +652,7 @@ def run_batch(
         "mean_wall_time": float(np.mean(wall_times)) if wall_times else float("nan"),
         "total_wall_time": float(sum(wall_times)),
         "neg_vib_counts": neg_vib_counts,
+        "cascade_table": cascade_table,
         "results": results,
     }
 
@@ -469,8 +678,18 @@ def main() -> None:
     parser.add_argument("--dt-max", type=float, default=0.08)
     parser.add_argument("--max-atom-disp", type=float, default=1.3)
     parser.add_argument("--min-interatomic-dist", type=float, default=0.5)
-    parser.add_argument("--ts-eps", type=float, default=1e-5)
-    parser.add_argument("--tr-threshold", type=float, default=8e-3)
+    parser.add_argument("--ts-eps", type=float, default=1e-5,
+                        help="Convergence threshold: eig_product = λ_0*λ_1 < -ts_eps declares a TS. "
+                             "Smaller → stricter (requires larger gap between λ_0 < 0 and λ_1 > 0). "
+                             "Larger → more permissive (accepts smaller sign separation).")
+    parser.add_argument("--tr-threshold", type=float, default=8e-3,
+                        help="Diagnostic threshold logged per step. Does NOT affect GAD direction, "
+                             "trust radius, or convergence. Used only for TR residual monitoring.")
+
+    parser.add_argument(
+        "--log-spectrum-k", type=int, default=10,
+        help="Number of bottom vibrational eigenvalues to record at convergence/failure (default 10, 0 = none).",
+    )
 
     parser.add_argument(
         "--project-gradient-and-v",
@@ -528,6 +747,7 @@ def main() -> None:
         "projection_mode": args.projection_mode,
         "purify_hessian": args.purify_hessian,
         "frame_tracking": args.frame_tracking,
+        "log_spectrum_k": args.log_spectrum_k,
     }
 
     processor = ParallelSCINEProcessor(
@@ -577,6 +797,31 @@ def main() -> None:
                 indent=2,
             )
         print(f"Results saved to: {results_path}")
+
+        # Print cascade table to stdout for quick inspection
+        ct = metrics.get("cascade_table", {})
+        print("\n--- GAD Cascade Evaluation Table ---")
+        print(f"{'eval_threshold':<20} {'n_neg==1':>10} {'rate_eq1':>10} {'n_neg<=1':>10} {'rate_le1':>10}")
+        print("-" * 62)
+        for thr in CASCADE_THRESHOLDS:
+            key = str(thr)
+            n_eq1 = ct.get("n_neg_eq1_at_thr", {}).get(key, "?")
+            r_eq1 = ct.get("rate_eq1_at_thr", {}).get(key, float("nan"))
+            n_le1 = ct.get("n_neg_le1_at_thr", {}).get(key, "?")
+            r_le1 = ct.get("rate_le1_at_thr", {}).get(key, float("nan"))
+            print(f"  {thr:<18} {n_eq1:>10} {r_eq1:>10.3f} {n_le1:>10} {r_le1:>10.3f}")
+        print(f"\n  Strict success rate (eig_product criterion): {metrics['success_rate']:.3f}")
+        mg = ct.get("mean_gap_ratio_at_success", float("nan"))
+        ml0 = ct.get("mean_abs_lambda0_at_success", float("nan"))
+        ml1 = ct.get("mean_abs_lambda1_at_success", float("nan"))
+        if math.isfinite(mg):
+            print(f"  Mean |λ_0|/|λ_1| at success: {mg:.3f}  (>1 = TS mode separated from noise)")
+        if math.isfinite(ml0):
+            print(f"  Mean |λ_0| at success:        {ml0:.5f}")
+        if math.isfinite(ml1):
+            print(f"  Mean |λ_1| at success:        {ml1:.5f}")
+        print("")
+
     finally:
         processor.close()
 
