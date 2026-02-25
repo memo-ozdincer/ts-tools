@@ -333,7 +333,7 @@ def run_newton_raphson(
         
         # Adaptive step sizing (Trust Region + Line search)
         accepted = False
-        max_retries = 5
+        max_retries = 10
         retries = 0
         
         while not accepted and retries < max_retries:
@@ -363,16 +363,20 @@ def run_newton_raphson(
                 
                 # Update trust radius based on rho
                 rho = actual_dE / pred_dE if pred_dE < -1e-8 else 0.0
+                
+                # Dynamic Trust Region growth and shrinkage
                 if rho > 0.75:
                     current_trust_radius = min(current_trust_radius * 1.5, max_atom_disp)
                 elif rho < 0.25:
                     current_trust_radius = max(current_trust_radius * 0.5, 0.001)
+                elif rho < 0.0:
+                    current_trust_radius = max(current_trust_radius * 0.25, 0.001)
                     
                 coords = new_coords.detach()
                 out = out_new
             else:
-                # Reject step, shrink trust radius, and retry
-                current_trust_radius *= 0.5
+                # Reject step, shrink trust radius sharply, and retry
+                current_trust_radius *= 0.25
                 retries += 1
                 
         if not accepted:
