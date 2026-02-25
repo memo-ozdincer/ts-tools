@@ -20,7 +20,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 
 COMBO_RE = re.compile(
-    r"mad(?P<mad>[^_]+)_tr(?P<tr>[^_]+)_bl(?P<bl>[^_]+)_pg(?P<pg>true|false)$"
+    r"mad(?P<mad>[^_]+)_tr(?P<tr>[^_]+)_bl(?P<bl>.+)_pg(?P<pg>true|false)$"
 )
 
 
