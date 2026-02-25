@@ -170,6 +170,7 @@ def run_gad_baseline(
                     atomsymbols=atomsymbols,
                 )
                 v = v_proj.reshape(-1)
+                gad_flat = gad_vec.reshape(-1)
             else:
                 f_flat = forces.reshape(-1)
                 gad_flat = f_flat + 2.0 * torch.dot(-f_flat, v) * v
@@ -194,6 +195,10 @@ def run_gad_baseline(
         if step > 0:
             disp_history.append(disp_from_last)
         x_disp_window = float(np.mean(disp_history[-10:])) if disp_history else float("nan")
+
+        # Initialize trust radius on the very first step before logging
+        if step == 0:
+            dt_eff = max_atom_disp
 
         if logger is not None and projection_mode != "reduced_basis":
             logger.log_step(
@@ -250,10 +255,6 @@ def run_gad_baseline(
         max_retries = 10
         retries = 0
         current_energy = float(out["energy"].detach().reshape(-1)[0].item()) if isinstance(out["energy"], torch.Tensor) else float(out["energy"])
-        
-        # We will use dt_eff as our trust radius
-        if step == 0:
-            dt_eff = max_atom_disp # initialize to max displacement
 
         while not accepted and retries < max_retries:
             radius_used_for_step = dt_eff

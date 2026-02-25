@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
 """Plot trajectory statistics for GAD grid runs.
 
-Reads *_trajectory.json files produced by the GAD grid search and creates
-per-sample diagnostic plots covering:
-  - Eigenvalue evolution (eig0, eig1, eig_product) toward TS index-1
-  - Trust radius (dt_eff) and actual step displacement over time
-  - Negative vibrational mode count (Morse index progress)
+Reads *_trajectory.json files produced by the GAD grid search (saved by
+TrajectoryLogger) and creates per-sample diagnostic plots covering:
+  - Eigenvalue evolution (eig_0, eig_1) toward TS index-1
+  - Trust radius (step_size_eff) and actual step displacement (x_disp_step) over time
+  - Negative vibrational mode count / Morse index progress
   - Mode tracking overlap between consecutive steps
+
+Note: TrajectoryLogger saves trajectory data as a column-oriented dict of lists
+(field_name -> [val_step0, val_step1, ...]), NOT a list of dicts.
+Field names come directly from ExtendedMetrics.to_dict():
+  step_size_eff, x_disp_step, eig_0, eig_1, morse_index, grad_norm,
+  mode_overlap, eig_gap_01, energy, energy_delta, ...
 """
 
 import argparse
@@ -21,32 +27,41 @@ import numpy as np
 matplotlib.use("Agg")
 
 
-def _nan_array(values: list, key: str) -> np.ndarray:
-    return np.array([v.get(key, float("nan")) if isinstance(v, dict) else float("nan") for v in values], dtype=float)
+def _col(data: dict, key: str) -> np.ndarray:
+    """Extract a column from the column-oriented trajectory dict."""
+    vals = data.get(key, [])
+    return np.array(vals, dtype=float) if vals else np.array([], dtype=float)
 
 
 def plot_trajectory(traj_path: Path, output_dir: Path) -> None:
     with open(traj_path) as f:
         data = json.load(f)
 
-    trajectory = data.get("trajectory", [])
-    if not trajectory:
+    # TrajectoryLogger saves column-oriented: {field: [val_per_step, ...]}
+    if not data or "step" not in data:
         return
 
-    sample_id = data.get("sample_id", "unknown_sample")
-    converged = data.get("converged_to_ts", False)
-    title_suffix = "CONVERGED" if converged else "not converged"
+    steps       = _col(data, "step")
+    if len(steps) == 0:
+        return
 
-    steps = np.array([t.get("step", i) for i, t in enumerate(trajectory)])
+    sample_id   = traj_path.stem.replace("_trajectory", "")
 
-    eig0         = _nan_array(trajectory, "eig0")
-    eig1         = _nan_array(trajectory, "eig1")
-    eig_product  = _nan_array(trajectory, "eig_product")
-    neg_vib      = _nan_array(trajectory, "neg_vib")
-    dt_eff       = _nan_array(trajectory, "dt_eff")
-    disp_last    = _nan_array(trajectory, "disp_from_last")
-    gad_norm     = _nan_array(trajectory, "gad_norm")
-    overlap      = _nan_array(trajectory, "mode_overlap")
+    eig_0        = _col(data, "eig_0")
+    eig_1        = _col(data, "eig_1")
+    eig_product  = eig_0 * eig_1
+    morse_index  = _col(data, "morse_index")
+    trust_radius = _col(data, "step_size_eff")   # dt_eff stored as step_size_eff
+    disp_step    = _col(data, "x_disp_step")     # actual per-step displacement
+    grad_norm    = _col(data, "grad_norm")
+    overlap      = _col(data, "mode_overlap")
+    eig_gap      = _col(data, "eig_gap_01")
+    energy_delta = _col(data, "energy_delta")
+
+    # Infer convergence: any step where eig_0 < 0 and eig_1 > 0 counts
+    ts_mask = (eig_0 < 0) & (eig_1 > 0)
+    converged = bool(ts_mask.any())
+    title_suffix = "CONVERGED TO TS" if converged else "not converged"
 
     fig, axs = plt.subplots(4, 1, figsize=(11, 16), sharex=True)
     fig.suptitle(f"GAD Trajectory: {sample_id}  [{title_suffix}]", fontsize=13)
@@ -54,45 +69,56 @@ def plot_trajectory(traj_path: Path, output_dir: Path) -> None:
     # ---- Panel 1: Eigenvalues and TS criterion ----
     ax = axs[0]
     ax.axhline(0, color="black", linewidth=0.5, linestyle="--")
-    ax.plot(steps, eig0, label="eig0 (lowest)", color="tab:blue")
-    ax.plot(steps, eig1, label="eig1 (2nd lowest)", color="tab:orange", linestyle="--")
-    # Shade TS region (eig0 < 0, eig1 > 0)
-    ts_mask = (eig0 < 0) & (eig1 > 0)
+    ax.plot(steps, eig_0, label="eig_0 (lowest vib)", color="tab:blue")
+    ax.plot(steps, eig_1, label="eig_1 (2nd lowest)", color="tab:orange", linestyle="--")
     if ts_mask.any():
-        ax.fill_between(steps, ax.get_ylim()[0], ax.get_ylim()[1],
-                        where=ts_mask, alpha=0.12, color="green", label="TS region")
+        ylo, yhi = ax.get_ylim()
+        ax.fill_between(steps, ylo, yhi, where=ts_mask,
+                        alpha=0.12, color="green", label="TS region (index-1)")
     ax.set_ylabel("Eigenvalue (eV/Å²)")
     ax.legend(loc="upper right", fontsize=8)
     ax.grid(True, alpha=0.3)
-    ax.set_title("Hessian Eigenvalues (eig0 < 0, eig1 > 0 → TS index-1)")
+    ax.set_title("Hessian Eigenvalues  (eig_0 < 0, eig_1 > 0  →  TS index-1)")
 
     # ---- Panel 2: eig_product and Morse index ----
     ax2 = axs[1]
     finite_ep = eig_product[np.isfinite(eig_product)]
     if len(finite_ep):
-        clipped = np.clip(eig_product, -abs(finite_ep).max() * 2, abs(finite_ep).max() * 2)
+        clip = abs(finite_ep).max() * 2
+        clipped = np.clip(eig_product, -clip, clip)
     else:
         clipped = eig_product
-    ax2.plot(steps, clipped, color="tab:red", label="eig0 × eig1")
+    ax2.plot(steps, clipped, color="tab:red", label="eig_0 × eig_1")
     ax2.axhline(0, color="black", linewidth=0.5, linestyle="--")
-    ax2.set_ylabel("eig0 × eig1 (eV/Å²)²", color="tab:red")
+    ax2.set_ylabel("eig_0 × eig_1  (eV/Å²)²", color="tab:red")
     ax2.tick_params(axis="y", labelcolor="tab:red")
 
     ax2_r = ax2.twinx()
-    ax2_r.step(steps, neg_vib, color="tab:purple", alpha=0.8, label="neg_vib count")
-    ax2_r.set_ylabel("Neg. vib modes (Morse index)", color="tab:purple")
+    ax2_r.step(steps, morse_index, color="tab:purple", alpha=0.8, label="Morse index")
+    ax2_r.set_ylabel("Morse index (neg vib modes)", color="tab:purple")
     ax2_r.tick_params(axis="y", labelcolor="tab:purple")
-    ax2_r.set_ylim(-0.5, max(float(np.nanmax(neg_vib)) if np.any(np.isfinite(neg_vib)) else 2, 2) + 0.5)
-
+    max_mi = float(np.nanmax(morse_index)) if np.any(np.isfinite(morse_index)) else 2
+    ax2_r.set_ylim(-0.5, max(max_mi, 2) + 0.5)
     ax2.set_title("TS Criterion (eig_product < 0) and Morse Index")
     ax2.grid(True, alpha=0.3)
 
-    # ---- Panel 3: Trust radius and step displacement ----
+    # ---- Panel 3: Trust radius vs actual step displacement (mirrors NR plot) ----
     ax3 = axs[2]
-    ax3.plot(steps, dt_eff, label="Trust Radius (dt_eff)", color="tab:blue", linestyle="--")
-    ax3.plot(steps, disp_last, label="Actual Disp from Last Step", color="tab:green")
-    ax3.plot(steps, gad_norm, label="GAD vector norm", color="tab:brown", alpha=0.5)
-    ax3.set_ylabel("Displacement / Norm (Å)")
+    ax3.plot(steps, trust_radius, label="Trust Radius (step_size_eff)", color="tab:blue", linestyle="--")
+    ax3.plot(steps, disp_step,   label="Actual Step Displacement (x_disp_step)", color="tab:green")
+    ax3.plot(steps, grad_norm,   label="Gradient norm", color="tab:brown", alpha=0.5)
+
+    # Highlight steps where trust radius was fully used (disp ≈ trust_radius)
+    hit_mask = (
+        np.isfinite(trust_radius) & np.isfinite(disp_step) &
+        (trust_radius > 0) &
+        (disp_step >= trust_radius * 0.98)
+    )
+    if hit_mask.any():
+        ax3.scatter(steps[hit_mask], disp_step[hit_mask],
+                    color="red", zorder=5, s=12, label="Hit Trust Radius")
+
+    ax3.set_ylabel("Displacement / Norm (Å or eV/Å)")
     try:
         ax3.set_yscale("log")
     except Exception:
@@ -103,13 +129,13 @@ def plot_trajectory(traj_path: Path, output_dir: Path) -> None:
 
     # ---- Panel 4: Mode tracking overlap ----
     ax4 = axs[3]
-    ax4.plot(steps, overlap, color="tab:cyan")
+    ax4.plot(steps, overlap, color="tab:cyan", label="|<v_t | v_{t-1}>|")
     ax4.axhline(1.0, color="black", linewidth=0.5, linestyle="--", alpha=0.5)
     ax4.set_ylabel("|<v_t | v_{t-1}>|")
     ax4.set_xlabel("Step")
     ax4.set_ylim(0, 1.05)
     ax4.grid(True, alpha=0.3)
-    ax4.set_title("Mode Tracking Overlap (1.0 = perfect continuity)")
+    ax4.set_title("Mode Tracking Overlap  (1.0 = perfect continuity, drops = mode flip)")
 
     plt.tight_layout()
 
