@@ -34,7 +34,7 @@
 #   - Best region was around max_atom_disp=1.3.
 #   - purify_hessian produced identical outcomes across all matched pairs.
 #
-# Grid: 1 (mad) x 1 (project_grad) x 1 (purify) = 1 combination
+# Grid: 1 (mad) x 4 (nr_threshold) x 1 (project_grad) x 1 (purify) = 4 combinations
 # =============================================================================
 
 set -e
@@ -96,6 +96,11 @@ MIN_INTERATOMIC_DIST="${MIN_INTERATOMIC_DIST:-0.5}"
 # Trust radius acts as the *initial* trust radius and absolute cap in the TR method.
 MAX_ATOM_DISP_GRID=("1.3")
 
+# NR step filter threshold: modes with |λ| < nr_threshold are excluded from the
+# pseudoinverse step (numerical noise / flat modes → explosive steps if inverted).
+# Evaluation/convergence always uses ALL eigenvalues (threshold = 0 there).
+NR_THRESHOLD_GRID=("2e-3" "5e-3" "8e-3" "1e-2")
+
 # Eckart projection is mandatory for stability; no measurable benefit to sweeping.
 PROJECT_GRAD_GRID=("true")
 
@@ -118,9 +123,10 @@ echo "  FORCE_CONVERGED: $FORCE_CONVERGED"
 echo "=============================================="
 echo "Grid axes:"
 echo "  max_atom_disp: ${MAX_ATOM_DISP_GRID[*]}"
+echo "  nr_threshold: ${NR_THRESHOLD_GRID[*]}"
 echo "  project_gradient: ${PROJECT_GRAD_GRID[*]}"
 echo "  purify_hessian: ${PURIFY_HESS_GRID[*]}"
-TOTAL_COMBOS=$(( ${#MAX_ATOM_DISP_GRID[@]} * ${#PROJECT_GRAD_GRID[@]} * ${#PURIFY_HESS_GRID[@]} ))
+TOTAL_COMBOS=$(( ${#MAX_ATOM_DISP_GRID[@]} * ${#NR_THRESHOLD_GRID[@]} * ${#PROJECT_GRAD_GRID[@]} * ${#PURIFY_HESS_GRID[@]} ))
 echo "  Total combinations: $TOTAL_COMBOS"
 echo "=============================================="
 
@@ -139,47 +145,50 @@ COMBO=0
 FAILED=0
 
 for MAD in "${MAX_ATOM_DISP_GRID[@]}"; do
-    for PG in "${PROJECT_GRAD_GRID[@]}"; do
-        for PH in "${PURIFY_HESS_GRID[@]}"; do
-            COMBO=$((COMBO + 1))
-            RUN_TAG="mad${MAD}_pg${PG}_ph${PH}"
-            RUN_OUT_DIR="${OUT_DIR}/${RUN_TAG}"
-            mkdir -p "$RUN_OUT_DIR"
+    for NRT in "${NR_THRESHOLD_GRID[@]}"; do
+        for PG in "${PROJECT_GRAD_GRID[@]}"; do
+            for PH in "${PURIFY_HESS_GRID[@]}"; do
+                COMBO=$((COMBO + 1))
+                RUN_TAG="mad${MAD}_nrt${NRT}_pg${PG}_ph${PH}"
+                RUN_OUT_DIR="${OUT_DIR}/${RUN_TAG}"
+                mkdir -p "$RUN_OUT_DIR"
 
-            echo "[${COMBO}/${TOTAL_COMBOS}] Running: $RUN_TAG"
+                echo "[${COMBO}/${TOTAL_COMBOS}] Running: $RUN_TAG"
 
-            # Build command
-            CMD=(
-                python "$PROJECT_DIR/src/noisy/v2_tests/runners/run_minimization_parallel.py"
-                --h5-path "$H5_PATH"
-                --out-dir "$RUN_OUT_DIR"
-                --scine-functional "$SCINE_FUNCTIONAL"
-                --n-steps "$N_STEPS"
-                --max-samples "$MAX_SAMPLES"
-                --start-from "$START_FROM"
-                --noise-seed "$NOISE_SEED"
-                --n-workers "$N_WORKERS"
-                --threads-per-worker "$THREADS_PER_WORKER"
-                --method newton_raphson
-                --max-atom-disp "$MAD"
-                --force-converged "$FORCE_CONVERGED"
-                --min-interatomic-dist "$MIN_INTERATOMIC_DIST"
-            )
+                # Build command
+                CMD=(
+                    python "$PROJECT_DIR/src/noisy/v2_tests/runners/run_minimization_parallel.py"
+                    --h5-path "$H5_PATH"
+                    --out-dir "$RUN_OUT_DIR"
+                    --scine-functional "$SCINE_FUNCTIONAL"
+                    --n-steps "$N_STEPS"
+                    --max-samples "$MAX_SAMPLES"
+                    --start-from "$START_FROM"
+                    --noise-seed "$NOISE_SEED"
+                    --n-workers "$N_WORKERS"
+                    --threads-per-worker "$THREADS_PER_WORKER"
+                    --method newton_raphson
+                    --max-atom-disp "$MAD"
+                    --force-converged "$FORCE_CONVERGED"
+                    --min-interatomic-dist "$MIN_INTERATOMIC_DIST"
+                    --nr-threshold "$NRT"
+                )
 
-            if [ "$PG" = "true" ]; then
-                CMD+=(--project-gradient-and-v)
-            fi
-            if [ "$PH" = "true" ]; then
-                CMD+=(--purify-hessian)
-            fi
+                if [ "$PG" = "true" ]; then
+                    CMD+=(--project-gradient-and-v)
+                fi
+                if [ "$PH" = "true" ]; then
+                    CMD+=(--purify-hessian)
+                fi
 
-            if "${CMD[@]}"; then
-                echo "  -> Completed: $RUN_TAG"
-            else
-                echo "  -> FAILED: $RUN_TAG (exit code $?)"
-                FAILED=$((FAILED + 1))
-            fi
-            echo ""
+                if "${CMD[@]}"; then
+                    echo "  -> Completed: $RUN_TAG"
+                else
+                    echo "  -> FAILED: $RUN_TAG (exit code $?)"
+                    FAILED=$((FAILED + 1))
+                fi
+                echo ""
+            done
         done
     done
 done

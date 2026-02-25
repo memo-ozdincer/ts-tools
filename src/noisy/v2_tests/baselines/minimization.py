@@ -193,6 +193,7 @@ def run_newton_raphson(
     max_atom_disp: float = 0.3,
     force_converged: float = 1e-4,
     min_interatomic_dist: float = 0.5,
+    nr_threshold: float = 8e-3,
     project_gradient_and_v: bool = True,
     purify_hessian: bool = False,
     known_ts_coords: Optional[torch.Tensor] = None,
@@ -302,10 +303,15 @@ def run_newton_raphson(
 
         # Newton-Raphson step using the reduced-basis eigenvectors.
         # evecs_vib_3N: (3N, 3N-k) lifted to full Cartesian space.
-        # Use |λ| in the denominator to ensure a descent direction.
+        # Filter out flat/noise modes (|λ| < nr_threshold) from the pseudoinverse
+        # to avoid explosive steps along numerically noisy near-zero modes.
+        # n_neg above still counts ALL eigenvalues < 0.0 (no threshold).
         work_dtype = grad.dtype
-        V = evecs_vib_3N.to(device=grad.device, dtype=work_dtype)
-        lam = evals_vib.to(device=grad.device, dtype=work_dtype)
+        V_all = evecs_vib_3N.to(device=grad.device, dtype=work_dtype)
+        lam_all = evals_vib.to(device=grad.device, dtype=work_dtype)
+        step_mask = torch.abs(lam_all) >= nr_threshold
+        V = V_all[:, step_mask]
+        lam = lam_all[step_mask]
         if V.shape[1] > 0:
             coeffs = V.T @ grad
             nr_step = V @ (coeffs / torch.abs(lam))
@@ -324,7 +330,7 @@ def run_newton_raphson(
             radius_used_for_step = current_trust_radius
             capped_disp = _cap_displacement(step_disp, radius_used_for_step)
 
-            # Predict energy change using spectral form (TR modes contribute zero):
+            # Predict energy change using spectral form over filtered modes:
             # dE ≈ g·dx + ½ Σ_i λ_i (v_i·dx)²
             dx_flat = capped_disp.reshape(-1).to(work_dtype)
             dx_red = V.T @ dx_flat

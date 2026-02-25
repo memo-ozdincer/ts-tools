@@ -90,6 +90,7 @@ def run_single_sample(
                 max_atom_disp=params["max_atom_disp"],
                 force_converged=params["force_converged"],
                 min_interatomic_dist=params["min_interatomic_dist"],
+                nr_threshold=params.get("nr_threshold", 8e-3),
                 project_gradient_and_v=project_gradient_and_v,
                 purify_hessian=params.get("purify_hessian", False),
                 known_ts_coords=known_ts_coords,
@@ -243,6 +244,11 @@ def main() -> None:
     parser.add_argument("--max-atom-disp", type=float, default=1.3)
     parser.add_argument("--force-converged", type=float, default=1e-4)
     parser.add_argument("--min-interatomic-dist", type=float, default=0.5)
+    parser.add_argument(
+        "--nr-threshold", type=float, default=8e-3,
+        help="Eigenvalue cutoff for NR step filtering (|λ| < threshold → excluded from pseudoinverse). "
+             "Evaluation/convergence always uses all eigenvalues.",
+    )
 
     # Gradient descent parameters
     parser.add_argument("--step-size", type=float, default=0.01,
@@ -274,6 +280,7 @@ def main() -> None:
         "max_atom_disp": args.max_atom_disp,
         "force_converged": args.force_converged,
         "min_interatomic_dist": args.min_interatomic_dist,
+        "nr_threshold": args.nr_threshold,
         "project_gradient_and_v": args.project_gradient_and_v,
         "purify_hessian": args.purify_hessian,
         "log_dir": str(diag_dir),
