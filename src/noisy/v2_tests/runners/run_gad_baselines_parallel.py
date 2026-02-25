@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import time
 from pathlib import Path
@@ -232,75 +233,73 @@ def run_gad_baseline(
                 logger.save(log_dir)
             return result
 
-        # Compute unscaled Newton step for GAD
-        if projection_mode == "reduced_basis":
-            # For reduced basis we just use gad_vec as gradient-like step if no hessian inverse available easily
-            step_disp_raw = gad_vec.clone()
+        # GAD step direction: normalized gad_flat (unit per-atom displacement).
+        # We deliberately do NOT apply Newton preconditioning (1/|λ|) here.
+        # Newton preconditioning is correct for NR minimization (all eigenvalues
+        # positive near a minimum) but harmful for GAD: at Morse index > 1 the
+        # second-most-negative mode λ_1 has |λ_1| < |λ_0|, so 1/|λ_1| > 1/|λ_0|,
+        # making the un-flipped mode 1 dominate the step and driving the algorithm
+        # uphill along BOTH modes simultaneously.  The trust radius controls magnitude;
+        # the GAD force vector controls direction.
+        gad_dir = gad_vec.reshape(-1, 3) if projection_mode != "reduced_basis" else gad_vec.clone()
+        gad_dir_norm = float(gad_dir.norm().item())
+        if gad_dir_norm > 1e-10:
+            step_disp_raw = gad_dir / gad_dir_norm   # unit-vector; trust radius sets magnitude
         else:
-            if int(vib_indices.numel()) > 0:
-                V_vib = evecs[:, vib_indices].to(device=forces.device, dtype=forces.dtype)
-                lam_vib = evals[vib_indices].to(device=forces.device, dtype=forces.dtype)
-                coeffs = V_vib.T @ gad_flat.to(V_vib.dtype)
-                # Apply trust region logic here for GAD
-                # The gad_flat is already f + 2(f.v)v, which is our modified gradient
-                # We do a Newton step with absolute eigenvalues to ensure we follow the GAD direction
-                inv_lam_abs = 1.0 / torch.abs(lam_vib)
-                delta_x = V_vib @ (inv_lam_abs * coeffs)
-            else:
-                delta_x = gad_flat * 0.001
-            step_disp_raw = delta_x.to(coords.dtype).reshape(-1, 3)
+            step_disp_raw = gad_dir
 
-        # Trust region line search loop
+        # Trust region: scale by dt_eff, compare quadratic-model prediction against
+        # actual energy change, and adapt the radius.
         accepted = False
         max_retries = 10
         retries = 0
+        rho = 1.0
         current_energy = float(out["energy"].detach().reshape(-1)[0].item()) if isinstance(out["energy"], torch.Tensor) else float(out["energy"])
 
         while not accepted and retries < max_retries:
             radius_used_for_step = dt_eff
             capped_disp = _cap_displacement(step_disp_raw, radius_used_for_step)
-            
-            # Predict energy change using explicit Hessian: dE = g_gad^T dx + 0.5 dx^T H dx
             dx_flat = capped_disp.reshape(-1)
-            
-            # Use the GAD direction for prediction to get the expected energy change along the step
-            # Note: We want to match the logic from minimization, where dE_pred = g^T dx + 0.5 dx^T H dx
-            # Here 'g' should be the negative of the force vector (grad)
+
+            # Quadratic model of the TRUE energy change (Taylor): dE ≈ ∇E·dx + ½ dx^T H dx
+            # This is purely for quality-of-fit assessment; we do not require it to be negative.
             grad_true = -forces.reshape(-1)
-            pred_dE = float((grad_true.dot(dx_flat) + 0.5 * dx_flat.dot(hess_proj @ dx_flat)).item()) if "hess_proj" in locals() else float("nan")
-            
+            if projection_mode != "reduced_basis" and "hess_proj" in locals():
+                pred_dE = float((grad_true.dot(dx_flat) + 0.5 * dx_flat.dot(hess_proj @ dx_flat)).item())
+            else:
+                pred_dE = float("nan")
+
             new_coords = coords + capped_disp
-            
+
             if _min_interatomic_distance(new_coords) < min_interatomic_dist:
                 dt_eff *= 0.5
                 retries += 1
                 continue
-                
+
             out_new = predict_fn(new_coords, atomic_nums, do_hessian=False, require_grad=False)
             energy_new = float(out_new["energy"].detach().reshape(-1)[0].item()) if isinstance(out_new["energy"], torch.Tensor) else float(out_new["energy"])
-            
             actual_dE = energy_new - current_energy
-            
-            # Since saddle point search energy can go up or down, we just want rho = actual_dE / pred_dE to be close to 1.
-            # However, for GAD, we actually want to ascend along v, and descend along everything else.
-            # The quadratic model should predict this! If actual energy change matches predicted, the model is good.
-            if abs(pred_dE) < 1e-8:
-                accepted = True
+
+            # ρ = actual / predicted energy change — measures quadratic model quality.
+            # For GAD the energy can go up OR down, so we only reject when the quadratic
+            # model and the actual step strongly disagree in magnitude (|ρ| < 0.1),
+            # implying the step is too large for the local approximation to hold.
+            if not math.isfinite(pred_dE) or abs(pred_dE) < 1e-8:
                 rho = 1.0
+                accepted = True
             else:
                 rho = actual_dE / pred_dE
-                
-                # Trust region logic based on rho
-                if rho > 0.0 or radius_used_for_step < 1e-3:
+                if abs(rho) > 0.1 or radius_used_for_step < 1e-3:
                     accepted = True
                 else:
                     dt_eff *= 0.25
                     retries += 1
 
+        # Adapt trust radius based on model quality
         if accepted:
-            if rho > 0.75:
+            if abs(rho) > 0.75:
                 dt_eff = min(dt_eff * 1.5, max_atom_disp)
-            elif rho < 0.25:
+            elif abs(rho) < 0.25:
                 dt_eff = max(dt_eff * 0.5, 0.001)
         else:
             dt_eff = max(dt_eff * 0.5, 0.001)
