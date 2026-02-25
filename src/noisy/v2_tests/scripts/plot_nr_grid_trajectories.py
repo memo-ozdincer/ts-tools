@@ -106,6 +106,9 @@ def main():
         
     print(f"Found {len(traj_files)} trajectory files to plot.")
     for i, traj_file in enumerate(traj_files):
+        if i % 30 != 0:
+            continue
+            
         # Create subdirectories in the output folder mirroring the grid structure
         rel_path = traj_file.relative_to(grid_dir)
         combo_tag = rel_path.parts[0] if len(rel_path.parts) > 1 else "unknown_combo"
