@@ -177,6 +177,7 @@ def run_gad_baseline(
     dt_max: float,
     max_atom_disp: float,
     ts_eps: float,
+    relaxed_eval_threshold: Optional[float],
     stop_at_ts: bool,
     min_interatomic_dist: float,
     tr_threshold: float,
@@ -363,7 +364,17 @@ def run_gad_baseline(
 
         # Convergence check: eig_product < -ts_eps means λ_0 < 0 and λ_1 > 0,
         # i.e. we have exactly one negative mode (Morse index = 1 = transition state).
-        if stop_at_ts and np.isfinite(eig_product) and eig_product < -abs(ts_eps):
+        # If relaxed_eval_threshold is set, we instead check that λ_0 < -ts_eps and λ_1 > -relaxed_eval_threshold.
+        is_converged = False
+        if stop_at_ts and int(evals_vib_conv.numel()) >= 2:
+            if relaxed_eval_threshold is not None:
+                if evals_vib_0 < -abs(ts_eps) and evals_vib_1 > -abs(relaxed_eval_threshold):
+                    is_converged = True
+            else:
+                if np.isfinite(eig_product) and eig_product < -abs(ts_eps):
+                    is_converged = True
+
+        if is_converged:
             final_morse_index = neg_vib_count
 
             # --- Cascade evaluation and eigenvalue diagnostics at convergence ---
@@ -414,7 +425,11 @@ def run_gad_baseline(
         gad_dir = gad_vec.reshape(-1, 3) if projection_mode != "reduced_basis" else gad_vec.clone()
         gad_dir_norm = float(gad_dir.norm().item())
         if gad_dir_norm > 1e-10:
-            step_disp_raw = gad_dir / gad_dir_norm   # unit-vector; trust radius sets magnitude
+            # Scale so that the maximum atomic displacement is exactly dt_eff
+            # (trust radius sets magnitude, GAD force vector sets direction)
+            unit_dir = gad_dir / gad_dir_norm
+            max_disp = float(unit_dir.norm(dim=1).max().item())
+            step_disp_raw = unit_dir * (dt_eff / max_disp) if max_disp > 0 else unit_dir
         else:
             step_disp_raw = gad_dir
 
@@ -451,15 +466,15 @@ def run_gad_baseline(
             actual_dE = energy_new - current_energy
 
             # ρ = actual / predicted energy change — measures quadratic model quality.
-            # For GAD the energy can go up OR down, so we only reject when the quadratic
-            # model and the actual step strongly disagree in magnitude (|ρ| < 0.1),
-            # implying the step is too large for the local approximation to hold.
+            # For GAD the energy can go up OR down, but the sign should match.
+            # We reject when the quadratic model and the actual step disagree in sign (rho < 0)
+            # or strongly disagree in magnitude (rho < 0.1), implying the step is too large.
             if not math.isfinite(pred_dE) or abs(pred_dE) < 1e-8:
                 rho = 1.0
                 accepted = True
             else:
                 rho = actual_dE / pred_dE
-                if abs(rho) > 0.1 or radius_used_for_step < 1e-3:
+                if rho > 0.1 or radius_used_for_step < 1e-3:
                     accepted = True
                 else:
                     dt_eff *= 0.25
@@ -467,9 +482,9 @@ def run_gad_baseline(
 
         # Adapt trust radius based on model quality
         if accepted:
-            if abs(rho) > 0.75:
+            if rho > 0.75:
                 dt_eff = min(dt_eff * 1.5, max_atom_disp)
-            elif abs(rho) < 0.25:
+            elif rho < 0.25:
                 dt_eff = max(dt_eff * 0.5, 0.001)
         else:
             dt_eff = max(dt_eff * 0.5, 0.001)
@@ -537,6 +552,7 @@ def run_single_sample(
             dt_max=params["dt_max"],
             max_atom_disp=params["max_atom_disp"],
             ts_eps=params["ts_eps"],
+            relaxed_eval_threshold=params.get("relaxed_eval_threshold"),
             stop_at_ts=params["stop_at_ts"],
             min_interatomic_dist=params["min_interatomic_dist"],
             tr_threshold=params["tr_threshold"],
@@ -793,6 +809,10 @@ def main() -> None:
                         help="Convergence threshold: eig_product = λ_0*λ_1 < -ts_eps declares a TS. "
                              "Smaller → stricter (requires larger gap between λ_0 < 0 and λ_1 > 0). "
                              "Larger → more permissive (accepts smaller sign separation).")
+    parser.add_argument("--relaxed-eval-threshold", type=float, default=None,
+                        help="If set, replaces the eig_product check with a relaxed check: "
+                             "λ_0 < -ts_eps AND λ_1 > -relaxed_eval_threshold. "
+                             "This allows accepting a TS even if there are tiny negative noise modes.")
     parser.add_argument("--tr-threshold", type=float, default=8e-3,
                         help="Eigenvalue magnitude threshold. When --tr-filter-eig is enabled, "
                              "modes with |λ| < tr_threshold are excluded from eig0/eig1 and "
@@ -860,6 +880,7 @@ def main() -> None:
         "max_atom_disp": args.max_atom_disp,
         "min_interatomic_dist": args.min_interatomic_dist,
         "ts_eps": args.ts_eps,
+        "relaxed_eval_threshold": args.relaxed_eval_threshold,
         "tr_threshold": args.tr_threshold,
         "tr_filter_eig": args.tr_filter_eig,
         "track_mode": track_mode,

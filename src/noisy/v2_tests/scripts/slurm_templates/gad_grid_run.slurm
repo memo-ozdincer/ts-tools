@@ -61,10 +61,10 @@
 #    gap_ratio ≈ 1   → TS mode buried in noise; "converter" may be spurious.
 #    Reported per-combo and in the cascade CSV.
 #
-# 3. ts_eps SWEEP — relaxed convergence criterion (Phase B)
-#    ts_eps controls how strict the eig_product gate is.
-#    ts_eps = 1e-5 (default): very strict; λ_0 and λ_1 must be well-separated.
-#    ts_eps = 1e-3: more permissive; accepts shallower sign separation.
+# 3. relaxed_eval_threshold SWEEP — relaxed convergence criterion (Phase B)
+#    relaxed_eval_threshold controls how strict the λ_1 gate is.
+#    None (default): very strict; λ_0 * λ_1 < -1e-5.
+#    1e-3: more permissive; accepts λ_1 > -1e-3.
 #    Combined with cascade analysis this distinguishes:
 #      "tight ts_eps rejects cases where the algorithm converged but λ_1 is small"
 #      from "the algorithm genuinely hasn't reached a clean Morse-1 geometry".
@@ -84,15 +84,15 @@
 #   4 (mad) × 2 (baseline) × 1 (tr, diagnostic only) = 8 combos
 #   Outcome: cascade table reveals false-rejection vs genuine failures.
 #
-# Phase B — ts_eps sweep (relaxed convergence criterion):
-#   best mad × 2 (baseline) × 5 (ts_eps) = 10 combos
-#   Outcome: shows how strict/permissive the eig_product gate should be.
+# Phase B — relaxed_eval_threshold sweep (relaxed convergence criterion):
+#   best mad × 2 (baseline) × 4 (relaxed_eval_threshold) = 8 combos
+#   Outcome: shows how strict/permissive the λ_1 gate should be.
 #
-# Phase C — tr_filter_eig sweep (legacy mode, mad=1.3, ts_eps=1e-5):
+# Phase C — tr_filter_eig sweep (legacy mode, mad=1.5, ts_eps=1e-5):
 #   best mad × 2 (baseline) × 4 (tr_threshold) = 8 combos
 #   Outcome: recovers old performance, quantifies soft-mode contamination in λ_1.
 #
-# Total: 8 + 10 + 8 = 26 combinations
+# Total: 8 + 8 + 8 = 24 combinations
 # =============================================================================
 
 set -e
@@ -300,27 +300,27 @@ for MAD in "0.5" "1.0" "1.3" "1.5"; do
 done
 
 # =============================================================================
-# Phase B — ts_eps sweep (relaxed convergence criterion, raw eigs)
-# Fixed to best-performing parameters from Phase A (expected: mad=1.3, mode_tracked).
-# ts_eps controls how strict the eig_product gate is:
-#   1e-5 (original): λ_0 * λ_1 < -1e-5, needs clean sign separation
+# Phase B — relaxed_eval_threshold sweep (relaxed convergence criterion, raw eigs)
+# Fixed to best-performing parameters from Phase A (expected: mad=1.5, mode_tracked).
+# relaxed_eval_threshold controls how strict the λ_1 gate is:
+#   None (original): λ_0 * λ_1 < -1e-5, needs clean sign separation
 #   1e-3: more permissive, accepts smaller positive λ_1
-#   1e-2: very permissive, will accept even near-zero λ_1
+#   5e-3: very permissive, will accept even near-zero λ_1
 # Cascade analysis separates "ts_eps too strict" from "not at Morse-1 at all".
 # Run for BOTH baselines so Phase B can also confirm plain vs mode_tracked.
 # =============================================================================
 echo "=============================================="
-echo "Phase B — ts_eps sweep (relaxed convergence, mad=1.3, raw eigs)"
-echo "  Axes: ts_eps ∈ {1e-4, 1e-3, 5e-3, 1e-2} × baseline ∈ {plain, mode_tracked}"
-echo "  (ts_eps=1e-5 already covered in Phase A)"
-echo "  PURPOSE: find if tighter/looser ts_eps changes success rate"
+echo "Phase B — relaxed_eval_threshold sweep (relaxed convergence, mad=1.5, raw eigs)"
+echo "  Axes: relaxed_eval_threshold ∈ {1e-4, 1e-3, 5e-3, 1e-2} × baseline ∈ {plain, mode_tracked}"
+echo "  (relaxed_eval_threshold=None already covered in Phase A)"
+echo "  PURPOSE: find if tighter/looser relaxed_eval_threshold changes success rate"
 echo "           combined with cascade: distinguish false-rejection from failure"
 echo "=============================================="
 
-for TSE in "1e-4" "1e-3" "5e-3" "1e-2"; do
+for RET in "1e-4" "1e-3" "5e-3" "1e-2"; do
     for BL in "plain" "mode_tracked"; do
-        run_combo "mad1.3_tr${TR_DIAGNOSTIC}_bl${BL}_pgtrue_tse${TSE}" \
-            "$BL" "1.3" "$TSE"
+        run_combo "mad1.5_tr${TR_DIAGNOSTIC}_bl${BL}_pgtrue_ret${RET}" \
+            "$BL" "1.5" "1e-5" "--relaxed-eval-threshold" "$RET"
     done
 done
 
@@ -340,7 +340,7 @@ done
 # This lets you directly compare how much the filtering changes the effective eig_product.
 # =============================================================================
 echo "=============================================="
-echo "Phase C — Legacy tr_filter_eig (old behaviour, mad=1.3)"
+echo "Phase C — Legacy tr_filter_eig (old behaviour, mad=1.5)"
 echo "  Axes: tr_threshold ∈ {1e-3, 5e-3, 8e-3, 2e-2} × baseline ∈ {plain, mode_tracked}"
 echo "  --tr-filter-eig ON: near-zero modes excluded from eig_product gate"
 echo "  Both raw and filtered λ_0, λ_1 logged for direct comparison"
@@ -349,8 +349,8 @@ echo "=============================================="
 
 for TR_F in "1e-3" "5e-3" "8e-3" "2e-2"; do
     for BL in "plain" "mode_tracked"; do
-        run_combo_tr_filter "mad1.3_trf${TR_F}_bl${BL}_pgtrue_tse1e-5" \
-            "$BL" "1.3" "1e-5" "$TR_F"
+        run_combo_tr_filter "mad1.5_trf${TR_F}_bl${BL}_pgtrue_tse1e-5" \
+            "$BL" "1.5" "1e-5" "$TR_F"
     done
 done
 
