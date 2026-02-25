@@ -2,7 +2,7 @@
 #SBATCH --job-name=min_nr_grid
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=32
+#SBATCH --cpus-per-task=192
 #SBATCH --gpus-per-node=0
 #SBATCH --time=12:00:00
 #SBATCH --output=/scratch/memoozd/ts-tools-scratch/logs/min_nr_grid_%j.out
