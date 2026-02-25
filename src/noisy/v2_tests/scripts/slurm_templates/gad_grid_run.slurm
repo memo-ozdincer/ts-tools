@@ -4,7 +4,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=192
 #SBATCH --gpus-per-node=0
-#SBATCH --time=12:00:00
+#SBATCH --time=05:00:00
 #SBATCH --output=/scratch/memoozd/ts-tools-scratch/logs/gad_grid_%j.out
 #SBATCH --error=/scratch/memoozd/ts-tools-scratch/logs/gad_grid_%j.err
 #SBATCH --account=rrg-aspuru
