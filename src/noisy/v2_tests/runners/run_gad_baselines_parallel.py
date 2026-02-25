@@ -165,6 +165,106 @@ def _vib_mask_from_evals(evals: torch.Tensor, tr_threshold: float) -> torch.Tens
     return evals.abs() > float(tr_threshold)
 
 
+def _newton_gad_step(
+    forces: torch.Tensor,
+    evals_vib: torch.Tensor,
+    evecs_vib_3N: torch.Tensor,
+    tracked_mode_index: int,
+    step_filter_threshold: float,
+    atomsymbols: list,
+    device: torch.device,
+) -> torch.Tensor:
+    """Compute Newton-preconditioned GAD step in mass-weighted vibrational eigenbasis.
+
+    For the tracked TS mode (λ < 0):  standard Newton → drives toward saddle.
+    For positive modes (λ > 0):       standard Newton → drives toward minimum.
+    For non-tracked negative modes:   absolute-value pseudoinverse → gradient
+                                      descent away from maximum.
+    For near-zero modes (|λ| < thr):  filtered out (noise).
+
+    Returns:
+        step_cart: (N, 3) Cartesian displacement with meaningful Newton magnitude.
+    """
+    dtype = torch.float64
+    _, _, sqrt_m, sqrt_m_inv = get_mass_weights_torch(atomsymbols, device=device, dtype=dtype)
+
+    # Mass-weighted gradient: g_mw = M^{-1/2} * (-F)
+    g_mw = sqrt_m_inv * (-forces.reshape(-1).to(dtype))
+
+    evecs_f64 = evecs_vib_3N.to(dtype)
+    evals_f64 = evals_vib.to(dtype)
+
+    # Project gradient onto vibrational eigenmodes
+    g_vib = evecs_f64.T @ g_mw  # (3N-k,)
+
+    # Mode-decomposed Newton step with filtering
+    step_vib = torch.zeros_like(g_vib)
+    for i in range(len(evals_f64)):
+        lam = float(evals_f64[i].item())
+        if abs(lam) < step_filter_threshold:
+            continue  # skip noise modes
+        if i == tracked_mode_index:
+            # Tracked TS mode: standard Newton toward saddle point
+            # Since λ < 0, -g/λ = +g/|λ| → moves toward the maximum (saddle)
+            step_vib[i] = -g_vib[i] / lam
+        elif lam > 0:
+            # Positive mode: standard Newton minimization
+            step_vib[i] = -g_vib[i] / lam
+        else:
+            # Non-tracked negative mode: absolute-value pseudoinverse
+            # = gradient descent away from maximum, scaled by curvature
+            step_vib[i] = -g_vib[i] / abs(lam)
+
+    # Reconstruct in MW space → Cartesian
+    step_mw = evecs_f64 @ step_vib
+    step_cart = (sqrt_m_inv * step_mw).to(forces.dtype)  # Δq_cart = M^{-1/2} × Δq_mw
+    return step_cart.reshape(-1, 3)
+
+
+def _cleanup_step_orthogonal(
+    forces: torch.Tensor,
+    evals_vib: torch.Tensor,
+    evecs_vib_3N: torch.Tensor,
+    tracked_mode_index: int,
+    step_filter_threshold: float,
+    atomsymbols: list,
+    device: torch.device,
+    max_disp: float = 0.1,
+) -> torch.Tensor:
+    """NR minimization step orthogonal to the TS mode (for post-convergence cleanup).
+
+    Minimizes energy in the (3N-k-1)-dimensional subspace orthogonal to the
+    tracked TS eigenvector.  This pushes residual small negative modes positive
+    without disturbing the saddle geometry along the TS mode.
+
+    Returns:
+        step_cart: (N, 3) capped Cartesian displacement.
+    """
+    dtype = torch.float64
+    _, _, sqrt_m, sqrt_m_inv = get_mass_weights_torch(atomsymbols, device=device, dtype=dtype)
+
+    g_mw = sqrt_m_inv * (-forces.reshape(-1).to(dtype))
+    evecs_f64 = evecs_vib_3N.to(dtype)
+    evals_f64 = evals_vib.to(dtype)
+    g_vib = evecs_f64.T @ g_mw
+
+    step_vib = torch.zeros_like(g_vib)
+    for i in range(len(evals_f64)):
+        if i == tracked_mode_index:
+            continue  # don't move along TS mode
+        lam = float(evals_f64[i].item())
+        if abs(lam) < step_filter_threshold:
+            continue
+        if lam > 0:
+            step_vib[i] = -g_vib[i] / lam
+        else:
+            step_vib[i] = -g_vib[i] / abs(lam)
+
+    step_mw = evecs_f64 @ step_vib
+    step_cart = (sqrt_m_inv * step_mw).to(forces.dtype)
+    return _cap_displacement(step_cart.reshape(-1, 3), max_disp)
+
+
 def run_gad_baseline(
     predict_fn,
     coords0: torch.Tensor,
@@ -177,7 +277,6 @@ def run_gad_baseline(
     dt_max: float,
     max_atom_disp: float,
     ts_eps: float,
-    relaxed_eval_threshold: Optional[float],
     stop_at_ts: bool,
     min_interatomic_dist: float,
     tr_threshold: float,
@@ -191,6 +290,12 @@ def run_gad_baseline(
     frame_tracking: bool = False,
     log_spectrum_k: int = 10,
     tr_filter_eig: bool = False,
+    # ── v3 Newton-GAD improvements ──────────────────────────────
+    step_mode: str = "first_order",
+    step_filter_threshold: float = 8e-3,
+    converge_on_filtered: bool = False,
+    anti_overshoot: bool = False,
+    cleanup_steps: int = 0,
 ) -> Dict[str, Any]:
     """Run one GAD trajectory.
 
@@ -203,6 +308,29 @@ def run_gad_baseline(
         If False (new default), the raw vibrational eigenvalues from get_vib_evals_evecs
         are used unfiltered.  Small residual modes may cause eig_product ≈ 0 even at a
         true TS, which inflates the gap ratio and suppresses the strict success rate.
+
+    v3 improvements (Newton-GAD):
+        step_mode: "first_order" (classic unit-vector GAD) or "newton_gad"
+            (mode-decomposed Newton step in vibrational eigenbasis).  Newton mode
+            applies 1/|λ| preconditioning per eigenmode and filters noise modes,
+            giving second-order convergence while preserving the GAD direction logic.
+
+        step_filter_threshold: eigenvalue magnitude threshold for Newton step.
+            Modes with |λ| < this are zeroed out in the step (noise filtering).
+            Also used for the convergence gate when converge_on_filtered=True.
+
+        converge_on_filtered: if True, the eig_product convergence gate uses
+            eigenvalues filtered by step_filter_threshold (prevents overshooting
+            past the TS due to near-zero λ₁ suppressing the product).  The cascade
+            table always reports unfiltered n_neg for honest evaluation.
+
+        anti_overshoot: if True, monitors the Morse index each step and reduces
+            the trust radius when approaching Morse-1, preventing the optimizer
+            from passing through the TS into a minimum.
+
+        cleanup_steps: number of post-convergence NR minimization steps in the
+            subspace orthogonal to the TS mode.  Pushes residual small negative
+            eigenvalues positive without disturbing the saddle geometry.
     """
     coords = coords0.detach().clone().to(torch.float32)
     if coords.dim() == 3 and coords.shape[0] == 1:
@@ -215,6 +343,10 @@ def run_gad_baseline(
     disp_history: List[float] = []
     prev_pos = coords.clone()
     prev_energy: Optional[float] = None
+
+    # Anti-overshoot state
+    prev_n_neg_soft: Optional[int] = None  # Morse index at T=0.002
+    in_ts_region: bool = False
 
     # Always compute atom symbols: needed for reduced-basis eigendecomposition on
     # every step, regardless of projection_mode or project_gradient_and_v.
@@ -324,6 +456,13 @@ def run_gad_baseline(
                 v_prev = None
 
             # eig_product uses the (possibly filtered) eigenvalues for the convergence gate.
+            # converge_on_filtered: use step_filter_threshold to remove noise modes from
+            # the eig_product check *independently* of the old tr_filter_eig pathway.
+            if converge_on_filtered and not tr_filter_eig:
+                _conv_mask = evals_vib.abs() > float(step_filter_threshold)
+                _conv_idx = torch.where(_conv_mask)[0]
+                evals_vib_conv = evals_vib[_conv_mask] if int(_conv_idx.numel()) >= 2 else evals_vib
+
             if int(evals_vib_conv.numel()) >= 2:
                 evals_vib_0 = float(evals_vib_conv[0].item())
                 evals_vib_1 = float(evals_vib_conv[1].item())
@@ -364,17 +503,7 @@ def run_gad_baseline(
 
         # Convergence check: eig_product < -ts_eps means λ_0 < 0 and λ_1 > 0,
         # i.e. we have exactly one negative mode (Morse index = 1 = transition state).
-        # If relaxed_eval_threshold is set, we instead check that λ_0 < -ts_eps and λ_1 > -relaxed_eval_threshold.
-        is_converged = False
-        if stop_at_ts and int(evals_vib_conv.numel()) >= 2:
-            if relaxed_eval_threshold is not None:
-                if evals_vib_0 < -abs(ts_eps) and evals_vib_1 > -abs(relaxed_eval_threshold):
-                    is_converged = True
-            else:
-                if np.isfinite(eig_product) and eig_product < -abs(ts_eps):
-                    is_converged = True
-
-        if is_converged:
+        if stop_at_ts and np.isfinite(eig_product) and eig_product < -abs(ts_eps):
             final_morse_index = neg_vib_count
 
             # --- Cascade evaluation and eigenvalue diagnostics at convergence ---
@@ -390,12 +519,59 @@ def run_gad_baseline(
                 neg_info_filt = {}
             spectrum = _bottom_k_spectrum(ev_full, log_spectrum_k) if ev_full is not None and log_spectrum_k > 0 else []
 
+            # ── Post-convergence cleanup ──────────────────────────────
+            # NR minimization orthogonal to TS mode to push residual small
+            # negative eigenvalues positive.
+            cleanup_done = 0
+            if cleanup_steps > 0 and ev_full is not None:
+                for _cs in range(cleanup_steps):
+                    out_cl = predict_fn(coords, atomic_nums, do_hessian=True, require_grad=False)
+                    f_cl = out_cl["forces"]
+                    if f_cl.dim() == 3 and f_cl.shape[0] == 1:
+                        f_cl = f_cl[0]
+                    f_cl = f_cl.reshape(-1, 3)
+                    h_cl = out_cl["hessian"]
+                    ev_cl, evc_cl, _ = get_vib_evals_evecs(
+                        h_cl, coords, atomsymbols, purify_hessian=purify_hessian,
+                    )
+                    ev_cl = ev_cl.to(device=forces.device, dtype=forces.dtype)
+                    evc_cl = evc_cl.to(device=forces.device, dtype=forces.dtype)
+                    cleanup_disp = _cleanup_step_orthogonal(
+                        forces=f_cl,
+                        evals_vib=ev_cl,
+                        evecs_vib_3N=evc_cl,
+                        tracked_mode_index=mode_index,
+                        step_filter_threshold=step_filter_threshold,
+                        atomsymbols=atomsymbols,
+                        device=forces.device,
+                        max_disp=0.05,
+                    )
+                    new_cl = coords + cleanup_disp
+                    if _min_interatomic_distance(new_cl) >= min_interatomic_dist:
+                        coords = new_cl.detach()
+                    cleanup_done += 1
+                # Re-evaluate eigenvalues after cleanup
+                out_post = predict_fn(coords, atomic_nums, do_hessian=True, require_grad=False)
+                h_post = out_post["hessian"]
+                ev_post, _, _ = get_vib_evals_evecs(
+                    h_post, coords, atomsymbols, purify_hessian=purify_hessian,
+                )
+                ev_post = ev_post.to(device=forces.device, dtype=forces.dtype)
+                ev_full = ev_post
+                cascade = _cascade_n_neg(ev_full)
+                neg_info = _neg_eval_info(ev_full)
+                spectrum = _bottom_k_spectrum(ev_full, log_spectrum_k) if log_spectrum_k > 0 else []
+                final_morse_index = int((ev_full < 0.0).sum().item())
+                neg_info_filt = {}
+
             result = {
                 "converged": True,
                 "converged_step": step,
                 "final_morse_index": final_morse_index,
                 "total_steps": step + 1,
+                "cleanup_steps_taken": cleanup_done,
                 "tr_filter_eig": tr_filter_eig,
+                "step_mode": step_mode,
                 # Cascade: n_neg at every eval threshold
                 **cascade,
                 # Unfiltered negative eigenvalue magnitude diagnostics
@@ -414,24 +590,51 @@ def run_gad_baseline(
                 logger.save(log_dir)
             return result
 
-        # GAD step direction: normalized gad_flat (unit per-atom displacement).
-        # We deliberately do NOT apply Newton preconditioning (1/|λ|) here.
-        # Newton preconditioning is correct for NR minimization (all eigenvalues
-        # positive near a minimum) but harmful for GAD: at Morse index > 1 the
-        # second-most-negative mode λ_1 has |λ_1| < |λ_0|, so 1/|λ_1| > 1/|λ_0|,
-        # making the un-flipped mode 1 dominate the step and driving the algorithm
-        # uphill along BOTH modes simultaneously.  The trust radius controls magnitude;
-        # the GAD force vector controls direction.
-        gad_dir = gad_vec.reshape(-1, 3) if projection_mode != "reduced_basis" else gad_vec.clone()
-        gad_dir_norm = float(gad_dir.norm().item())
-        if gad_dir_norm > 1e-10:
-            # Scale so that the maximum atomic displacement is exactly dt_eff
-            # (trust radius sets magnitude, GAD force vector sets direction)
-            unit_dir = gad_dir / gad_dir_norm
-            max_disp = float(unit_dir.norm(dim=1).max().item())
-            step_disp_raw = unit_dir * (dt_eff / max_disp) if max_disp > 0 else unit_dir
+        # ── Anti-overshoot mechanism ─────────────────────────────────────
+        # Track Morse index at a soft threshold (T=0.002) to detect when we
+        # enter the TS region.  Reduce trust radius to prevent passing through.
+        if anti_overshoot and evals_vib_full is not None:
+            current_n_neg_soft = int((evals_vib_full < -0.002).sum().item())
+            if prev_n_neg_soft is not None:
+                # Entering TS region: Morse index dropped to ≤1
+                if prev_n_neg_soft > 1 and current_n_neg_soft <= 1:
+                    dt_eff = min(dt_eff, max_atom_disp * 0.25)
+                    in_ts_region = True
+                # Overshot: went from 1 to 0
+                elif prev_n_neg_soft >= 1 and current_n_neg_soft == 0 and in_ts_region:
+                    dt_eff = min(dt_eff, max_atom_disp * 0.1)
+            # Once in TS region, cap trust radius growth
+            if in_ts_region:
+                max_tr_for_step = max_atom_disp * 0.5
+            else:
+                max_tr_for_step = max_atom_disp
+            prev_n_neg_soft = current_n_neg_soft
         else:
-            step_disp_raw = gad_dir
+            max_tr_for_step = max_atom_disp
+
+        # ── Step direction ─────────────────────────────────────────────────
+        if step_mode == "newton_gad" and projection_mode != "reduced_basis":
+            # Mode-decomposed Newton step: second-order convergence with
+            # noise-mode filtering.  Handles non-tracked negative modes via
+            # absolute-value pseudoinverse (gradient descent from maxima).
+            step_disp_raw = _newton_gad_step(
+                forces=forces,
+                evals_vib=evals_vib,
+                evecs_vib_3N=evecs_vib_3N,
+                tracked_mode_index=mode_index,
+                step_filter_threshold=step_filter_threshold,
+                atomsymbols=atomsymbols,
+                device=forces.device,
+            )
+        else:
+            # First-order GAD: unit-normalized direction + trust radius magnitude.
+            # (Original behaviour — no Newton preconditioning.)
+            gad_dir = gad_vec.reshape(-1, 3) if projection_mode != "reduced_basis" else gad_vec.clone()
+            gad_dir_norm = float(gad_dir.norm().item())
+            if gad_dir_norm > 1e-10:
+                step_disp_raw = gad_dir / gad_dir_norm
+            else:
+                step_disp_raw = gad_dir
 
         # Trust region: scale by dt_eff, compare quadratic-model prediction against
         # actual energy change, and adapt the radius.
@@ -466,15 +669,15 @@ def run_gad_baseline(
             actual_dE = energy_new - current_energy
 
             # ρ = actual / predicted energy change — measures quadratic model quality.
-            # For GAD the energy can go up OR down, but the sign should match.
-            # We reject when the quadratic model and the actual step disagree in sign (rho < 0)
-            # or strongly disagree in magnitude (rho < 0.1), implying the step is too large.
+            # For GAD the energy can go up OR down, so we only reject when the quadratic
+            # model and the actual step strongly disagree in magnitude (|ρ| < 0.1),
+            # implying the step is too large for the local approximation to hold.
             if not math.isfinite(pred_dE) or abs(pred_dE) < 1e-8:
                 rho = 1.0
                 accepted = True
             else:
                 rho = actual_dE / pred_dE
-                if rho > 0.1 or radius_used_for_step < 1e-3:
+                if abs(rho) > 0.1 or radius_used_for_step < 1e-3:
                     accepted = True
                 else:
                     dt_eff *= 0.25
@@ -482,9 +685,9 @@ def run_gad_baseline(
 
         # Adapt trust radius based on model quality
         if accepted:
-            if rho > 0.75:
-                dt_eff = min(dt_eff * 1.5, max_atom_disp)
-            elif rho < 0.25:
+            if abs(rho) > 0.75:
+                dt_eff = min(dt_eff * 1.5, max_tr_for_step)
+            elif abs(rho) < 0.25:
                 dt_eff = max(dt_eff * 0.5, 0.001)
         else:
             dt_eff = max(dt_eff * 0.5, 0.001)
@@ -512,7 +715,9 @@ def run_gad_baseline(
         "converged_step": None,
         "final_morse_index": neg_vib_final,
         "total_steps": n_steps,
+        "cleanup_steps_taken": 0,
         "tr_filter_eig": tr_filter_eig,
+        "step_mode": step_mode,
         **cascade_final,
         **neg_info_final,
         **neg_info_filt_final,
@@ -552,7 +757,6 @@ def run_single_sample(
             dt_max=params["dt_max"],
             max_atom_disp=params["max_atom_disp"],
             ts_eps=params["ts_eps"],
-            relaxed_eval_threshold=params.get("relaxed_eval_threshold"),
             stop_at_ts=params["stop_at_ts"],
             min_interatomic_dist=params["min_interatomic_dist"],
             tr_threshold=params["tr_threshold"],
@@ -566,6 +770,12 @@ def run_single_sample(
             frame_tracking=params.get("frame_tracking", False),
             log_spectrum_k=params.get("log_spectrum_k", 10),
             tr_filter_eig=params.get("tr_filter_eig", False),
+            # v3 Newton-GAD improvements
+            step_mode=params.get("step_mode", "first_order"),
+            step_filter_threshold=params.get("step_filter_threshold", 8e-3),
+            converge_on_filtered=params.get("converge_on_filtered", False),
+            anti_overshoot=params.get("anti_overshoot", False),
+            cleanup_steps=params.get("cleanup_steps", 0),
         )
         wall_time = time.time() - t0
 
@@ -809,10 +1019,6 @@ def main() -> None:
                         help="Convergence threshold: eig_product = λ_0*λ_1 < -ts_eps declares a TS. "
                              "Smaller → stricter (requires larger gap between λ_0 < 0 and λ_1 > 0). "
                              "Larger → more permissive (accepts smaller sign separation).")
-    parser.add_argument("--relaxed-eval-threshold", type=float, default=None,
-                        help="If set, replaces the eig_product check with a relaxed check: "
-                             "λ_0 < -ts_eps AND λ_1 > -relaxed_eval_threshold. "
-                             "This allows accepting a TS even if there are tiny negative noise modes.")
     parser.add_argument("--tr-threshold", type=float, default=8e-3,
                         help="Eigenvalue magnitude threshold. When --tr-filter-eig is enabled, "
                              "modes with |λ| < tr_threshold are excluded from eig0/eig1 and "
@@ -864,6 +1070,48 @@ def main() -> None:
         help="Kabsch-align coordinates to reference frame each step to prevent rigid-body drift",
     )
 
+    # ── v3 Newton-GAD improvements ──────────────────────────────────────────
+    parser.add_argument(
+        "--step-mode",
+        type=str,
+        default="first_order",
+        choices=["first_order", "newton_gad"],
+        help="Step computation: 'first_order' (unit-vector GAD + trust radius) or "
+             "'newton_gad' (mode-decomposed Newton step with curvature preconditioning "
+             "and noise-mode filtering). Newton mode gives second-order convergence.",
+    )
+    parser.add_argument(
+        "--step-filter-threshold",
+        type=float,
+        default=8e-3,
+        help="Eigenvalue magnitude threshold for the Newton step: modes with |λ| < this "
+             "are zeroed out (noise filtering). Also used for the convergence gate when "
+             "--converge-on-filtered is set. Default 8e-3 (proven optimal for NR minimization).",
+    )
+    parser.add_argument(
+        "--converge-on-filtered",
+        action="store_true",
+        default=False,
+        help="Use filtered eigenvalues (|λ| > step_filter_threshold) for the eig_product "
+             "convergence gate, preventing near-zero λ₁ from suppressing the product and "
+             "causing overshoot.  Cascade table always reports unfiltered n_neg.",
+    )
+    parser.add_argument(
+        "--anti-overshoot",
+        action="store_true",
+        default=False,
+        help="Monitor Morse index per step; reduce trust radius when entering Morse-1 region "
+             "to prevent passing through the TS into a minimum.",
+    )
+    parser.add_argument(
+        "--cleanup-steps",
+        type=int,
+        default=0,
+        help="Post-convergence NR minimization steps orthogonal to the TS mode. "
+             "Pushes residual small negative eigenvalues positive without disturbing "
+             "the saddle geometry. 0 = disabled (default).",
+    )
+
     args = parser.parse_args()
 
     os.makedirs(args.out_dir, exist_ok=True)
@@ -880,7 +1128,6 @@ def main() -> None:
         "max_atom_disp": args.max_atom_disp,
         "min_interatomic_dist": args.min_interatomic_dist,
         "ts_eps": args.ts_eps,
-        "relaxed_eval_threshold": args.relaxed_eval_threshold,
         "tr_threshold": args.tr_threshold,
         "tr_filter_eig": args.tr_filter_eig,
         "track_mode": track_mode,
@@ -891,6 +1138,12 @@ def main() -> None:
         "purify_hessian": args.purify_hessian,
         "frame_tracking": args.frame_tracking,
         "log_spectrum_k": args.log_spectrum_k,
+        # v3 Newton-GAD improvements
+        "step_mode": args.step_mode,
+        "step_filter_threshold": args.step_filter_threshold,
+        "converge_on_filtered": args.converge_on_filtered,
+        "anti_overshoot": args.anti_overshoot,
+        "cleanup_steps": args.cleanup_steps,
     }
 
     processor = ParallelSCINEProcessor(
