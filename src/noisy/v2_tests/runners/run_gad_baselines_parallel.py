@@ -92,10 +92,10 @@ def _cascade_n_neg(evals_vib: torch.Tensor) -> Dict[str, int]:
     return result
 
 
-def _neg_eval_info(evals_vib: torch.Tensor) -> Dict[str, float]:
+def _neg_eval_info(evals_vib: torch.Tensor, label: str = "") -> Dict[str, float]:
     """Extract magnitude info about the most-negative eigenvalue(s).
 
-    Returns:
+    Returns (with optional label prefix for distinguishing filtered vs unfiltered):
       lambda_0        — most negative eigenvalue (the TS climbing mode)
       lambda_1        — second eigenvalue (first of the positive ladder, or
                         the second-most-negative if Morse index > 1)
@@ -103,13 +103,18 @@ def _neg_eval_info(evals_vib: torch.Tensor) -> Dict[str, float]:
       lambda_gap_ratio — |lambda_0| / max(|lambda_1|, 1e-10)
                          Large ratio → TS mode well-separated from noise floor.
                          Ratio ≈ 1   → TS mode buried in noise.
+
+    NOTE: lambda_0 and lambda_1 are the TRUE two smallest eigenvalues of the
+    passed tensor — no thresholding is applied here. Pass a pre-filtered tensor
+    to get filtered results, and the raw tensor for unfiltered results.
     """
+    prefix = f"{label}_" if label else ""
     if evals_vib.numel() == 0:
         return {
-            "lambda_0": float("nan"),
-            "lambda_1": float("nan"),
-            "abs_lambda_0": float("nan"),
-            "lambda_gap_ratio": float("nan"),
+            f"{prefix}lambda_0": float("nan"),
+            f"{prefix}lambda_1": float("nan"),
+            f"{prefix}abs_lambda_0": float("nan"),
+            f"{prefix}lambda_gap_ratio": float("nan"),
         }
     sorted_evals, _ = torch.sort(evals_vib)
     lam0 = float(sorted_evals[0].item())
@@ -117,10 +122,10 @@ def _neg_eval_info(evals_vib: torch.Tensor) -> Dict[str, float]:
     abs_lam0 = abs(lam0)
     gap_ratio = abs_lam0 / max(abs(lam1), 1e-10) if math.isfinite(lam1) else float("nan")
     return {
-        "lambda_0": lam0,
-        "lambda_1": lam1,
-        "abs_lambda_0": abs_lam0,
-        "lambda_gap_ratio": gap_ratio,
+        f"{prefix}lambda_0": lam0,
+        f"{prefix}lambda_1": lam1,
+        f"{prefix}abs_lambda_0": abs_lam0,
+        f"{prefix}lambda_gap_ratio": gap_ratio,
     }
 
 
@@ -151,6 +156,15 @@ def _cap_displacement(step_disp: torch.Tensor, max_atom_disp: float) -> torch.Te
     return disp_3d.reshape(step_disp.shape)
 
 
+def _vib_mask_from_evals(evals: torch.Tensor, tr_threshold: float) -> torch.Tensor:
+    """Return a boolean mask keeping only eigenvalues with |λ| > tr_threshold.
+
+    This matches the old implementation's filtering logic and excludes near-zero
+    (soft/translation/rotation-leaked) modes from convergence decisions.
+    """
+    return evals.abs() > float(tr_threshold)
+
+
 def run_gad_baseline(
     predict_fn,
     coords0: torch.Tensor,
@@ -175,7 +189,20 @@ def run_gad_baseline(
     purify_hessian: bool = False,
     frame_tracking: bool = False,
     log_spectrum_k: int = 10,
+    tr_filter_eig: bool = False,
 ) -> Dict[str, Any]:
+    """Run one GAD trajectory.
+
+    tr_filter_eig: if True, use the old tr_threshold masking for picking eig0/eig1
+        and for the convergence gate.  Near-zero modes (|λ| < tr_threshold) are
+        excluded before computing eig_product = evals_vib[0] * evals_vib[1], which
+        prevents soft modes leaking through Eckart projection from suppressing the
+        product below the -ts_eps gate.
+
+        If False (new default), the raw vibrational eigenvalues from get_vib_evals_evecs
+        are used unfiltered.  Small residual modes may cause eig_product ≈ 0 even at a
+        true TS, which inflates the gap ratio and suppresses the strict success rate.
+    """
     coords = coords0.detach().clone().to(torch.float32)
     if coords.dim() == 3 and coords.shape[0] == 1:
         coords = coords[0]
@@ -244,17 +271,33 @@ def run_gad_baseline(
             if hess_proj.dim() != 2 or hess_proj.shape[0] != 3 * num_atoms:
                 hess_proj = prepare_hessian(hess_proj, num_atoms)
 
-            # Vibrational eigenvalues via reduced basis — exactly 3N-k values,
-            # no threshold, no silent exclusion of soft or near-zero modes.
+            # Vibrational eigenvalues via reduced basis — exactly 3N-k values.
             evals_vib, evecs_vib_3N, _Q_vib = get_vib_evals_evecs(
                 hessian, coords, atomsymbols, purify_hessian=purify_hessian,
             )
             evals_vib = evals_vib.to(device=forces.device, dtype=forces.dtype)
             evecs_vib_3N = evecs_vib_3N.to(device=forces.device, dtype=forces.dtype)
+            # Always keep the full unfiltered eigenvalue tensor for cascade/spectrum logging.
             evals_vib_full = evals_vib
 
-            n_candidates = min(8, int(evals_vib.numel()))
-            V = evecs_vib_3N[:, :n_candidates]
+            if tr_filter_eig:
+                # Legacy mode: filter out near-zero modes before picking climbing mode
+                # and computing eig_product (matches old implementation exactly).
+                vib_mask = _vib_mask_from_evals(evals_vib, tr_threshold)
+                vib_indices = torch.where(vib_mask)[0]
+                if int(vib_indices.numel()) == 0:
+                    evals_vib_conv = evals_vib
+                    candidate_indices = torch.arange(min(8, evecs_vib_3N.shape[1]), device=evecs_vib_3N.device)
+                else:
+                    evals_vib_conv = evals_vib[vib_mask]
+                    candidate_indices = vib_indices[:min(8, int(vib_indices.numel()))]
+                V = evecs_vib_3N[:, candidate_indices]
+            else:
+                # New mode: raw vibrational eigenvalues, no threshold filtering.
+                evals_vib_conv = evals_vib
+                n_candidates = min(8, int(evals_vib.numel()))
+                V = evecs_vib_3N[:, :n_candidates]
+
             v_prev_local = v_prev.to(device=forces.device, dtype=forces.dtype).reshape(-1) if (track_mode and v_prev is not None) else None
             v_new, mode_index, _overlap = pick_tracked_mode(V, v_prev_local, k=int(V.shape[1]))
             v = v_new
@@ -279,14 +322,16 @@ def run_gad_baseline(
             else:
                 v_prev = None
 
-            if int(evals_vib.numel()) >= 2:
-                evals_vib_0 = float(evals_vib[0].item())
-                evals_vib_1 = float(evals_vib[1].item())
+            # eig_product uses the (possibly filtered) eigenvalues for the convergence gate.
+            if int(evals_vib_conv.numel()) >= 2:
+                evals_vib_0 = float(evals_vib_conv[0].item())
+                evals_vib_1 = float(evals_vib_conv[1].item())
                 eig_product = evals_vib_0 * evals_vib_1
             else:
                 eig_product = float("inf")
                 evals_vib_0 = float("nan")
                 evals_vib_1 = float("nan")
+            # Morse index always counts from the raw unfiltered spectrum.
             neg_vib_count = int((evals_vib < 0.0).sum().item()) if int(evals_vib.numel()) > 0 else -1
 
         disp_from_last = float((coords - prev_pos).norm(dim=1).mean().item()) if step > 0 else 0.0
@@ -321,10 +366,17 @@ def run_gad_baseline(
         if stop_at_ts and np.isfinite(eig_product) and eig_product < -abs(ts_eps):
             final_morse_index = neg_vib_count
 
-            # --- Cascade evaluation at convergence ---
+            # --- Cascade evaluation and eigenvalue diagnostics at convergence ---
             ev_full = evals_vib_full
             cascade = _cascade_n_neg(ev_full) if ev_full is not None else {}
+            # Unfiltered diagnostics (true two smallest eigenvalues)
             neg_info = _neg_eval_info(ev_full) if ev_full is not None else {}
+            # Also log filtered diagnostics when tr_filter_eig is active
+            if tr_filter_eig and ev_full is not None:
+                ev_filtered = ev_full[_vib_mask_from_evals(ev_full, tr_threshold)]
+                neg_info_filt = _neg_eval_info(ev_filtered, label="filt")
+            else:
+                neg_info_filt = {}
             spectrum = _bottom_k_spectrum(ev_full, log_spectrum_k) if ev_full is not None and log_spectrum_k > 0 else []
 
             result = {
@@ -332,10 +384,13 @@ def run_gad_baseline(
                 "converged_step": step,
                 "final_morse_index": final_morse_index,
                 "total_steps": step + 1,
+                "tr_filter_eig": tr_filter_eig,
                 # Cascade: n_neg at every eval threshold
                 **cascade,
-                # Negative eigenvalue magnitude diagnostics
+                # Unfiltered negative eigenvalue magnitude diagnostics
                 **neg_info,
+                # Filtered diagnostics (only present when tr_filter_eig=True)
+                **neg_info_filt,
                 "bottom_spectrum_at_convergence": spectrum,
                 "eig_product_at_convergence": float(eig_product),
             }
@@ -426,7 +481,14 @@ def run_gad_baseline(
     # --- Failure path: log cascade and spectrum at final geometry ---
     ev_full_final = evals_vib_full if "evals_vib_full" in locals() and evals_vib_full is not None else None
     cascade_final = _cascade_n_neg(ev_full_final) if ev_full_final is not None else {}
+    # Unfiltered diagnostics at failure
     neg_info_final = _neg_eval_info(ev_full_final) if ev_full_final is not None else {}
+    # Filtered diagnostics at failure when tr_filter_eig is active
+    if tr_filter_eig and ev_full_final is not None:
+        ev_filt_final = ev_full_final[_vib_mask_from_evals(ev_full_final, tr_threshold)]
+        neg_info_filt_final = _neg_eval_info(ev_filt_final, label="filt")
+    else:
+        neg_info_filt_final = {}
     spectrum_final = _bottom_k_spectrum(ev_full_final, log_spectrum_k) if ev_full_final is not None and log_spectrum_k > 0 else []
     neg_vib_final = int((ev_full_final < 0.0).sum().item()) if ev_full_final is not None else -1
 
@@ -435,8 +497,10 @@ def run_gad_baseline(
         "converged_step": None,
         "final_morse_index": neg_vib_final,
         "total_steps": n_steps,
+        "tr_filter_eig": tr_filter_eig,
         **cascade_final,
         **neg_info_final,
+        **neg_info_filt_final,
         "bottom_spectrum_at_convergence": spectrum_final,
         "eig_product_at_convergence": float(eig_product) if "eig_product" in locals() and np.isfinite(eig_product) else float("nan"),
     }
@@ -485,14 +549,22 @@ def run_single_sample(
             purify_hessian=params.get("purify_hessian", False),
             frame_tracking=params.get("frame_tracking", False),
             log_spectrum_k=params.get("log_spectrum_k", 10),
+            tr_filter_eig=params.get("tr_filter_eig", False),
         )
         wall_time = time.time() - t0
 
         # Extract cascade fields from result
         cascade_fields = {k: v for k, v in result.items() if k.startswith("n_neg_at_")}
+        # Unfiltered eigenvalue diagnostics (always present)
         neg_info_fields = {
             k: result.get(k)
             for k in ["lambda_0", "lambda_1", "abs_lambda_0", "lambda_gap_ratio"]
+        }
+        # Filtered eigenvalue diagnostics (only when tr_filter_eig=True)
+        neg_info_filt_fields = {
+            k: result.get(k)
+            for k in ["filt_lambda_0", "filt_lambda_1", "filt_abs_lambda_0", "filt_lambda_gap_ratio"]
+            if k in result
         }
 
         return {
@@ -502,8 +574,10 @@ def run_single_sample(
             "success": bool(result.get("converged")),
             "wall_time": wall_time,
             "error": None,
+            "tr_filter_eig": result.get("tr_filter_eig", False),
             "cascade": cascade_fields,
             "neg_eval_info": neg_info_fields,
+            "neg_eval_info_filt": neg_info_filt_fields,
             "bottom_spectrum_at_convergence": result.get("bottom_spectrum_at_convergence", []),
             "eig_product_at_convergence": result.get("eig_product_at_convergence", float("nan")),
         }
@@ -516,8 +590,10 @@ def run_single_sample(
             "success": False,
             "wall_time": wall_time,
             "error": str(e),
+            "tr_filter_eig": params.get("tr_filter_eig", False),
             "cascade": {},
             "neg_eval_info": {},
+            "neg_eval_info_filt": {},
             "bottom_spectrum_at_convergence": [],
             "eig_product_at_convergence": float("nan"),
         }
@@ -587,14 +663,35 @@ def _build_gad_cascade_table(results: List[Dict[str, Any]]) -> Dict[str, Any]:
         rate_eq1[str(thr)] = count_eq1 / max(n, 1)
         rate_le1[str(thr)] = count_le1 / max(n, 1)
 
-    # Negative eigenvalue gap stats across successful samples
+    # --- Eigenvalue diagnostics (unfiltered + filtered, success + failure) ---
+    def _ni(sample_list: List[Dict[str, Any]], key: str, info_field: str = "neg_eval_info") -> List[float]:
+        out = []
+        for r in sample_list:
+            ni = r.get(info_field, {})
+            v = ni.get(key) if ni else None
+            if v is not None and math.isfinite(float(v)):
+                out.append(float(v))
+        return out
+
     successful = [r for r in results if r.get("success")]
-    gap_ratios = [r["neg_eval_info"]["lambda_gap_ratio"] for r in successful
-                  if r.get("neg_eval_info") and math.isfinite(r["neg_eval_info"].get("lambda_gap_ratio", float("nan")))]
-    abs_lam0s = [r["neg_eval_info"]["abs_lambda_0"] for r in successful
-                 if r.get("neg_eval_info") and math.isfinite(r["neg_eval_info"].get("abs_lambda_0", float("nan")))]
-    abs_lam1s = [abs(r["neg_eval_info"]["lambda_1"]) for r in successful
-                 if r.get("neg_eval_info") and math.isfinite(r["neg_eval_info"].get("lambda_1", float("nan")))]
+    failed = [r for r in results if not r.get("success") and not r.get("error")]
+
+    # Unfiltered — success
+    gap_succ   = _ni(successful, "lambda_gap_ratio")
+    lam0_succ  = _ni(successful, "abs_lambda_0")
+    lam1_succ  = [abs(v) for v in _ni(successful, "lambda_1")]
+    # Unfiltered — failure
+    gap_fail   = _ni(failed, "lambda_gap_ratio")
+    lam0_fail  = _ni(failed, "abs_lambda_0")
+    lam1_fail  = [abs(v) for v in _ni(failed, "lambda_1")]
+    # Filtered — success
+    fgap_succ  = _ni(successful, "filt_lambda_gap_ratio", "neg_eval_info_filt")
+    flam0_succ = _ni(successful, "filt_abs_lambda_0", "neg_eval_info_filt")
+    flam1_succ = [abs(v) for v in _ni(successful, "filt_lambda_1", "neg_eval_info_filt")]
+    # Filtered — failure
+    fgap_fail  = _ni(failed, "filt_lambda_gap_ratio", "neg_eval_info_filt")
+    flam0_fail = _ni(failed, "filt_abs_lambda_0", "neg_eval_info_filt")
+    flam1_fail = [abs(v) for v in _ni(failed, "filt_lambda_1", "neg_eval_info_filt")]
 
     return {
         "eval_thresholds": CASCADE_THRESHOLDS,
@@ -604,10 +701,24 @@ def _build_gad_cascade_table(results: List[Dict[str, Any]]) -> Dict[str, Any]:
         "n_neg_le1_at_thr": le1,
         "rate_eq1_at_thr": rate_eq1,
         "rate_le1_at_thr": rate_le1,
-        "mean_gap_ratio_at_success": float(np.mean(gap_ratios)) if gap_ratios else float("nan"),
-        "mean_abs_lambda0_at_success": float(np.mean(abs_lam0s)) if abs_lam0s else float("nan"),
-        "mean_abs_lambda1_at_success": float(np.mean(abs_lam1s)) if abs_lam1s else float("nan"),
-        "n_successful_with_gap_data": len(gap_ratios),
+        # Unfiltered (true two smallest eigenvalues) — at success
+        "mean_gap_ratio_at_success":    float(np.mean(gap_succ))   if gap_succ   else float("nan"),
+        "mean_abs_lambda0_at_success":  float(np.mean(lam0_succ))  if lam0_succ  else float("nan"),
+        "mean_abs_lambda1_at_success":  float(np.mean(lam1_succ))  if lam1_succ  else float("nan"),
+        # Unfiltered — at failure (diagnostic: where is the final geometry?)
+        "mean_gap_ratio_at_failure":    float(np.mean(gap_fail))   if gap_fail   else float("nan"),
+        "mean_abs_lambda0_at_failure":  float(np.mean(lam0_fail))  if lam0_fail  else float("nan"),
+        "mean_abs_lambda1_at_failure":  float(np.mean(lam1_fail))  if lam1_fail  else float("nan"),
+        # Filtered (tr_threshold mask applied) — at success
+        "mean_filt_gap_ratio_at_success":   float(np.mean(fgap_succ))   if fgap_succ   else float("nan"),
+        "mean_filt_abs_lambda0_at_success": float(np.mean(flam0_succ))  if flam0_succ  else float("nan"),
+        "mean_filt_abs_lambda1_at_success": float(np.mean(flam1_succ))  if flam1_succ  else float("nan"),
+        # Filtered — at failure
+        "mean_filt_gap_ratio_at_failure":   float(np.mean(fgap_fail))   if fgap_fail   else float("nan"),
+        "mean_filt_abs_lambda0_at_failure": float(np.mean(flam0_fail))  if flam0_fail  else float("nan"),
+        "mean_filt_abs_lambda1_at_failure": float(np.mean(flam1_fail))  if flam1_fail  else float("nan"),
+        "n_successful_with_gap_data": len(gap_succ),
+        "n_failed_with_gap_data":     len(gap_fail),
     }
 
 
@@ -683,8 +794,18 @@ def main() -> None:
                              "Smaller → stricter (requires larger gap between λ_0 < 0 and λ_1 > 0). "
                              "Larger → more permissive (accepts smaller sign separation).")
     parser.add_argument("--tr-threshold", type=float, default=8e-3,
-                        help="Diagnostic threshold logged per step. Does NOT affect GAD direction, "
-                             "trust radius, or convergence. Used only for TR residual monitoring.")
+                        help="Eigenvalue magnitude threshold. When --tr-filter-eig is enabled, "
+                             "modes with |λ| < tr_threshold are excluded from eig0/eig1 and "
+                             "eig_product computation (legacy behaviour). Always used as diagnostic "
+                             "threshold for TR residual monitoring.")
+    parser.add_argument(
+        "--tr-filter-eig",
+        action="store_true",
+        default=False,
+        help="Legacy mode: filter near-zero modes (|λ| < tr_threshold) before computing "
+             "eig_product for the convergence gate. Matches old implementation. "
+             "When off (default), raw vibrational eigenvalues are used unfiltered.",
+    )
 
     parser.add_argument(
         "--log-spectrum-k", type=int, default=10,
@@ -740,6 +861,7 @@ def main() -> None:
         "min_interatomic_dist": args.min_interatomic_dist,
         "ts_eps": args.ts_eps,
         "tr_threshold": args.tr_threshold,
+        "tr_filter_eig": args.tr_filter_eig,
         "track_mode": track_mode,
         "project_gradient_and_v": args.project_gradient_and_v,
         "stop_at_ts": args.stop_at_ts,
@@ -800,7 +922,8 @@ def main() -> None:
 
         # Print cascade table to stdout for quick inspection
         ct = metrics.get("cascade_table", {})
-        print("\n--- GAD Cascade Evaluation Table ---")
+        tr_filt = params.get("tr_filter_eig", False)
+        print(f"\n--- GAD Cascade Evaluation Table  [tr_filter_eig={tr_filt}] ---")
         print(f"{'eval_threshold':<20} {'n_neg==1':>10} {'rate_eq1':>10} {'n_neg<=1':>10} {'rate_le1':>10}")
         print("-" * 62)
         for thr in CASCADE_THRESHOLDS:
@@ -811,15 +934,36 @@ def main() -> None:
             r_le1 = ct.get("rate_le1_at_thr", {}).get(key, float("nan"))
             print(f"  {thr:<18} {n_eq1:>10} {r_eq1:>10.3f} {n_le1:>10} {r_le1:>10.3f}")
         print(f"\n  Strict success rate (eig_product criterion): {metrics['success_rate']:.3f}")
-        mg = ct.get("mean_gap_ratio_at_success", float("nan"))
-        ml0 = ct.get("mean_abs_lambda0_at_success", float("nan"))
-        ml1 = ct.get("mean_abs_lambda1_at_success", float("nan"))
-        if math.isfinite(mg):
-            print(f"  Mean |λ_0|/|λ_1| at success: {mg:.3f}  (>1 = TS mode separated from noise)")
-        if math.isfinite(ml0):
-            print(f"  Mean |λ_0| at success:        {ml0:.5f}")
-        if math.isfinite(ml1):
-            print(f"  Mean |λ_1| at success:        {ml1:.5f}")
+
+        def _fmt(v: float) -> str:
+            return f"{v:.5f}" if math.isfinite(v) else "nan"
+
+        def _fmtg(v: float) -> str:
+            return f"{v:.3f}" if math.isfinite(v) else "nan"
+
+        # Unfiltered eigenvalue diagnostics — success and failure
+        mg_s  = ct.get("mean_gap_ratio_at_success",   float("nan"))
+        ml0_s = ct.get("mean_abs_lambda0_at_success", float("nan"))
+        ml1_s = ct.get("mean_abs_lambda1_at_success", float("nan"))
+        mg_fa = ct.get("mean_gap_ratio_at_failure",   float("nan"))
+        ml0_fa = ct.get("mean_abs_lambda0_at_failure", float("nan"))
+        ml1_fa = ct.get("mean_abs_lambda1_at_failure", float("nan"))
+
+        print(f"  --- Unfiltered eigenvalues (true two smallest) ---")
+        print(f"  At SUCCESS: |λ_0|={_fmt(ml0_s)}  |λ_1|={_fmt(ml1_s)}  gap={_fmtg(mg_s)}")
+        print(f"  At FAILURE: |λ_0|={_fmt(ml0_fa)}  |λ_1|={_fmt(ml1_fa)}  gap={_fmtg(mg_fa)}")
+        print(f"  (gap=|λ_0|/|λ_1|; if |λ_1|≈0 at success, soft mode contaminates eig_product)")
+
+        if tr_filt:
+            mg_sf  = ct.get("mean_filt_gap_ratio_at_success",   float("nan"))
+            ml0_sf = ct.get("mean_filt_abs_lambda0_at_success", float("nan"))
+            ml1_sf = ct.get("mean_filt_abs_lambda1_at_success", float("nan"))
+            mg_ff  = ct.get("mean_filt_gap_ratio_at_failure",   float("nan"))
+            ml0_ff = ct.get("mean_filt_abs_lambda0_at_failure", float("nan"))
+            ml1_ff = ct.get("mean_filt_abs_lambda1_at_failure", float("nan"))
+            print(f"  --- Filtered eigenvalues (|λ|>tr_threshold mask applied) ---")
+            print(f"  At SUCCESS: |λ_0|={_fmt(ml0_sf)}  |λ_1|={_fmt(ml1_sf)}  gap={_fmtg(mg_sf)}")
+            print(f"  At FAILURE: |λ_0|={_fmt(ml0_ff)}  |λ_1|={_fmt(ml1_ff)}  gap={_fmtg(mg_ff)}")
         print("")
 
     finally:

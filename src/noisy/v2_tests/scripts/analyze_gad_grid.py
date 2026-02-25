@@ -40,10 +40,16 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 
 # ---------------------------------------------------------------------------
-# Folder-name regex — accept both legacy and new (ts_eps) tags
+# Folder-name regex — accept legacy, ts_eps, and Phase C (trf = tr_filter_eig) tags
 # ---------------------------------------------------------------------------
+# Phase A/B: mad<M>_tr<T>_bl<BL>_pg<PG>[_tse<TSE>]
 COMBO_RE_NEW = re.compile(
     r"mad(?P<mad>[^_]+)_tr(?P<tr>[^_]+)_bl(?P<bl>plain|mode_tracked)_pg(?P<pg>true|false)"
+    r"(?:_tse(?P<tse>[^_]+))?$"
+)
+# Phase C: mad<M>_trf<TRF>_bl<BL>_pg<PG>[_tse<TSE>]  (trf = tr_filter threshold)
+COMBO_RE_TRFILT = re.compile(
+    r"mad(?P<mad>[^_]+)_trf(?P<trf>[^_]+)_bl(?P<bl>plain|mode_tracked)_pg(?P<pg>true|false)"
     r"(?:_tse(?P<tse>[^_]+))?$"
 )
 COMBO_RE_LEGACY = re.compile(
@@ -55,20 +61,39 @@ CASCADE_THRESHOLDS: List[float] = [0.0, 1e-4, 5e-4, 1e-3, 2e-3, 5e-3, 8e-3, 1e-2
 
 
 def _parse_combo_tag(combo_tag: str) -> Optional[Dict[str, Any]]:
+    # Phase A/B pattern
     m = COMBO_RE_NEW.fullmatch(combo_tag)
     if m:
         return {
             "mad": _safe_float(m.group("mad")),
             "tr": _safe_float(m.group("tr")),
+            "trf": float("nan"),  # not a tr_filter_eig run
+            "tr_filter_eig": False,
             "bl": m.group("bl"),
             "pg": m.group("pg") == "true",
             "tse": _safe_float(m.group("tse") or "1e-5", 1e-5),
         }
+    # Phase C pattern (tr_filter_eig enabled, trf = the filter threshold)
+    m = COMBO_RE_TRFILT.fullmatch(combo_tag)
+    if m:
+        trf_val = _safe_float(m.group("trf"))
+        return {
+            "mad": _safe_float(m.group("mad")),
+            "tr": trf_val,        # expose as tr so main-effect plots still work
+            "trf": trf_val,       # also keep separately
+            "tr_filter_eig": True,
+            "bl": m.group("bl"),
+            "pg": m.group("pg") == "true",
+            "tse": _safe_float(m.group("tse") or "1e-5", 1e-5),
+        }
+    # Legacy pattern
     m = COMBO_RE_LEGACY.fullmatch(combo_tag)
     if m:
         return {
             "mad": _safe_float(m.group("mad")),
             "tr": _safe_float(m.group("tr")),
+            "trf": float("nan"),
+            "tr_filter_eig": False,
             "bl": m.group("bl"),
             "pg": m.group("pg") == "true",
             "tse": 1e-5,
@@ -85,6 +110,7 @@ class ComboRecord:
     ts_eps: float
     baseline: str
     project_gradient_and_v: bool
+    tr_filter_eig: bool
     n_samples: int
     n_success: int
     n_errors: int
@@ -157,6 +183,7 @@ def load_records(grid_dir: Path, result_glob: str) -> List[ComboRecord]:
                 ts_eps=parsed["tse"],
                 baseline=parsed["bl"],
                 project_gradient_and_v=parsed["pg"],
+                tr_filter_eig=bool(parsed.get("tr_filter_eig", False)),
                 n_samples=int(metrics.get("n_samples", 0)),
                 n_success=int(metrics.get("n_success", 0)),
                 n_errors=int(metrics.get("n_errors", 0)),
@@ -703,6 +730,7 @@ def main() -> None:
         "ts_eps": summarize_main_effect(records, "ts_eps"),
         "baseline": summarize_main_effect(records, "baseline"),
         "project_gradient_and_v": summarize_main_effect(records, "project_gradient_and_v"),
+        "tr_filter_eig": summarize_main_effect(records, "tr_filter_eig"),
     }
     # Drop constant axes
     main_effects = {k: v for k, v in main_effects.items() if len(v) > 1}
@@ -758,6 +786,7 @@ def main() -> None:
                 "ts_eps": r.ts_eps,
                 "baseline": r.baseline,
                 "project_gradient_and_v": r.project_gradient_and_v,
+                "tr_filter_eig": r.tr_filter_eig,
                 "n_samples": r.n_samples,
                 "n_success": r.n_success,
                 "n_errors": r.n_errors,
@@ -774,7 +803,7 @@ def main() -> None:
             ranked_rows,
             [
                 "rank", "tag", "max_atom_disp", "tr_threshold", "ts_eps",
-                "baseline", "project_gradient_and_v",
+                "baseline", "project_gradient_and_v", "tr_filter_eig",
                 "n_samples", "n_success", "n_errors", "success_rate",
                 "mean_steps_when_success", "mean_wall_time", "total_wall_time", "path",
             ],

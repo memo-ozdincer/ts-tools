@@ -88,7 +88,11 @@
 #   best mad × 2 (baseline) × 5 (ts_eps) = 10 combos
 #   Outcome: shows how strict/permissive the eig_product gate should be.
 #
-# Total: 8 + 10 = 18 combinations
+# Phase C — tr_filter_eig sweep (legacy mode, mad=1.3, ts_eps=1e-5):
+#   best mad × 2 (baseline) × 4 (tr_threshold) = 8 combos
+#   Outcome: recovers old performance, quantifies soft-mode contamination in λ_1.
+#
+# Total: 8 + 10 + 8 = 26 combinations
 # =============================================================================
 
 set -e
@@ -185,6 +189,8 @@ FAILED=0
 # =============================================================================
 # Helper: run one combination and track pass/fail.
 # Usage: run_combo <tag> <baseline> <mad> <ts_eps> [extra args...]
+# Extra args are passed directly to the python runner (e.g. --tr-filter-eig,
+# --tr-threshold <val>).
 # =============================================================================
 run_combo() {
     local tag="$1"
@@ -226,15 +232,61 @@ run_combo() {
     echo ""
 }
 
+# Helper: run_combo_tr_filter — same as run_combo but always passes
+# --tr-filter-eig and allows overriding the tr-threshold.
+# Usage: run_combo_tr_filter <tag> <baseline> <mad> <ts_eps> <tr_thr>
+run_combo_tr_filter() {
+    local tag="$1"
+    local baseline="$2"
+    local mad="$3"
+    local ts_eps="$4"
+    local tr_thr="$5"
+    shift 5
+    local run_out="${OUT_DIR}/${tag}"
+    mkdir -p "$run_out"
+
+    COMBO=$((COMBO + 1))
+    echo "[combo ${COMBO}]  ${tag}"
+
+    if python "$PROJECT_DIR/src/noisy/v2_tests/runners/run_gad_baselines_parallel.py" \
+            --h5-path "$H5_PATH" \
+            --out-dir "$run_out" \
+            --scine-functional "$SCINE_FUNCTIONAL" \
+            --n-steps "$N_STEPS" \
+            --max-samples "$MAX_SAMPLES" \
+            --start-from "$START_FROM" \
+            --noise-seed "$NOISE_SEED" \
+            --n-workers "$N_WORKERS" \
+            --threads-per-worker "$THREADS_PER_WORKER" \
+            --baseline "$baseline" \
+            --max-atom-disp "$mad" \
+            --min-interatomic-dist "$MIN_INTERATOMIC_DIST" \
+            --ts-eps "$ts_eps" \
+            --tr-threshold "$tr_thr" \
+            --tr-filter-eig \
+            --projection-mode eckart_full \
+            --log-spectrum-k "$LOG_SPECTRUM_K" \
+            $PROJECT_GRADIENT_FLAG \
+            $PURIFY_FLAG \
+            "$@"; then
+        echo "  -> OK"
+    else
+        echo "  -> FAILED (exit $?)"
+        FAILED=$((FAILED + 1))
+    fi
+    echo ""
+}
+
 # =============================================================================
-# Phase A — Cascade baseline
+# Phase A — Cascade baseline (new code, no tr_filter_eig)
 # Replays the prior grid (mad × baseline sweep) with cascade logging ON.
+# Uses new get_vib_evals_evecs path: raw vibrational eigenvalues, no filtering.
 # Fixed ts_eps=1e-5 (same as before).
 # Cascade table reveals: false-rejection vs genuine failures.
 # Neg-eigenvalue gap table reveals: is the TS mode actually resolved?
 # =============================================================================
 echo "=============================================="
-echo "Phase A — Cascade baseline (mad × baseline, ts_eps=1e-5)"
+echo "Phase A — Cascade baseline (mad × baseline, ts_eps=1e-5, raw eigs)"
 echo "  Axes: mad ∈ {0.5, 1.0, 1.3, 1.5} × baseline ∈ {plain, mode_tracked}"
 echo "  CASCADE & SPECTRUM LOGGING: always on"
 echo "  PURPOSE: characterize false-rejection and TS-mode resolution"
@@ -248,7 +300,7 @@ for MAD in "0.5" "1.0" "1.3" "1.5"; do
 done
 
 # =============================================================================
-# Phase B — ts_eps sweep (relaxed convergence criterion)
+# Phase B — ts_eps sweep (relaxed convergence criterion, raw eigs)
 # Fixed to best-performing parameters from Phase A (expected: mad=1.3, mode_tracked).
 # ts_eps controls how strict the eig_product gate is:
 #   1e-5 (original): λ_0 * λ_1 < -1e-5, needs clean sign separation
@@ -258,7 +310,7 @@ done
 # Run for BOTH baselines so Phase B can also confirm plain vs mode_tracked.
 # =============================================================================
 echo "=============================================="
-echo "Phase B — ts_eps sweep (relaxed convergence, mad=1.3)"
+echo "Phase B — ts_eps sweep (relaxed convergence, mad=1.3, raw eigs)"
 echo "  Axes: ts_eps ∈ {1e-4, 1e-3, 5e-3, 1e-2} × baseline ∈ {plain, mode_tracked}"
 echo "  (ts_eps=1e-5 already covered in Phase A)"
 echo "  PURPOSE: find if tighter/looser ts_eps changes success rate"
@@ -269,6 +321,36 @@ for TSE in "1e-4" "1e-3" "5e-3" "1e-2"; do
     for BL in "plain" "mode_tracked"; do
         run_combo "mad1.3_tr${TR_DIAGNOSTIC}_bl${BL}_pgtrue_tse${TSE}" \
             "$BL" "1.3" "$TSE"
+    done
+done
+
+# =============================================================================
+# Phase C — Legacy tr_filter_eig (matches old implementation)
+# The old code filtered near-zero modes (|λ| < tr_threshold) from the eigenvalue
+# array before computing eig_product = evals_vib[0] * evals_vib[1].  This prevents
+# soft Eckart-leakage modes from making λ_1 ≈ 0, which suppresses eig_product and
+# causes false non-convergence even when the geometry is a clean Morse-1 saddle.
+#
+# Phase C sweeps tr_threshold (the filter cutoff) at the best mad and both baselines
+# to recover the old performance AND compare it to Phase A (unfiltered).
+#
+# Both unfiltered AND filtered λ_0, λ_1 are logged simultaneously:
+#   lambda_0, lambda_1        — raw two smallest (always logged)
+#   filt_lambda_0, filt_lambda_1 — post-filter two smallest (only when tr_filter_eig)
+# This lets you directly compare how much the filtering changes the effective eig_product.
+# =============================================================================
+echo "=============================================="
+echo "Phase C — Legacy tr_filter_eig (old behaviour, mad=1.3)"
+echo "  Axes: tr_threshold ∈ {1e-3, 5e-3, 8e-3, 2e-2} × baseline ∈ {plain, mode_tracked}"
+echo "  --tr-filter-eig ON: near-zero modes excluded from eig_product gate"
+echo "  Both raw and filtered λ_0, λ_1 logged for direct comparison"
+echo "  PURPOSE: recover old success rate, quantify soft-mode contamination"
+echo "=============================================="
+
+for TR_F in "1e-3" "5e-3" "8e-3" "2e-2"; do
+    for BL in "plain" "mode_tracked"; do
+        run_combo_tr_filter "mad1.3_trf${TR_F}_bl${BL}_pgtrue_tse1e-5" \
+            "$BL" "1.3" "1e-5" "$TR_F"
     done
 done
 
