@@ -50,6 +50,13 @@ def _vib_mask_from_evals(evals: torch.Tensor, tr_threshold: float) -> torch.Tens
     return evals.abs() > float(tr_threshold)
 
 
+def _cap_displacement(step_disp: torch.Tensor, max_atom_disp: float) -> torch.Tensor:
+    disp_3d = step_disp.reshape(-1, 3)
+    max_disp = float(disp_3d.norm(dim=1).max().item())
+    if max_disp > max_atom_disp and max_disp > 0:
+        disp_3d = disp_3d * (max_atom_disp / max_disp)
+    return disp_3d.reshape(step_disp.shape)
+
 def run_gad_baseline(
     predict_fn,
     coords0: torch.Tensor,
@@ -220,26 +227,85 @@ def run_gad_baseline(
                 logger.save(log_dir)
             return result
 
-        step_disp = dt_eff * gad_vec
-        max_disp = float(step_disp.norm(dim=1).max().item())
-        if max_disp > max_atom_disp and max_disp > 0:
-            scale = max_atom_disp / max_disp
-            step_disp = scale * step_disp
-            if dt_control == "adaptive":
-                dt_eff = max(dt_eff * 0.8, dt_min)
+        # Compute unscaled Newton step for GAD
+        if projection_mode == "reduced_basis":
+            # For reduced basis we just use gad_vec as gradient-like step if no hessian inverse available easily
+            step_disp_raw = gad_vec.clone()
         else:
-            if dt_control == "adaptive":
-                dt_eff = min(dt_eff * 1.05, dt_max)
+            if int(vib_indices.numel()) > 0:
+                V_vib = evecs[:, vib_indices].to(device=forces.device, dtype=forces.dtype)
+                lam_vib = evals[vib_indices].to(device=forces.device, dtype=forces.dtype)
+                coeffs = V_vib.T @ gad_flat.to(V_vib.dtype)
+                # Apply trust region logic here for GAD
+                # The gad_flat is already f + 2(f.v)v, which is our modified gradient
+                # We do a Newton step with absolute eigenvalues to ensure we follow the GAD direction
+                inv_lam_abs = 1.0 / torch.abs(lam_vib)
+                delta_x = V_vib @ (inv_lam_abs * coeffs)
+            else:
+                delta_x = gad_flat * 0.001
+            step_disp_raw = delta_x.to(coords.dtype).reshape(-1, 3)
 
-        new_coords = coords + step_disp
-        if _min_interatomic_distance(new_coords) < min_interatomic_dist:
-            step_disp = step_disp * 0.5
-            new_coords = coords + step_disp
-            if dt_control == "adaptive":
-                dt_eff = max(dt_eff * 0.5, dt_min)
+        # Trust region line search loop
+        accepted = False
+        max_retries = 10
+        retries = 0
+        current_energy = float(out["energy"].detach().reshape(-1)[0].item()) if isinstance(out["energy"], torch.Tensor) else float(out["energy"])
+        
+        # We will use dt_eff as our trust radius
+        if step == 0:
+            dt_eff = max_atom_disp # initialize to max displacement
+
+        while not accepted and retries < max_retries:
+            radius_used_for_step = dt_eff
+            capped_disp = _cap_displacement(step_disp_raw, radius_used_for_step)
+            
+            # Predict energy change using explicit Hessian: dE = g_gad^T dx + 0.5 dx^T H dx
+            dx_flat = capped_disp.reshape(-1)
+            
+            # Use the GAD direction for prediction to get the expected energy change along the step
+            # Note: We want to match the logic from minimization, where dE_pred = g^T dx + 0.5 dx^T H dx
+            # Here 'g' should be the negative of the force vector (grad)
+            grad_true = -forces.reshape(-1)
+            pred_dE = float((grad_true.dot(dx_flat) + 0.5 * dx_flat.dot(hess_proj @ dx_flat)).item()) if "hess_proj" in locals() else float("nan")
+            
+            new_coords = coords + capped_disp
+            
+            if _min_interatomic_distance(new_coords) < min_interatomic_dist:
+                dt_eff *= 0.5
+                retries += 1
+                continue
+                
+            out_new = predict_fn(new_coords, atomic_nums, do_hessian=False, require_grad=False)
+            energy_new = float(out_new["energy"].detach().reshape(-1)[0].item()) if isinstance(out_new["energy"], torch.Tensor) else float(out_new["energy"])
+            
+            actual_dE = energy_new - current_energy
+            
+            # Since saddle point search energy can go up or down, we just want rho = actual_dE / pred_dE to be close to 1.
+            # However, for GAD, we actually want to ascend along v, and descend along everything else.
+            # The quadratic model should predict this! If actual energy change matches predicted, the model is good.
+            if abs(pred_dE) < 1e-8:
+                accepted = True
+                rho = 1.0
+            else:
+                rho = actual_dE / pred_dE
+                
+                # Trust region logic based on rho
+                if rho > 0.0 or radius_used_for_step < 1e-3:
+                    accepted = True
+                else:
+                    dt_eff *= 0.25
+                    retries += 1
+
+        if accepted:
+            if rho > 0.75:
+                dt_eff = min(dt_eff * 1.5, max_atom_disp)
+            elif rho < 0.25:
+                dt_eff = max(dt_eff * 0.5, 0.001)
+        else:
+            dt_eff = max(dt_eff * 0.5, 0.001)
 
         prev_pos = coords.clone()
-        prev_energy = float(out["energy"].detach().reshape(-1)[0].item()) if isinstance(out["energy"], torch.Tensor) else float(out["energy"])
+        prev_energy = current_energy
         coords = new_coords.detach()
 
     result = {
@@ -401,10 +467,10 @@ def main() -> None:
     parser.add_argument("--dt-control", type=str, default="adaptive", choices=["adaptive", "fixed"])
     parser.add_argument("--dt-min", type=float, default=1e-6)
     parser.add_argument("--dt-max", type=float, default=0.08)
-    parser.add_argument("--max-atom-disp", type=float, default=0.35)
+    parser.add_argument("--max-atom-disp", type=float, default=1.3)
     parser.add_argument("--min-interatomic-dist", type=float, default=0.5)
     parser.add_argument("--ts-eps", type=float, default=1e-5)
-    parser.add_argument("--tr-threshold", type=float, default=1e-6)
+    parser.add_argument("--tr-threshold", type=float, default=8e-3)
 
     parser.add_argument(
         "--project-gradient-and-v",

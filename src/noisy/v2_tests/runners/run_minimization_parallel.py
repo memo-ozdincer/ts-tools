@@ -256,10 +256,10 @@ def main() -> None:
     )
 
     # Shared parameters
-    parser.add_argument("--max-atom-disp", type=float, default=0.3)
+    parser.add_argument("--max-atom-disp", type=float, default=1.3)
     parser.add_argument("--force-converged", type=float, default=1e-4)
     parser.add_argument("--min-interatomic-dist", type=float, default=0.5)
-    parser.add_argument("--tr-threshold", type=float, default=1e-6)
+    parser.add_argument("--tr-threshold", type=float, default=8e-3)
 
     # Gradient descent parameters
     parser.add_argument("--step-size", type=float, default=0.01,
@@ -269,7 +269,7 @@ def main() -> None:
     parser.add_argument(
         "--project-gradient-and-v",
         action="store_true",
-        default=False,
+        default=True,
         help="Eckart-project the gradient to prevent TR drift",
     )
     parser.add_argument(

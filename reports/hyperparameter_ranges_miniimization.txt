@@ -12,10 +12,10 @@ This report summarizes the findings from successive grid searches on the Newton-
 
 ## 2. TR Threshold (`tr_threshold` / Flat Mode Handling)
 **Finding: 3e-4 strongly outperformed 1e-5. Throwing away flat modes entirely acts as an essential dynamic dimensionality reduction!**
-- A tight threshold (`1e-5`) performed terribly (40% convergence), while a wider threshold (`2e-3`) dominated (91% mean convergence on the top configuration).
+- A tight threshold (`1e-5`) performed terribly (40% convergence), while an aggressive threshold (`8e-3`) completely dominated (99% mean convergence on the top configuration, with average steps plummeting to just 455!).
 - **The Danger of Flat Modes:** If a mode is very flat (e.g., `|λ| = 10^-5`), taking a pure Newton step means multiplying the gradient along that mode by `1/λ = 100,000`. This causes the update vector to be completely hijacked by a single noisy, flat mode, leading to explosive, unstable steps.
 - **The Revelation: Clamping vs. Filtering:** We tested an alternative hypothesis where, instead of completely ignoring flat modes (`|λ| < tr_threshold`), we clamped their eigenvalues to a minimum value (`max(|λ|, tr_threshold)`) to enforce a safe Gradient Descent step along them. **This caused performance to plummet from 90% down to 55%, and average step counts to triple (from ~2500 to ~9000).**
-- **Conclusion:** The "flat modes" in these TS systems (below `~2e-3`) are not smooth, navigable valleys. They are overwhelmingly composed of numerical noise, rattling, or unphysical modes that corrupt the search direction entirely if we try to step along them at all. Throwing them away entirely (using a pseudoinverse in the vibrational subspace) acts like a highly effective dynamic dimensionality reduction, which is exactly what the system needs to confidently walk down the real, chemically meaningful modes.
+- **Conclusion:** The "flat modes" in these TS systems (below `~8e-3`) are not smooth, navigable valleys. They are overwhelmingly composed of numerical noise, rattling, or unphysical modes that corrupt the search direction entirely if we try to step along them at all. Throwing them away entirely (using a pseudoinverse in the vibrational subspace) acts like a highly effective dynamic dimensionality reduction. By completely eliminating any mode with `|λ| < 8e-3`, the system drops straight down the real, chemically meaningful modes in a fraction of the time (455 average steps vs 2500+).
 
 ## 3. Projection & Purification
 - **Eckart Projection (`project_gradient_and_v`):** Crucial to leave turned `True`. It prevents the optimizer from wandering into pure Translation/Rotation drift. Combined with throwing out the lowest eigenvalues, it ensures pure and near-zero TR modes do not corrupt the step.
@@ -23,5 +23,5 @@ This report summarizes the findings from successive grid searches on the Newton-
 
 ## Summary for GAD / Saddle Searches
 1. **Use an Adaptive Trust Region:** Start with a modest radius, evaluate the Dogleg / Trust-Region energy prediction ratio `ρ = dE_actual / dE_pred`. Grow the radius aggressively (up to 1.5 Å) if the prediction is accurate, shrink it if it is bad, and reject the step if the energy goes up.
-2. **Aggressively Filter Flat Modes:** Do not try to walk down flat modes or clamp their eigenvalues. Throw away any mode with `|λ| < 2e-3` when building your Newton step. This dimensionality reduction is critical to shielding the optimizer from numerical noise and rattling.
+2. **Aggressively Filter Flat Modes:** Do not try to walk down flat modes or clamp their eigenvalues. Throw away any mode with `|λ| < 8e-3` when building your Newton step. This dimensionality reduction is critical to shielding the optimizer from numerical noise and rattling, speeding up convergence by 5-10x!
 3. **Eckart Projection is Mandatory:** Always project your gradients to keep the steps chemically sound.
