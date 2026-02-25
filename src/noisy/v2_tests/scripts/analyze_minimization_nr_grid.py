@@ -274,20 +274,24 @@ def print_report(
     toggle_effects: Dict[str, Any],
 ) -> None:
     print(f"Loaded {len(records)} configurations.")
+    print("Ranking metric: Convergence Rate (desc) -> Total Converged (desc) -> Mean Steps (asc) -> Mean Wall Time (asc)")
     print("")
 
     if ranked:
         best = ranked[0]
         print(
-            "Best overall by convergence then speed: "
-            f"{best.tag} | converged {best.n_converged}/{best.n_samples} "
+            "🏆 Best overall configuration by convergence, then speed:\n"
+            f"  {best.tag} | converged {best.n_converged}/{best.n_samples} "
             f"({best.convergence_rate:.2f}), mean steps {best.mean_steps_when_converged:.1f}, "
             f"mean wall {best.mean_wall_time:.2f}s"
         )
         print("")
 
-    print(f"Top {top_k}:")
-    for row in ranked[:top_k]:
+    actual_top_k = min(top_k, len(ranked))
+    print("=========================================================")
+    print(f"🥇 Top {actual_top_k} Configurations (Best First):")
+    print("=========================================================")
+    for row in ranked[:actual_top_k]:
         steps = row.mean_steps_when_converged
         steps_text = f"{steps:.1f}" if math.isfinite(steps) else "nan"
         print(
@@ -297,19 +301,23 @@ def print_report(
         )
     print("")
 
-    print(f"Bottom {top_k}:")
-    for row in ranked[-top_k:]:
-        steps = row.mean_steps_when_converged
-        steps_text = f"{steps:.1f}" if math.isfinite(steps) else "nan"
-        print(
-            f"  {row.tag}: conv={row.n_converged}/{row.n_samples} "
-            f"({row.convergence_rate:.2f}), steps={steps_text}, "
-            f"wall={row.mean_wall_time:.2f}s, errors={row.n_errors}"
-        )
-    print("")
+    if len(ranked) > top_k:
+        actual_bottom_k = min(top_k, len(ranked) - top_k)
+        print("=========================================================")
+        print(f"💀 Bottom {actual_bottom_k} Configurations (Worst First):")
+        print("=========================================================")
+        for row in reversed(ranked[-actual_bottom_k:]):
+            steps = row.mean_steps_when_converged
+            steps_text = f"{steps:.1f}" if math.isfinite(steps) else "nan"
+            print(
+                f"  {row.tag}: conv={row.n_converged}/{row.n_samples} "
+                f"({row.convergence_rate:.2f}), steps={steps_text}, "
+                f"wall={row.mean_wall_time:.2f}s, errors={row.n_errors}"
+            )
+        print("")
 
     for key, rows in main_effects.items():
-        print(f"Main effect: {key}")
+        print(f"--- Main effect: {key} ---")
         for row in rows:
             print(
                 "  "
@@ -328,7 +336,9 @@ def print_report(
         print("  " + ", ".join(parts))
     print("")
 
+    print("=========================================================")
     print("Hardest samples (lowest convergence across configs):")
+    print("=========================================================")
     for row in sample_hardness[: min(10, len(sample_hardness))]:
         print(
             f"  sample_{row['sample_idx']:03d}: {row['n_converged']}/{row['n_total']} "
