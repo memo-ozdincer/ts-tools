@@ -28,9 +28,11 @@ Algorithmic improvements (v2):
     cleanup_nr_threshold for a capped number of cleanup steps. The idea:
     near a stationary point the Hessian is better-conditioned, so lower
     thresholds no longer cause explosive steps.
-  - Relaxed convergence criterion: instead of n_neg == 0 (exact), accept
-    evals_vib.min() > -eps_conv. eps_conv=0 reproduces the old behavior.
-    Useful when the cascade shows convergence failures are tiny λ ≈ -1e-4.
+  - Spectral gap diagnostic: |λ_min| / |λ_second_min| on the vibrational
+    eigenvalues, logged every step. A large ratio (or inf when exactly one
+    mode is negative) signals an isolated dominant negative mode (TS-like).
+    Compared against n_neg on the full (unprojected) Hessian to reveal
+    whether the vibrational projection changes the qualitative picture.
   - Full bottom-K vibrational spectrum logged at every step (sorted, first K
     entries). Invaluable for post-hoc debugging without re-running.
 """
@@ -112,6 +114,59 @@ def _bottom_k_spectrum(evals_vib: torch.Tensor, k: int = 10) -> List[float]:
     return [float(v) for v in sorted_vals[:k].tolist()]
 
 
+def _spectral_gap_info(evals_vib: torch.Tensor) -> Dict[str, Any]:
+    """Spectral gap diagnostic for the vibrational eigenvalue spectrum.
+
+    Computes |λ_min| / |λ_second_min| to detect an isolated dominant negative
+    mode.  A large ratio signals transition-state-like character (one mode
+    dominates the negative part of the spectrum).
+
+    Returns:
+        spectral_gap_ratio: |λ₀|/|λ₁| where λ₀ < λ₁ are the two most
+            negative vibrational eigenvalues.  inf if exactly 1 negative
+            eigenvalue; nan if 0 negative eigenvalues.
+        dominant_neg_mode: True if exactly 1 negative eigenvalue, or
+            the gap ratio exceeds 10.
+    """
+    if evals_vib.numel() < 2:
+        return {"spectral_gap_ratio": float("nan"), "dominant_neg_mode": False}
+
+    sorted_evals = torch.sort(evals_vib).values  # ascending
+    lam0 = float(sorted_evals[0].item())
+    lam1 = float(sorted_evals[1].item())
+
+    if lam0 >= 0:
+        # No negative eigenvalues
+        return {"spectral_gap_ratio": float("nan"), "dominant_neg_mode": False}
+
+    if lam1 >= 0:
+        # Exactly one negative eigenvalue — perfectly isolated
+        return {"spectral_gap_ratio": float("inf"), "dominant_neg_mode": True}
+
+    # Both negative
+    ratio = abs(lam0) / abs(lam1)
+    return {"spectral_gap_ratio": ratio, "dominant_neg_mode": ratio > 10.0}
+
+
+def _total_hessian_n_neg(hessian: torch.Tensor) -> int:
+    """Count negative eigenvalues of the full (unprojected) Hessian.
+
+    This includes translation/rotation zero-modes which may appear as tiny
+    negative values due to numerical noise.  Comparing this against n_neg
+    from the vibrational subspace shows how much the Eckart projection
+    changes the qualitative picture.
+    """
+    H = hessian.detach()
+    if H.dim() == 4:
+        n = H.shape[0]
+        H = H.reshape(3 * n, 3 * n)
+    elif H.dim() == 3 and H.shape[0] == 1:
+        H = H.squeeze(0)
+    H = 0.5 * (H + H.T)  # symmetrise for numerical safety
+    evals = torch.linalg.eigvalsh(H)
+    return int((evals < 0.0).sum().item())
+
+
 # ---------------------------------------------------------------------------
 # NR step builders
 # ---------------------------------------------------------------------------
@@ -185,7 +240,6 @@ def run_fixed_step_gd(
     min_interatomic_dist: float = 0.5,
     project_gradient_and_v: bool = False,
     purify_hessian: bool = False,
-    eps_conv: float = 0.0,
     log_spectrum_k: int = 10,
 ) -> Tuple[Dict[str, Any], list]:
     """Fixed-step gradient descent to find energy minimum.
@@ -193,8 +247,7 @@ def run_fixed_step_gd(
     Update rule: x_{k+1} = x_k + alpha * forces(x_k)
 
     No line search, no adaptive step sizing. Pure fixed-step descent.
-    Convergence: force norm < threshold AND evals_vib.min() > -eps_conv
-    (eps_conv=0 → exact zero-negative-eigenvalue criterion, unchanged behavior).
+    Convergence: force norm < threshold AND n_neg == 0 (no negative vibrational eigenvalues).
 
     Args:
         predict_fn: Energy/force prediction function.
@@ -208,8 +261,6 @@ def run_fixed_step_gd(
         min_interatomic_dist: Minimum allowed interatomic distance.
         project_gradient_and_v: If True, Eckart-project the gradient.
         purify_hessian: If True, enforce translational sum rules on Hessian.
-        eps_conv: Relaxed convergence tolerance. Accept evals_vib.min() > -eps_conv.
-                  0.0 = strict (original behavior).
         log_spectrum_k: Number of bottom eigenvalues to log per step (0 = none).
 
     Returns:
@@ -243,14 +294,20 @@ def run_fixed_step_gd(
         # n_neg at strict threshold (for convergence check)
         n_neg = cascade["n_neg_at_0.0"]
 
+        # Spectral gap + total Hessian diagnostics
+        gap_info = _spectral_gap_info(evals_vib)
+        n_neg_total = _total_hessian_n_neg(hessian)
+
         step_record: Dict[str, Any] = {
             "step": step,
             "energy": energy,
             "force_norm": force_norm,
             "step_size": step_size,
             "n_neg_evals": n_neg,
+            "n_neg_total_hessian": n_neg_total,
             "min_vib_eval": float(evals_vib.min().item()) if evals_vib.numel() > 0 else float("nan"),
             "min_dist": _min_interatomic_distance(coords),
+            **gap_info,
             **cascade,
         }
         if log_spectrum_k > 0:
@@ -258,9 +315,8 @@ def run_fixed_step_gd(
 
         trajectory.append(step_record)
 
-        # Relaxed convergence: forces small AND min eigenvalue > -eps_conv
-        min_eval = float(evals_vib.min().item()) if evals_vib.numel() > 0 else float("nan")
-        converged_now = force_norm < force_converged and min_eval > -eps_conv
+        # Convergence: forces small AND no negative vibrational eigenvalues
+        converged_now = force_norm < force_converged and n_neg == 0
         if converged_now:
             return {
                 "converged": True,
@@ -270,7 +326,10 @@ def run_fixed_step_gd(
                 "final_coords": coords.detach().cpu(),
                 "total_steps": step + 1,
                 "final_n_neg_evals": n_neg,
-                "final_min_vib_eval": min_eval,
+                "final_n_neg_total_hessian": n_neg_total,
+                "final_min_vib_eval": float(evals_vib.min().item()) if evals_vib.numel() > 0 else float("nan"),
+                "final_spectral_gap_ratio": gap_info["spectral_gap_ratio"],
+                "final_dominant_neg_mode": gap_info["dominant_neg_mode"],
                 "cascade_at_convergence": cascade,
                 "bottom_spectrum_at_convergence": _bottom_k_spectrum(evals_vib, log_spectrum_k),
             }, trajectory
@@ -306,7 +365,10 @@ def run_fixed_step_gd(
         "final_coords": coords.detach().cpu(),
         "total_steps": len(trajectory),
         "final_n_neg_evals": trajectory[-1]["n_neg_evals"] if trajectory else -1,
+        "final_n_neg_total_hessian": trajectory[-1].get("n_neg_total_hessian", -1) if trajectory else -1,
         "final_min_vib_eval": trajectory[-1].get("min_vib_eval", float("nan")) if trajectory else float("nan"),
+        "final_spectral_gap_ratio": trajectory[-1].get("spectral_gap_ratio", float("nan")) if trajectory else float("nan"),
+        "final_dominant_neg_mode": trajectory[-1].get("dominant_neg_mode", False) if trajectory else False,
         "cascade_at_convergence": trajectory[-1] if trajectory else {},
         "bottom_spectrum_at_convergence": trajectory[-1].get("bottom_spectrum", []) if trajectory else [],
     }, trajectory
@@ -335,7 +397,6 @@ def run_newton_raphson(
     anneal_force_threshold: float = 0.0,
     cleanup_nr_threshold: float = 0.0,
     cleanup_max_steps: int = 50,
-    eps_conv: float = 0.0,
     log_spectrum_k: int = 10,
 ) -> Tuple[Dict[str, Any], list]:
     """Newton-Raphson optimization to find energy minimum.
@@ -365,12 +426,6 @@ def run_newton_raphson(
       8e-3, 1e-2] and stored in every trajectory step. The analysis script
       builds a 2D table (optimizer_threshold × eval_threshold → conv_rate)
       to reveal whether failures are optimizer failures or evaluation strictness.
-
-    Relaxed convergence:
-      eps_conv > 0 accepts evals_vib.min() > -eps_conv instead of n_neg == 0.
-      This directly addresses the "false rejection" problem for samples where
-      the optimizer produces a geometry with λ_min ≈ -0.001 (numerically a
-      minimum but failing the strict n_neg == 0 gate).
 
     Full spectrum logging:
       The bottom log_spectrum_k sorted vibrational eigenvalues are stored in
@@ -432,6 +487,10 @@ def run_newton_raphson(
         cascade = _cascade_n_neg(evals_vib)
         n_neg = cascade["n_neg_at_0.0"]  # strict count used for logging
 
+        # Spectral gap + total Hessian diagnostics
+        gap_info = _spectral_gap_info(evals_vib)
+        n_neg_total = _total_hessian_n_neg(hessian)
+
         # Spectrum statistics for logging
         min_vib_eval = float(evals_vib.min().item()) if evals_vib.numel() > 0 else float("nan")
         max_vib_eval = float(evals_vib.max().item()) if evals_vib.numel() > 0 else float("nan")
@@ -458,6 +517,7 @@ def run_newton_raphson(
             "energy": energy,
             "force_norm": force_norm,
             "n_neg_evals": n_neg,
+            "n_neg_total_hessian": n_neg_total,
             "min_vib_eval": min_vib_eval,
             "max_vib_eval": max_vib_eval,
             "cond_num": cond_num,
@@ -467,6 +527,7 @@ def run_newton_raphson(
             "disp_from_start_max": disp_from_start_max,
             "dist_to_ts_max": dist_to_ts_max,
             "phase": "cleanup" if in_cleanup_phase else "bulk",
+            **gap_info,
             **cascade,
         }
         if log_spectrum_k > 0:
@@ -475,9 +536,9 @@ def run_newton_raphson(
         trajectory.append(step_record)
 
         # ---------------------------------------------------------------
-        # Convergence check: relaxed or strict
+        # Convergence check: strict n_neg == 0
         # ---------------------------------------------------------------
-        converged_now = min_vib_eval > -eps_conv  # NOTE: eps_conv=0 → n_neg==0 equivalent
+        converged_now = n_neg == 0
         # Two-phase annealing gate: when annealing is active we only declare victory
         # after at least one cleanup step, so the cleanup phase always gets a chance
         # to run.  In all other cases (annealing off, or already in cleanup) we exit
@@ -492,7 +553,10 @@ def run_newton_raphson(
                 "final_coords": coords.detach().cpu(),
                 "total_steps": step + 1,
                 "final_n_neg_evals": n_neg,
+                "final_n_neg_total_hessian": n_neg_total,
                 "final_min_vib_eval": min_vib_eval,
+                "final_spectral_gap_ratio": gap_info["spectral_gap_ratio"],
+                "final_dominant_neg_mode": gap_info["dominant_neg_mode"],
                 "cascade_at_convergence": cascade,
                 "bottom_spectrum_at_convergence": _bottom_k_spectrum(evals_vib, log_spectrum_k),
                 "cleanup_steps_taken": cleanup_steps_taken,
@@ -610,7 +674,10 @@ def run_newton_raphson(
         "final_coords": coords.detach().cpu(),
         "total_steps": len(trajectory),
         "final_n_neg_evals": last.get("n_neg_evals", -1),
+        "final_n_neg_total_hessian": last.get("n_neg_total_hessian", -1),
         "final_min_vib_eval": last.get("min_vib_eval", float("nan")),
+        "final_spectral_gap_ratio": last.get("spectral_gap_ratio", float("nan")),
+        "final_dominant_neg_mode": last.get("dominant_neg_mode", False),
         "cascade_at_convergence": {k: last.get(k) for k in last if k.startswith("n_neg_at_")},
         "bottom_spectrum_at_convergence": last.get("bottom_spectrum", []),
         "cleanup_steps_taken": cleanup_steps_taken,

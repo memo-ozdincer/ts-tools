@@ -12,8 +12,6 @@ New in v2:
     Diagnoses whether failures are optimizer failures or evaluation strictness.
   - LM damping analysis: when --lm-mu > 0 the folder tag contains lmmu* instead
     of nrt*; detected automatically.
-  - Two-phase / eps-conv columns reported from the stored cascade_table in each
-    results JSON (no need to re-read trajectories).
 """
 
 from __future__ import annotations
@@ -59,7 +57,6 @@ class ComboRecord:
     max_atom_disp: float
     nr_threshold: float          # 0.0 for LM-damping runs
     lm_mu: float                 # 0.0 for hard-filter runs
-    eps_conv: float              # 0.0 = strict
     anneal_force_threshold: float
     project_gradient_and_v: bool
     purify_hessian: bool
@@ -129,7 +126,6 @@ def _parse_combo_tag(combo_tag: str) -> Optional[Dict[str, Any]]:
             "mad": _safe_float(m.group("mad")),
             "nr_threshold": _safe_float(m.group("nrt")),
             "lm_mu": 0.0,
-            "eps_conv": _safe_float(m.group("ec") or "0.0", 0.0),
             "anneal_force_threshold": _safe_float(m.group("af") or "0.0", 0.0),
             "project_gradient_and_v": m.group("pg") == "true",
             "purify_hessian": m.group("ph") == "true",
@@ -141,7 +137,6 @@ def _parse_combo_tag(combo_tag: str) -> Optional[Dict[str, Any]]:
             "mad": _safe_float(m.group("mad")),
             "nr_threshold": 0.0,
             "lm_mu": _safe_float(m.group("lmmu")),
-            "eps_conv": _safe_float(m.group("ec") or "0.0", 0.0),
             "anneal_force_threshold": 0.0,
             "project_gradient_and_v": m.group("pg") == "true",
             "purify_hessian": m.group("ph") == "true",
@@ -153,7 +148,6 @@ def _parse_combo_tag(combo_tag: str) -> Optional[Dict[str, Any]]:
             "mad": _safe_float(m.group("mad")),
             "nr_threshold": _safe_float(m.group("tr")),
             "lm_mu": 0.0,
-            "eps_conv": 0.0,
             "anneal_force_threshold": 0.0,
             "project_gradient_and_v": m.group("pg") == "true",
             "purify_hessian": m.group("ph") == "true",
@@ -191,7 +185,6 @@ def load_records(grid_dir: Path, result_glob: str) -> List[ComboRecord]:
                 max_atom_disp=parsed["mad"],
                 nr_threshold=parsed["nr_threshold"],
                 lm_mu=parsed["lm_mu"],
-                eps_conv=parsed["eps_conv"],
                 anneal_force_threshold=parsed["anneal_force_threshold"],
                 project_gradient_and_v=parsed["project_gradient_and_v"],
                 purify_hessian=parsed["purify_hessian"],
@@ -298,7 +291,7 @@ def build_cascade_cross_table(records: List[ComboRecord]) -> Dict[str, Any]:
     Interpretation:
       - If rate@eval_thr=0.0 is low but rate@eval_thr=2e-3 is high:
         the OPTIMIZER IS WORKING. The gap is false rejection — tiny residual
-        negative eigenvalues at evaluation. A relaxed eps_conv would recover them.
+        negative eigenvalues at evaluation.
       - If rate is low at ALL eval thresholds:
         the optimizer genuinely failed to find a stationary-point geometry.
 
@@ -393,7 +386,7 @@ def print_cascade_table(cross: Dict[str, Any]) -> None:
 
     print("")
     print("Columns = eval threshold (how strict we count n_neg at final geometry).")
-    print("'strict' = optimizer's own convergence flag (n_neg==0 or eps_conv).")
+    print("'strict' = optimizer's own convergence flag (n_neg==0).")
     print("Gap between eval_0.0 and eval_2e-3 → false-rejection problem.")
     print("Flat across all eval thresholds → optimizer genuinely failing.")
 
@@ -432,12 +425,11 @@ def print_report(
         steps = row.mean_steps_when_converged
         steps_text = f"{steps:.1f}" if math.isfinite(steps) else "nan"
         lm_info = f" lm_mu={row.lm_mu:g}" if row.lm_mu > 0 else ""
-        ec_info = f" eps_conv={row.eps_conv:g}" if row.eps_conv > 0 else ""
         print(
             f"  {row.tag}: conv={row.n_converged}/{row.n_samples} "
             f"({row.convergence_rate:.2f}), steps={steps_text}, "
             f"wall={row.mean_wall_time:.2f}s, errors={row.n_errors}"
-            f"{lm_info}{ec_info}"
+            f"{lm_info}"
         )
     print("")
 
@@ -559,7 +551,6 @@ def main() -> None:
         "max_atom_disp": summarize_main_effect(records, "max_atom_disp"),
         "nr_threshold": summarize_main_effect(records, "nr_threshold"),
         "lm_mu": summarize_main_effect(records, "lm_mu"),
-        "eps_conv": summarize_main_effect(records, "eps_conv"),
         "project_gradient_and_v": summarize_main_effect(records, "project_gradient_and_v"),
         "purify_hessian": summarize_main_effect(records, "purify_hessian"),
     }
@@ -603,7 +594,6 @@ def main() -> None:
                 "max_atom_disp": r.max_atom_disp,
                 "nr_threshold": r.nr_threshold,
                 "lm_mu": r.lm_mu,
-                "eps_conv": r.eps_conv,
                 "anneal_force_threshold": r.anneal_force_threshold,
                 "project_gradient_and_v": r.project_gradient_and_v,
                 "purify_hessian": r.purify_hessian,
@@ -622,7 +612,7 @@ def main() -> None:
             out_dir / "nr_grid_ranked.csv",
             ranked_rows,
             [
-                "rank", "tag", "max_atom_disp", "nr_threshold", "lm_mu", "eps_conv",
+                "rank", "tag", "max_atom_disp", "nr_threshold", "lm_mu",
                 "anneal_force_threshold", "project_gradient_and_v", "purify_hessian",
                 "n_samples", "n_converged", "n_errors", "convergence_rate",
                 "mean_steps_when_converged", "mean_wall_time", "total_wall_time", "path",

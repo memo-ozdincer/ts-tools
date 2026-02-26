@@ -13,8 +13,6 @@ New in v2:
                   NR threshold used in cleanup phase (0 = full pseudoinverse)
 - --cleanup-max-steps
                   Maximum extra steps in cleanup phase (default 50)
-- --eps-conv      Relaxed convergence tolerance: accept min_vib_eval > -eps_conv
-                  (0 = strict n_neg == 0, original behaviour)
 - --log-spectrum-k
                   Number of bottom vibrational eigenvalues to log per step (default 10)
 
@@ -117,7 +115,6 @@ def run_single_sample(
                 min_interatomic_dist=params["min_interatomic_dist"],
                 project_gradient_and_v=project_gradient_and_v,
                 purify_hessian=params.get("purify_hessian", False),
-                eps_conv=params.get("eps_conv", 0.0),
                 log_spectrum_k=params.get("log_spectrum_k", 10),
             )
         elif method == "newton_raphson":
@@ -138,7 +135,6 @@ def run_single_sample(
                 anneal_force_threshold=params.get("anneal_force_threshold", 0.0),
                 cleanup_nr_threshold=params.get("cleanup_nr_threshold", 0.0),
                 cleanup_max_steps=params.get("cleanup_max_steps", 50),
-                eps_conv=params.get("eps_conv", 0.0),
                 log_spectrum_k=params.get("log_spectrum_k", 10),
             )
         else:
@@ -350,7 +346,7 @@ def main() -> None:
     parser.add_argument(
         "--nr-threshold", type=float, default=8e-3,
         help="Eigenvalue cutoff for NR step filtering (|λ| < threshold → excluded from "
-             "pseudoinverse). Evaluation/convergence uses eps-conv, not this threshold.",
+             "pseudoinverse).",
     )
 
     # --- New v2 flags ---
@@ -374,12 +370,6 @@ def main() -> None:
     parser.add_argument(
         "--cleanup-max-steps", type=int, default=50,
         help="Maximum extra steps in cleanup phase (default 50).",
-    )
-    parser.add_argument(
-        "--eps-conv", type=float, default=0.0,
-        help="Relaxed convergence tolerance. Accept evals_vib.min() > -eps_conv. "
-             "0 (default) = strict n_neg==0. "
-             "E.g. 1e-4 accepts geometries with all eigenvalues > -0.0001.",
     )
     parser.add_argument(
         "--log-spectrum-k", type=int, default=10,
@@ -425,7 +415,6 @@ def main() -> None:
         "anneal_force_threshold": args.anneal_force_threshold,
         "cleanup_nr_threshold": args.cleanup_nr_threshold,
         "cleanup_max_steps": args.cleanup_max_steps,
-        "eps_conv": args.eps_conv,
         "log_spectrum_k": args.log_spectrum_k,
     }
 

@@ -44,11 +44,11 @@
 #             better-conditioned, so lower thresholds won't cause explosion.
 #    Folder tag: mad<v>_nrt<v>_pg<bool>_ph<bool>_af<anneal_force>
 #
-# 4. RELAXED CONVERGENCE CRITERION (new axis: EPS_CONV_GRID)
-#    Accept evals_vib.min() > -eps_conv instead of n_neg == 0.
-#    Directly addresses false rejection when λ_min ≈ -0.001.
-#    eps_conv = 0 reproduces the old strict behaviour exactly.
-#    Folder tag: mad<v>_nrt<v>_pg<bool>_ph<bool>_ec<eps_conv>
+# 4. SPECTRAL GAP DIAGNOSTIC (always on)
+#    |λ_min| / |λ_second_min| logged every step.  A large ratio (or inf when
+#    exactly 1 mode is negative) signals an isolated dominant negative mode
+#    (TS-like character).  Also logs n_neg on the full (unprojected) Hessian
+#    for comparison with the vibrational-subspace n_neg.
 #
 # 5. FULL SPECTRUM LOGGING (always on, --log-spectrum-k 10)
 #    Bottom-10 vibrational eigenvalues stored in each trajectory step.
@@ -59,16 +59,13 @@
 # Phase A — Cascade baseline (replays proven best config, adds cascade data):
 #   1 (mad) × 4 (nrt) × 1 (pg) × 1 (ph)  = 4 combos
 #
-# Phase B — Relaxed convergence (eps_conv sweep, best nrt=8e-3):
-#   1 (mad) × 1 (nrt=8e-3) × 1 (pg) × 1 (ph) × 5 (eps_conv) = 5 combos
-#
-# Phase C — Two-phase annealing (anneal_force sweep, best nrt=8e-3):
+# Phase B — Two-phase annealing (anneal_force sweep, best nrt=8e-3):
 #   1 (mad) × 1 (nrt=8e-3) × 1 (pg) × 1 (ph) × 4 (anneal_force) = 4 combos
 #
-# Phase D — LM damping (μ sweep):
+# Phase C — LM damping (μ sweep):
 #   1 (mad) × 4 (lm_mu) × 1 (pg) × 1 (ph)  = 4 combos
 #
-# Total: 4 + 5 + 4 + 4 = 17 combinations
+# Total: 4 + 4 + 4 = 12 combinations
 # =============================================================================
 
 set -e
@@ -207,26 +204,7 @@ for NRT in "2e-3" "5e-3" "8e-3" "1e-2"; do
 done
 
 # =============================================================================
-# Phase B — Relaxed convergence criterion
-# Best proven config (nrt=8e-3) + varying eps_conv.
-# eps_conv=0 reproduces original behaviour (strict n_neg==0).
-# If cascade shows λ_min ≈ -1e-3 causes most failures, eps_conv=1e-3 should
-# recover them directly.
-# =============================================================================
-echo "=============================================="
-echo "Phase B — Relaxed convergence (eps_conv sweep, nrt=8e-3)"
-echo "  Axes: eps_conv ∈ {1e-4, 5e-4, 1e-3, 2e-3, 5e-3}"
-echo "  (eps_conv=0 already covered by Phase A mad1.3_nrt8e-3_pgtrue_phfalse)"
-echo "=============================================="
-
-for EC in "1e-4" "5e-4" "1e-3" "2e-3" "5e-3"; do
-    run_combo "mad1.3_nrt8e-3_pgtrue_phfalse_ec${EC}" \
-        --nr-threshold "8e-3" \
-        --eps-conv "$EC"
-done
-
-# =============================================================================
-# Phase C — Two-phase threshold annealing
+# Phase B — Two-phase threshold annealing
 # Bulk phase uses nrt=8e-3 (proven best).
 # Cleanup phase uses nrt=0 (full pseudoinverse) for up to 50 steps once
 # force_norm < anneal_force_threshold.
@@ -234,7 +212,7 @@ done
 # We sweep anneal_force_threshold: the force level at which we transition.
 # =============================================================================
 echo "=============================================="
-echo "Phase C — Two-phase annealing (anneal_force sweep, nrt=8e-3)"
+echo "Phase B — Two-phase annealing (anneal_force sweep, nrt=8e-3)"
 echo "  Axes: anneal_force ∈ {5e-4, 1e-3, 5e-3, 1e-2}"
 echo "  cleanup_nr_threshold=0  (full pseudoinverse in cleanup)"
 echo "  cleanup_max_steps=50"
@@ -249,7 +227,7 @@ for AF in "5e-4" "1e-3" "5e-3" "1e-2"; do
 done
 
 # =============================================================================
-# Phase D — Levenberg-Marquardt damping
+# Phase C — Levenberg-Marquardt damping
 # step_i = (g·v_i) * |λ_i| / (λ_i² + μ²)
 # No hard cutoff; flat modes shrink smoothly to zero (vs hard-filter which
 # removes them entirely, vs clamping which was tested in the TeX and failed).
@@ -257,7 +235,7 @@ done
 # Phase A vs Phase D comparison straightforward on the cascade table.
 # =============================================================================
 echo "=============================================="
-echo "Phase D — Levenberg-Marquardt damping (lm_mu sweep)"
+echo "Phase C — Levenberg-Marquardt damping (lm_mu sweep)"
 echo "  Axes: lm_mu ∈ {2e-3, 5e-3, 8e-3, 1e-2}"
 echo "  Note: all modes included; flat modes → near-zero contribution"
 echo "=============================================="
