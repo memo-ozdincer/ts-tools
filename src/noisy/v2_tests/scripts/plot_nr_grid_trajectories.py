@@ -52,6 +52,89 @@ def _select_evenly_spaced(files, n_select):
     return selected
 
 
+def _is_converged_payload(data):
+    """Infer strict convergence (n_neg == 0) from trajectory payload."""
+    final_cascade = data.get("final_cascade")
+    if isinstance(final_cascade, dict) and "n_neg_at_0.0" in final_cascade:
+        return final_cascade.get("n_neg_at_0.0") == 0
+
+    final_neg_vib = data.get("final_neg_vib")
+    if final_neg_vib is not None:
+        return final_neg_vib == 0
+
+    trajectory = data.get("trajectory", [])
+    if trajectory:
+        last = trajectory[-1]
+        n_neg = last.get("n_neg_at_0.0")
+        if n_neg is None:
+            n_neg = last.get("n_neg_evals")
+        if n_neg is not None:
+            return n_neg == 0
+
+    return False
+
+
+def _classify_trajectory_file(traj_path):
+    """Return True if converged, False otherwise."""
+    try:
+        with open(traj_path) as f:
+            data = json.load(f)
+    except Exception:
+        return False
+    return _is_converged_payload(data)
+
+
+def _interleave_lists(a, b):
+    out = []
+    i = j = 0
+    while i < len(a) or j < len(b):
+        if i < len(a):
+            out.append(a[i])
+            i += 1
+        if j < len(b):
+            out.append(b[j])
+            j += 1
+    return out
+
+
+def _select_balanced_trajectories(traj_files, n_select):
+    """Select trajectories with convergence-aware balancing."""
+    if n_select <= 0 or len(traj_files) <= n_select:
+        conv = [p for p in traj_files if _classify_trajectory_file(p)]
+        return traj_files, len(conv), len(traj_files) - len(conv)
+
+    converged = []
+    non_converged = []
+    for path in traj_files:
+        if _classify_trajectory_file(path):
+            converged.append(path)
+        else:
+            non_converged.append(path)
+
+    # Equal split when possible; otherwise include all of smaller class.
+    target_conv = min(len(converged), n_select // 2)
+    target_non = min(len(non_converged), n_select // 2)
+
+    used = target_conv + target_non
+    remaining = n_select - used
+
+    if remaining > 0:
+        # Prefer filling from converged first (upsample good runs).
+        extra_conv = min(remaining, len(converged) - target_conv)
+        target_conv += extra_conv
+        remaining -= extra_conv
+
+    if remaining > 0:
+        extra_non = min(remaining, len(non_converged) - target_non)
+        target_non += extra_non
+        remaining -= extra_non
+
+    selected_conv = _select_evenly_spaced(converged, target_conv)
+    selected_non = _select_evenly_spaced(non_converged, target_non)
+    selected = _interleave_lists(selected_conv, selected_non)[:n_select]
+    return selected, len(selected_conv), len(selected_non)
+
+
 def _robust_ylim(values, *, iqr_mult=3.0, include=None):
     """Compute robust y-limits by clipping IQR outliers."""
     arr = np.asarray(values, dtype=float)
@@ -254,8 +337,25 @@ def plot_trajectory(traj_path: Path, output_dir: Path):
         0.01: ("black", "--"),
         0.001: ("hotpink", "-"),
     }
+
+    # Explicit total-negative count (strict threshold < 0), distinct styling.
+    strict_total = [t.get("n_neg_at_0.0", t.get("n_neg_evals", np.nan)) for t in trajectory]
+    ax6.plot(
+        steps,
+        strict_total,
+        label="n_neg total (<0)",
+        color="tab:green",
+        linestyle="-",
+        linewidth=2.4,
+        alpha=0.95,
+        zorder=3,
+    )
+
     if cascade_thresholds:
         for thr, key in cascade_thresholds:
+            # Avoid duplicating the strict total line; it's plotted explicitly above.
+            if np.isclose(thr, 0.0):
+                continue
             values = [t.get(key, np.nan) for t in trajectory]
             color, linestyle = style_map.get(thr, (None, "-"))
             ax6.plot(
@@ -305,10 +405,15 @@ def main():
         return
 
     traj_files = sorted(traj_files)
-    selected_files = _select_evenly_spaced(traj_files, args.n_plots)
+    selected_files, n_conv_sel, n_non_sel = _select_balanced_trajectories(
+        traj_files, args.n_plots
+    )
 
     print(f"Found {len(traj_files)} trajectory files.")
-    print(f"Plotting {len(selected_files)} trajectories.")
+    print(
+        f"Plotting {len(selected_files)} trajectories "
+        f"(converged={n_conv_sel}, non_converged={n_non_sel})."
+    )
 
     for i, traj_file in enumerate(selected_files, start=1):
         # Create subdirectories in the output folder mirroring the grid structure
