@@ -126,8 +126,8 @@ mkdir -p "$OUT_DIR"
 # =============================================================================
 # Fixed configuration
 # =============================================================================
-N_STEPS="${N_STEPS:-50000}"
-MAX_SAMPLES="${MAX_SAMPLES:-15}"
+N_STEPS="${N_STEPS:-10000}"
+MAX_SAMPLES="${MAX_SAMPLES:-30}"
 START_FROM="${START_FROM:-midpoint_rt_noise2.0A}"
 NOISE_SEED="${NOISE_SEED:-42}"
 SCINE_FUNCTIONAL="${SCINE_FUNCTIONAL:-DFTB0}"
