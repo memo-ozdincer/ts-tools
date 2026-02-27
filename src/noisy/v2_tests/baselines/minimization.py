@@ -210,7 +210,12 @@ def _neg_mode_diagnostics(
             "min_neg_grad_overlap": float("nan"),
         }
 
-    grad_norm = float(grad.norm().item())
+    # Cast everything to the same dtype (use the eigenvector dtype = float64)
+    work_dtype = evecs_vib_3N.dtype
+    grad_w = grad.to(dtype=work_dtype)
+    delta_x_w = delta_x.to(dtype=work_dtype)
+
+    grad_norm = float(grad_w.norm().item())
     if grad_norm < 1e-30:
         grad_norm = 1e-30
 
@@ -223,12 +228,12 @@ def _neg_mode_diagnostics(
     neg_evecs = neg_evecs[:, sort_idx]
 
     # Gradient overlap with each negative mode
-    grad_projs = neg_evecs.T @ grad  # (n_neg,)
+    grad_projs = neg_evecs.T @ grad_w  # (n_neg,)
     overlaps = (grad_projs.abs() / grad_norm).tolist()
     neg_eval_list = neg_evals.tolist()
 
     # Step decomposition: what fraction of the step is along negative modes?
-    dx_norm_sq = float((delta_x ** 2).sum().item())
+    dx_norm_sq = float((delta_x_w ** 2).sum().item())
     if dx_norm_sq < 1e-30:
         return {
             "neg_mode_grad_overlaps": overlaps,
@@ -239,13 +244,13 @@ def _neg_mode_diagnostics(
             "min_neg_grad_overlap": min(overlaps) if overlaps else float("nan"),
         }
 
-    dx_in_neg = neg_evecs.T @ delta_x  # (n_neg,)
+    dx_in_neg = neg_evecs.T @ delta_x_w  # (n_neg,)
     neg_frac = float((dx_in_neg ** 2).sum().item()) / dx_norm_sq
 
     pos_mask = evals_vib > 0.0
     if pos_mask.any():
         pos_evecs = evecs_vib_3N[:, pos_mask]
-        dx_in_pos = pos_evecs.T @ delta_x
+        dx_in_pos = pos_evecs.T @ delta_x_w
         pos_frac = float((dx_in_pos ** 2).sum().item()) / dx_norm_sq
     else:
         pos_frac = 0.0
@@ -370,16 +375,18 @@ def _stagnation_escape_perturbation(
     if not neg_mask.any():
         return coords
 
-    neg_evecs = evecs_vib_3N[:, neg_mask]  # (3N, n_neg)
-    grad_projs = neg_evecs.T @ grad  # (n_neg,)
+    neg_evecs = evecs_vib_3N[:, neg_mask]  # (3N, n_neg), float64
+    # Cast grad to match eigenvector dtype to avoid float32/float64 mismatch
+    grad_w = grad.to(dtype=neg_evecs.dtype)
+    grad_projs = neg_evecs.T @ grad_w  # (n_neg,)
 
     # Build perturbation: sum of negative eigenvectors with gradient-aligned signs
     signs = torch.sign(grad_projs)
     signs[signs == 0] = 1.0  # arbitrary positive if exactly zero overlap
-    perturbation = neg_evecs @ signs  # (3N,)
+    perturbation = neg_evecs @ signs  # (3N,), float64
 
-    # Normalize to max atom displacement = escape_alpha
-    pert_3d = perturbation.reshape(-1, 3)
+    # Normalize to max atom displacement = escape_alpha, cast back to coords dtype
+    pert_3d = perturbation.to(dtype=coords.dtype).reshape(-1, 3)
     max_disp = float(pert_3d.norm(dim=1).max().item())
     if max_disp > 1e-10:
         pert_3d = pert_3d * (escape_alpha / max_disp)
@@ -424,9 +431,11 @@ def _neg_mode_line_search(
     v_neg = evecs_vib_3N[:, most_neg_idx]  # (3N,)
     lam_neg = float(sorted_evals[0].item())
 
-    # Determine direction: move downhill
-    g_proj = float((grad @ v_neg).item())
-    direction = v_neg if g_proj > 0 else -v_neg  # step = -direction * alpha (downhill)
+    # Determine direction: move downhill (cast to match dtypes)
+    grad_w = grad.to(dtype=v_neg.dtype)
+    g_proj = float((grad_w @ v_neg).item())
+    # Cast direction back to coords dtype for displacement arithmetic
+    direction = (v_neg if g_proj > 0 else -v_neg).to(dtype=coords.dtype)
 
     best_min_eval = lam_neg
     best_coords = None
@@ -838,7 +847,6 @@ def run_newton_raphson(
         # ---------------------------------------------------------------
         # v3: Stagnation escape
         # ---------------------------------------------------------------
-        did_escape = False
         if (stagnation_window > 0
                 and stagnation_counter >= stagnation_window
                 and n_neg > 0
@@ -875,7 +883,6 @@ def run_newton_raphson(
                 current_trust_radius = max_atom_disp
                 stagnation_counter = 0
                 total_escapes += 1
-                did_escape = True
                 step_record["escape_triggered"] = True
                 step += 1
                 continue
