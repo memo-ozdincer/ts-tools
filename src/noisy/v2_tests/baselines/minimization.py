@@ -25,16 +25,30 @@ Algorithmic improvements (v2):
     Activated when lm_mu > 0; otherwise falls back to hard filter.
   - Two-phase threshold annealing: bulk optimization uses nr_threshold;
     once force_norm < anneal_force_threshold the threshold is dropped to
-    cleanup_nr_threshold for a capped number of cleanup steps. The idea:
-    near a stationary point the Hessian is better-conditioned, so lower
-    thresholds no longer cause explosive steps.
+    cleanup_nr_threshold for a capped number of cleanup steps.
   - Spectral gap diagnostic: |λ_min| / |λ_second_min| on the vibrational
-    eigenvalues, logged every step. A large ratio (or inf when exactly one
-    mode is negative) signals an isolated dominant negative mode (TS-like).
-    Compared against n_neg on the full (unprojected) Hessian to reveal
-    whether the vibrational projection changes the qualitative picture.
-  - Full bottom-K vibrational spectrum logged at every step (sorted, first K
-    entries). Invaluable for post-hoc debugging without re-running.
+    eigenvalues, logged every step.
+  - Full bottom-K vibrational spectrum logged at every step.
+
+Algorithmic improvements (v3):
+  - Shifted Newton step: step_i = (g·v_i) / (λ_i + σ), where
+    σ = max(0, -λ_min) + shift_epsilon. Standard Levenberg shift that
+    makes all effective eigenvalues positive. Negative modes get LARGER
+    weights than equally-sized positive modes → more aggressive along
+    the problematic directions.
+  - Stagnation-triggered negative-mode perturbation: when n_neg is
+    unchanged for stagnation_window steps and negative eigenvalues are
+    small, apply a targeted displacement along the negative eigenvectors.
+  - Adaptive LM μ annealing: when close to convergence (few small negative
+    eigenvalues), reduce μ to let the optimizer take more aggressive steps.
+  - Negative-mode line search: when stagnated with persistent negative
+    modes, scan along the negative eigenvector to find where curvature
+    changes sign.
+  - Trust-region fixes: higher floor, reset after escape, gradient-norm
+    based minimum step size to prevent optimizer from getting stuck with
+    tiny displacements.
+  - Per-step diagnostic logging: gradient-mode overlap for negative modes,
+    step-mode decomposition, stagnation counter, energy plateau detection.
 """
 
 from __future__ import annotations
@@ -149,13 +163,7 @@ def _spectral_gap_info(evals_vib: torch.Tensor) -> Dict[str, Any]:
 
 
 def _total_hessian_n_neg(hessian: torch.Tensor) -> int:
-    """Count negative eigenvalues of the full (unprojected) Hessian.
-
-    This includes translation/rotation zero-modes which may appear as tiny
-    negative values due to numerical noise.  Comparing this against n_neg
-    from the vibrational subspace shows how much the Eckart projection
-    changes the qualitative picture.
-    """
+    """Count negative eigenvalues of the full (unprojected) Hessian."""
     H = hessian.detach()
     if H.dim() == 4:
         n = H.shape[0]
@@ -165,6 +173,91 @@ def _total_hessian_n_neg(hessian: torch.Tensor) -> int:
     H = 0.5 * (H + H.T)  # symmetrise for numerical safety
     evals = torch.linalg.eigvalsh(H)
     return int((evals < 0.0).sum().item())
+
+
+# ---------------------------------------------------------------------------
+# v3 diagnostic: gradient-mode overlap for negative modes
+# ---------------------------------------------------------------------------
+
+def _neg_mode_diagnostics(
+    grad: torch.Tensor,
+    delta_x: torch.Tensor,
+    evals_vib: torch.Tensor,
+    evecs_vib_3N: torch.Tensor,
+) -> Dict[str, Any]:
+    """Compute per-step diagnostics for negative vibrational modes.
+
+    Returns:
+        neg_mode_grad_overlaps: list of |g·v_i|/|g| for each negative mode i,
+            sorted by eigenvalue (most negative first). If near zero, the NR
+            step cannot address that mode.
+        neg_mode_eigenvalues: the negative eigenvalues themselves.
+        step_along_neg_frac: fraction of ||delta_x||² that lies in the
+            negative-eigenvalue subspace.
+        step_along_pos_frac: fraction in the positive-eigenvalue subspace.
+        max_neg_grad_overlap: the largest gradient-mode overlap among negatives.
+        min_neg_grad_overlap: the smallest (bottleneck mode).
+    """
+    neg_mask = evals_vib < 0.0
+    n_neg = int(neg_mask.sum().item())
+    if n_neg == 0:
+        return {
+            "neg_mode_grad_overlaps": [],
+            "neg_mode_eigenvalues": [],
+            "step_along_neg_frac": 0.0,
+            "step_along_pos_frac": 1.0,
+            "max_neg_grad_overlap": float("nan"),
+            "min_neg_grad_overlap": float("nan"),
+        }
+
+    grad_norm = float(grad.norm().item())
+    if grad_norm < 1e-30:
+        grad_norm = 1e-30
+
+    neg_evals = evals_vib[neg_mask]
+    neg_evecs = evecs_vib_3N[:, neg_mask]  # (3N, n_neg)
+
+    # Sort by eigenvalue ascending (most negative first)
+    sort_idx = torch.argsort(neg_evals)
+    neg_evals = neg_evals[sort_idx]
+    neg_evecs = neg_evecs[:, sort_idx]
+
+    # Gradient overlap with each negative mode
+    grad_projs = neg_evecs.T @ grad  # (n_neg,)
+    overlaps = (grad_projs.abs() / grad_norm).tolist()
+    neg_eval_list = neg_evals.tolist()
+
+    # Step decomposition: what fraction of the step is along negative modes?
+    dx_norm_sq = float((delta_x ** 2).sum().item())
+    if dx_norm_sq < 1e-30:
+        return {
+            "neg_mode_grad_overlaps": overlaps,
+            "neg_mode_eigenvalues": neg_eval_list,
+            "step_along_neg_frac": 0.0,
+            "step_along_pos_frac": 0.0,
+            "max_neg_grad_overlap": max(overlaps) if overlaps else float("nan"),
+            "min_neg_grad_overlap": min(overlaps) if overlaps else float("nan"),
+        }
+
+    dx_in_neg = neg_evecs.T @ delta_x  # (n_neg,)
+    neg_frac = float((dx_in_neg ** 2).sum().item()) / dx_norm_sq
+
+    pos_mask = evals_vib > 0.0
+    if pos_mask.any():
+        pos_evecs = evecs_vib_3N[:, pos_mask]
+        dx_in_pos = pos_evecs.T @ delta_x
+        pos_frac = float((dx_in_pos ** 2).sum().item()) / dx_norm_sq
+    else:
+        pos_frac = 0.0
+
+    return {
+        "neg_mode_grad_overlaps": overlaps,
+        "neg_mode_eigenvalues": neg_eval_list,
+        "step_along_neg_frac": neg_frac,
+        "step_along_pos_frac": pos_frac,
+        "max_neg_grad_overlap": max(overlaps),
+        "min_neg_grad_overlap": min(overlaps),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -221,6 +314,157 @@ def _nr_step_lm_damping(
     nr_step = V_all @ (coeffs * lm_weights)
     delta_x = -nr_step
     return delta_x, V_all, lam_all
+
+
+def _nr_step_shifted_newton(
+    grad: torch.Tensor,
+    V_all: torch.Tensor,
+    lam_all: torch.Tensor,
+    shift_epsilon: float,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Shifted Newton step (Levenberg shift).
+
+    step_i = (g·v_i) / (λ_i + σ)
+    where σ = max(0, -λ_min) + shift_epsilon
+
+    This makes all effective eigenvalues (λ_i + σ) positive. Crucially,
+    negative modes get LARGER weights than equally-sized positive modes:
+      λ=-0.01, σ=0.011 → weight = 1/0.001 = 1000
+      λ=+0.01, σ=0.011 → weight = 1/0.021 ≈ 48
+    So the step is more aggressive along the problematic directions.
+
+    As σ→0 near a true minimum, this recovers the pure Newton step.
+    """
+    lam_min = float(lam_all.min().item())
+    sigma = max(0.0, -lam_min) + shift_epsilon
+    shifted_lam = lam_all + sigma  # all positive
+    coeffs = V_all.T @ grad
+    nr_step = V_all @ (coeffs / shifted_lam)
+    delta_x = -nr_step
+    return delta_x, V_all, lam_all
+
+
+# ---------------------------------------------------------------------------
+# v3: Stagnation escape — targeted perturbation along negative modes
+# ---------------------------------------------------------------------------
+
+def _stagnation_escape_perturbation(
+    coords: torch.Tensor,
+    grad: torch.Tensor,
+    evals_vib: torch.Tensor,
+    evecs_vib_3N: torch.Tensor,
+    escape_alpha: float,
+) -> torch.Tensor:
+    """Build a targeted perturbation along negative eigenvectors.
+
+    The displacement is:
+        perturbation = alpha * sum_i( sign(g·v_i) * v_i )  for negative modes i
+    normalized so max atom displacement = escape_alpha.
+
+    sign(g·v_i) ensures we move downhill along each negative mode.
+    If the gradient projection is zero, we pick an arbitrary sign (+1).
+
+    Returns new coordinates after the perturbation.
+    """
+    neg_mask = evals_vib < 0.0
+    if not neg_mask.any():
+        return coords
+
+    neg_evecs = evecs_vib_3N[:, neg_mask]  # (3N, n_neg)
+    grad_projs = neg_evecs.T @ grad  # (n_neg,)
+
+    # Build perturbation: sum of negative eigenvectors with gradient-aligned signs
+    signs = torch.sign(grad_projs)
+    signs[signs == 0] = 1.0  # arbitrary positive if exactly zero overlap
+    perturbation = neg_evecs @ signs  # (3N,)
+
+    # Normalize to max atom displacement = escape_alpha
+    pert_3d = perturbation.reshape(-1, 3)
+    max_disp = float(pert_3d.norm(dim=1).max().item())
+    if max_disp > 1e-10:
+        pert_3d = pert_3d * (escape_alpha / max_disp)
+
+    return coords + pert_3d
+
+
+# ---------------------------------------------------------------------------
+# v3: Negative-mode line search
+# ---------------------------------------------------------------------------
+
+def _neg_mode_line_search(
+    predict_fn,
+    coords: torch.Tensor,
+    atomic_nums: torch.Tensor,
+    atomsymbols: list,
+    evals_vib: torch.Tensor,
+    evecs_vib_3N: torch.Tensor,
+    grad: torch.Tensor,
+    *,
+    purify_hessian: bool = False,
+    alphas: Tuple[float, ...] = (0.02, 0.05, 0.1, 0.15, 0.2, 0.3),
+    min_interatomic_dist: float = 0.5,
+) -> Tuple[Optional[torch.Tensor], Dict[str, Any]]:
+    """Line search along the most negative eigenvector.
+
+    For each alpha in alphas, evaluate the geometry at coords ± alpha * v_neg
+    (sign chosen to move downhill). Pick the trial point whose most-negative
+    eigenvalue is closest to zero (or positive).
+
+    Returns:
+        best_coords: new coordinates, or None if no improvement found.
+        info: dict with line search diagnostics.
+    """
+    neg_mask = evals_vib < 0.0
+    if not neg_mask.any():
+        return None, {"line_search_skipped": True, "reason": "no_neg_modes"}
+
+    # Target the most negative mode
+    sorted_evals, sorted_idx = torch.sort(evals_vib)
+    most_neg_idx = sorted_idx[0]
+    v_neg = evecs_vib_3N[:, most_neg_idx]  # (3N,)
+    lam_neg = float(sorted_evals[0].item())
+
+    # Determine direction: move downhill
+    g_proj = float((grad @ v_neg).item())
+    direction = v_neg if g_proj > 0 else -v_neg  # step = -direction * alpha (downhill)
+
+    best_min_eval = lam_neg
+    best_coords = None
+    best_alpha = None
+    trials = []
+
+    for alpha in alphas:
+        disp = direction.reshape(-1, 3) * alpha
+        trial_coords = coords + disp
+        if _min_interatomic_distance(trial_coords) < min_interatomic_dist:
+            continue
+        try:
+            trial_out = predict_fn(trial_coords, atomic_nums, do_hessian=True, require_grad=False)
+            trial_evals, _, _ = get_vib_evals_evecs(
+                trial_out["hessian"], trial_coords, atomsymbols,
+                purify_hessian=purify_hessian,
+            )
+            trial_min_eval = float(trial_evals.min().item())
+            trial_n_neg = int((trial_evals < 0.0).sum().item())
+            trials.append({"alpha": alpha, "min_eval": trial_min_eval, "n_neg": trial_n_neg})
+
+            if trial_min_eval > best_min_eval:
+                best_min_eval = trial_min_eval
+                best_coords = trial_coords
+                best_alpha = alpha
+        except Exception:
+            continue
+
+    info = {
+        "line_search_skipped": False,
+        "original_min_eval": lam_neg,
+        "best_min_eval": best_min_eval,
+        "best_alpha": best_alpha,
+        "n_trials": len(trials),
+        "trials": trials,
+        "improved": best_coords is not None,
+    }
+    return best_coords, info
 
 
 # ---------------------------------------------------------------------------
@@ -392,12 +636,22 @@ def run_newton_raphson(
     project_gradient_and_v: bool = True,
     purify_hessian: bool = False,
     known_ts_coords: Optional[torch.Tensor] = None,
-    # --- New options ---
+    # --- v2 options ---
     lm_mu: float = 0.0,
     anneal_force_threshold: float = 0.0,
     cleanup_nr_threshold: float = 0.0,
     cleanup_max_steps: int = 50,
     log_spectrum_k: int = 10,
+    # --- v3 options ---
+    shift_epsilon: float = 0.0,
+    stagnation_window: int = 0,
+    escape_alpha: float = 0.1,
+    lm_mu_anneal_factor: float = 0.0,
+    lm_mu_anneal_n_neg_leq: int = 2,
+    lm_mu_anneal_eval_leq: float = 5e-3,
+    neg_mode_line_search: bool = False,
+    line_search_alphas: Optional[List[float]] = None,
+    trust_radius_floor: float = 0.01,
 ) -> Tuple[Dict[str, Any], list]:
     """Newton-Raphson optimization to find energy minimum.
 
@@ -407,38 +661,28 @@ def run_newton_raphson(
     vibrational subspace, using absolute values of eigenvalues to ensure
     it is always a descent direction.
 
-    Three step-building modes (mutually exclusive; selected at runtime):
-      1. Hard filter (lm_mu == 0, anneal_force_threshold == 0):
-         Exclude |λ| < nr_threshold from pseudoinverse. Proven best on DFTB0
-         at 2 Å noise (99% convergence). Default mode.
-      2. LM damping (lm_mu > 0):
+    Step-building modes (selected at runtime by which parameters are nonzero):
+      1. Shifted Newton (shift_epsilon > 0):
+         step_i = (g·v_i) / (λ_i + σ), σ = max(0, -λ_min) + shift_epsilon.
+         Makes all effective eigenvalues positive. Negative modes get larger
+         weights → more aggressive along problematic directions.
+      2. LM damping (lm_mu > 0, shift_epsilon == 0):
          step_i = (g·v_i) * |λ_i| / (λ_i² + μ²). No hard cutoff; flat modes
-         contribute a vanishingly small amount. Sweep with mu = NR_THRESHOLD_GRID.
-      3. Two-phase annealing (anneal_force_threshold > 0):
-         Phase 1: hard filter with nr_threshold (bulk optimization).
-         Phase 2: once force_norm < anneal_force_threshold, switch to
-         cleanup_nr_threshold (default 0 → full pseudoinverse) for up to
-         cleanup_max_steps steps. Near a minimum the Hessian is better-
-         conditioned, so the lower threshold is safe.
+         contribute a vanishingly small amount.
+      3. Two-phase annealing (anneal_force_threshold > 0, lm_mu == 0):
+         Phase 1: hard filter with nr_threshold. Phase 2: cleanup_nr_threshold.
+      4. Hard filter (default, all above == 0):
+         Exclude |λ| < nr_threshold from pseudoinverse.
 
-    Cascading evaluation:
-      n_neg is computed at thresholds [0.0, 1e-4, 5e-4, 1e-3, 2e-3, 5e-3,
-      8e-3, 1e-2] and stored in every trajectory step. The analysis script
-      builds a 2D table (optimizer_threshold × eval_threshold → conv_rate)
-      to reveal whether failures are optimizer failures or evaluation strictness.
-
-    Full spectrum logging:
-      The bottom log_spectrum_k sorted vibrational eigenvalues are stored in
-      every trajectory step under "bottom_spectrum". At convergence/failure the
-      field "bottom_spectrum_at_convergence" is added to the result dict.
-
-    Adaptive step scaling (Trust Region):
-      Predicted energy change dE_pred = g^T dx + 0.5 dx^T H dx
-      Actual energy change dE_actual = E_new - E_old
-      rho = dE_actual / dE_pred
-      rho > 0.75 → grow trust radius (up to max_atom_disp)
-      rho < 0.25 → shrink trust radius
-      Steps with dE_actual > 0 → rejected, retried with smaller radius.
+    v3 features:
+      - Stagnation escape (stagnation_window > 0): when n_neg is unchanged
+        for stagnation_window consecutive steps, apply targeted perturbation
+        along negative eigenvectors, then optionally a negative-mode line search.
+      - Adaptive LM μ annealing (lm_mu_anneal_factor > 0): when n_neg <= threshold
+        and |λ_min| < threshold, reduce μ by anneal_factor.
+      - Per-step diagnostic logging: gradient-mode overlap, step decomposition.
+      - Trust-region floor: prevents the trust radius from shrinking below
+        trust_radius_floor, ensuring the optimizer can always take meaningful steps.
     """
     coords = coords0.detach().clone().to(torch.float32)
     if coords.dim() == 3 and coords.shape[0] == 1:
@@ -453,13 +697,26 @@ def run_newton_raphson(
             known_ts_coords = known_ts_coords[0]
         known_ts_coords = known_ts_coords.reshape(-1, 3)
 
-    # --- Mode selection ---
-    use_lm = lm_mu > 0.0
-    use_anneal = (not use_lm) and anneal_force_threshold > 0.0
-    in_cleanup_phase = False  # activated in two-phase annealing
+    # --- Mode selection (priority: shifted > LM > anneal > hard filter) ---
+    use_shifted = shift_epsilon > 0.0
+    use_lm = (not use_shifted) and lm_mu > 0.0
+    use_anneal = (not use_shifted) and (not use_lm) and anneal_force_threshold > 0.0
+    in_cleanup_phase = False
 
-    trajectory = []
+    # Effective LM mu (may be annealed)
+    effective_lm_mu = lm_mu
+
+    # Line search alphas
+    ls_alphas = tuple(line_search_alphas) if line_search_alphas else (0.02, 0.05, 0.1, 0.15, 0.2, 0.3)
+
+    trajectory: list = []
     current_trust_radius = max_atom_disp
+
+    # Stagnation tracking
+    prev_n_neg = -1
+    stagnation_counter = 0
+    total_escapes = 0
+    total_line_searches = 0
 
     # Evaluate initial state
     out = predict_fn(coords, atomic_nums, do_hessian=True, require_grad=False)
@@ -512,6 +769,21 @@ def run_newton_raphson(
             if known_ts_coords is not None else None
         )
 
+        # ---------------------------------------------------------------
+        # Stagnation tracking
+        # ---------------------------------------------------------------
+        if n_neg == prev_n_neg and n_neg > 0:
+            stagnation_counter += 1
+        else:
+            stagnation_counter = 0
+        prev_n_neg = n_neg
+
+        # Energy plateau detection: compare to energy 10 steps ago
+        energy_plateau = False
+        if len(trajectory) >= 10:
+            old_energy = trajectory[-10].get("energy", energy)
+            energy_plateau = abs(energy - old_energy) < 1e-8
+
         step_record: Dict[str, Any] = {
             "step": step,
             "energy": energy,
@@ -527,6 +799,9 @@ def run_newton_raphson(
             "disp_from_start_max": disp_from_start_max,
             "dist_to_ts_max": dist_to_ts_max,
             "phase": "cleanup" if in_cleanup_phase else "bulk",
+            "stagnation_counter": stagnation_counter,
+            "energy_plateau": energy_plateau,
+            "effective_lm_mu": effective_lm_mu if use_lm else None,
             **gap_info,
             **cascade,
         }
@@ -539,10 +814,6 @@ def run_newton_raphson(
         # Convergence check: strict n_neg == 0
         # ---------------------------------------------------------------
         converged_now = n_neg == 0
-        # Two-phase annealing gate: when annealing is active we only declare victory
-        # after at least one cleanup step, so the cleanup phase always gets a chance
-        # to run.  In all other cases (annealing off, or already in cleanup) we exit
-        # as soon as the geometry satisfies the criterion.
         anneal_gate_passed = (not use_anneal) or in_cleanup_phase
         if converged_now and anneal_gate_passed:
             return {
@@ -560,7 +831,66 @@ def run_newton_raphson(
                 "cascade_at_convergence": cascade,
                 "bottom_spectrum_at_convergence": _bottom_k_spectrum(evals_vib, log_spectrum_k),
                 "cleanup_steps_taken": cleanup_steps_taken,
+                "total_escapes": total_escapes,
+                "total_line_searches": total_line_searches,
             }, trajectory
+
+        # ---------------------------------------------------------------
+        # v3: Stagnation escape
+        # ---------------------------------------------------------------
+        did_escape = False
+        if (stagnation_window > 0
+                and stagnation_counter >= stagnation_window
+                and n_neg > 0
+                and abs(min_vib_eval) < 0.02):  # only escape from shallow saddles
+            # Phase 1: targeted perturbation along negative modes
+            grad_for_escape = -forces.reshape(-1)
+            if project_gradient_and_v:
+                grad_for_escape = -project_vector_to_vibrational_torch(
+                    forces.reshape(-1), coords, atomsymbols,
+                )
+
+            new_coords = _stagnation_escape_perturbation(
+                coords, grad_for_escape, evals_vib, evecs_vib_3N, escape_alpha,
+            )
+
+            # Phase 2: optional line search along the most negative mode
+            if neg_mode_line_search:
+                ls_coords, ls_info = _neg_mode_line_search(
+                    predict_fn, coords, atomic_nums, atomsymbols,
+                    evals_vib, evecs_vib_3N, grad_for_escape,
+                    purify_hessian=purify_hessian,
+                    alphas=ls_alphas,
+                    min_interatomic_dist=min_interatomic_dist,
+                )
+                step_record["line_search_info"] = ls_info
+                total_line_searches += 1
+                if ls_coords is not None:
+                    new_coords = ls_coords  # line search found something better
+
+            if _min_interatomic_distance(new_coords) >= min_interatomic_dist:
+                coords = new_coords.detach()
+                out = predict_fn(coords, atomic_nums, do_hessian=True, require_grad=False)
+                # Reset trust radius after escape
+                current_trust_radius = max_atom_disp
+                stagnation_counter = 0
+                total_escapes += 1
+                did_escape = True
+                step_record["escape_triggered"] = True
+                step += 1
+                continue
+
+        # ---------------------------------------------------------------
+        # v3: Adaptive LM μ annealing
+        # ---------------------------------------------------------------
+        if (use_lm
+                and lm_mu_anneal_factor > 0.0
+                and n_neg <= lm_mu_anneal_n_neg_leq
+                and n_neg > 0
+                and abs(min_vib_eval) < lm_mu_anneal_eval_leq):
+            effective_lm_mu = lm_mu * lm_mu_anneal_factor
+        elif use_lm:
+            effective_lm_mu = lm_mu
 
         # ---------------------------------------------------------------
         # Two-phase annealing: transition to cleanup phase
@@ -590,12 +920,24 @@ def run_newton_raphson(
         lam_all = evals_vib.to(device=grad.device, dtype=work_dtype)
 
         # ---------------------------------------------------------------
-        # Compute NR step (three modes)
+        # Compute NR step (four modes, priority: shifted > LM > anneal > HF)
         # ---------------------------------------------------------------
-        if use_lm:
-            delta_x, V, lam = _nr_step_lm_damping(grad, V_all, lam_all, lm_mu)
+        if use_shifted:
+            delta_x, V, lam = _nr_step_shifted_newton(grad, V_all, lam_all, shift_epsilon)
+            step_record["step_mode"] = "shifted_newton"
+        elif use_lm:
+            delta_x, V, lam = _nr_step_lm_damping(grad, V_all, lam_all, effective_lm_mu)
+            step_record["step_mode"] = "lm_damping"
         else:
             delta_x, V, lam = _nr_step_hard_filter(grad, V_all, lam_all, effective_threshold, forces)
+            step_record["step_mode"] = "hard_filter"
+
+        # ---------------------------------------------------------------
+        # v3: Per-step negative-mode diagnostics
+        # ---------------------------------------------------------------
+        if n_neg > 0:
+            neg_diag = _neg_mode_diagnostics(grad, delta_x, evals_vib, evecs_vib_3N)
+            step_record["neg_mode_diag"] = neg_diag
 
         step_disp = delta_x.reshape(-1, 3)
 
@@ -618,7 +960,7 @@ def run_newton_raphson(
             new_coords = coords + capped_disp
 
             if _min_interatomic_distance(new_coords) < min_interatomic_dist:
-                current_trust_radius *= 0.5
+                current_trust_radius = max(current_trust_radius * 0.5, trust_radius_floor)
                 retries += 1
                 continue
 
@@ -637,14 +979,14 @@ def run_newton_raphson(
                 if rho > 0.75:
                     current_trust_radius = min(current_trust_radius * 1.5, max_atom_disp)
                 elif rho < 0.25:
-                    current_trust_radius = max(current_trust_radius * 0.5, 0.001)
+                    current_trust_radius = max(current_trust_radius * 0.5, trust_radius_floor)
                 elif rho < 0.0:
-                    current_trust_radius = max(current_trust_radius * 0.25, 0.001)
+                    current_trust_radius = max(current_trust_radius * 0.25, trust_radius_floor)
 
                 coords = new_coords.detach()
                 out = out_new
             else:
-                current_trust_radius *= 0.25
+                current_trust_radius = max(current_trust_radius * 0.25, trust_radius_floor)
                 retries += 1
 
         if not accepted:
@@ -681,4 +1023,6 @@ def run_newton_raphson(
         "cascade_at_convergence": {k: last.get(k) for k in last if k.startswith("n_neg_at_")},
         "bottom_spectrum_at_convergence": last.get("bottom_spectrum", []),
         "cleanup_steps_taken": cleanup_steps_taken,
+        "total_escapes": total_escapes,
+        "total_line_searches": total_line_searches,
     }, trajectory

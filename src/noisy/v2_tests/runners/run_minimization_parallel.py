@@ -5,7 +5,7 @@ Methods:
 - fixed_step_gd: Fixed-step gradient descent (no line search)
 - newton_raphson: Newton-Raphson with Hessian-preconditioned steps
 
-New in v2:
+v2 flags:
 - --lm-mu         Levenberg-Marquardt damping coefficient (0 = hard filter, default)
 - --anneal-force-threshold
                   Force norm at which two-phase annealing kicks in (0 = off)
@@ -16,13 +16,23 @@ New in v2:
 - --log-spectrum-k
                   Number of bottom vibrational eigenvalues to log per step (default 10)
 
+v3 flags:
+- --shift-epsilon  Shifted Newton: σ = max(0,-λ_min) + shift_epsilon (0 = off)
+- --stagnation-window
+                  Trigger escape perturbation after this many stagnant steps (0 = off)
+- --escape-alpha   Max atom displacement for escape perturbation (default 0.1)
+- --lm-mu-anneal-factor
+                  Multiply μ by this when close to convergence (0 = off)
+- --neg-mode-line-search
+                  Enable line search along negative eigenvector during escape
+- --trust-radius-floor
+                  Minimum trust radius (default 0.01)
+
 Cascade evaluation:
   Every trajectory step now contains "n_neg_at_<threshold>" fields for
   thresholds [0.0, 1e-4, 5e-4, 1e-3, 2e-3, 5e-3, 8e-3, 1e-2].
   The summary JSON includes a "cascade_table" whose rows are keyed by
   nr_threshold and columns by eval_threshold, with values = convergence rate.
-  This lets the analysis script build the 2D diagnostic plot without
-  needing to re-read the full trajectories.
 """
 
 from __future__ import annotations
@@ -131,11 +141,21 @@ def run_single_sample(
                 project_gradient_and_v=project_gradient_and_v,
                 purify_hessian=params.get("purify_hessian", False),
                 known_ts_coords=known_ts_coords,
+                # v2
                 lm_mu=params.get("lm_mu", 0.0),
                 anneal_force_threshold=params.get("anneal_force_threshold", 0.0),
                 cleanup_nr_threshold=params.get("cleanup_nr_threshold", 0.0),
                 cleanup_max_steps=params.get("cleanup_max_steps", 50),
                 log_spectrum_k=params.get("log_spectrum_k", 10),
+                # v3
+                shift_epsilon=params.get("shift_epsilon", 0.0),
+                stagnation_window=params.get("stagnation_window", 0),
+                escape_alpha=params.get("escape_alpha", 0.1),
+                lm_mu_anneal_factor=params.get("lm_mu_anneal_factor", 0.0),
+                lm_mu_anneal_n_neg_leq=params.get("lm_mu_anneal_n_neg_leq", 2),
+                lm_mu_anneal_eval_leq=params.get("lm_mu_anneal_eval_leq", 5e-3),
+                neg_mode_line_search=params.get("neg_mode_line_search", False),
+                trust_radius_floor=params.get("trust_radius_floor", 0.01),
             )
         else:
             raise ValueError(f"Unknown method: {method}")
@@ -163,6 +183,8 @@ def run_single_sample(
                         "bottom_spectrum_at_convergence": result.get("bottom_spectrum_at_convergence", []),
                         "final_min_vib_eval": result.get("final_min_vib_eval"),
                         "cleanup_steps_taken": result.get("cleanup_steps_taken", 0),
+                        "total_escapes": result.get("total_escapes", 0),
+                        "total_line_searches": result.get("total_line_searches", 0),
                         "trajectory": trajectory,
                     },
                     f,
@@ -183,6 +205,8 @@ def run_single_sample(
             "cascade_at_convergence": result.get("cascade_at_convergence", {}),
             "bottom_spectrum_at_convergence": result.get("bottom_spectrum_at_convergence", []),
             "cleanup_steps_taken": result.get("cleanup_steps_taken", 0),
+            "total_escapes": result.get("total_escapes", 0),
+            "total_line_searches": result.get("total_line_searches", 0),
             "wall_time": wall_time,
             "error": None,
         }
@@ -376,6 +400,46 @@ def main() -> None:
         help="Number of bottom vibrational eigenvalues to log per step (default 10, 0 = none).",
     )
 
+    # --- v3 flags ---
+    parser.add_argument(
+        "--shift-epsilon", type=float, default=0.0,
+        help="Shifted Newton: σ = max(0,-λ_min) + shift_epsilon. "
+             ">0 activates shifted Newton mode (takes priority over LM and HF). "
+             "Negative modes get larger weights → more aggressive escape.",
+    )
+    parser.add_argument(
+        "--stagnation-window", type=int, default=0,
+        help="Trigger escape perturbation when n_neg is unchanged for this many "
+             "consecutive steps. 0 = off (default).",
+    )
+    parser.add_argument(
+        "--escape-alpha", type=float, default=0.1,
+        help="Max atom displacement (Å) for stagnation escape perturbation (default 0.1).",
+    )
+    parser.add_argument(
+        "--lm-mu-anneal-factor", type=float, default=0.0,
+        help="When close to convergence (few small neg evals), multiply μ by this factor. "
+             "0 = off (default). E.g. 0.1 → μ becomes 10x smaller near convergence.",
+    )
+    parser.add_argument(
+        "--lm-mu-anneal-n-neg-leq", type=int, default=2,
+        help="Anneal μ only when n_neg <= this value (default 2).",
+    )
+    parser.add_argument(
+        "--lm-mu-anneal-eval-leq", type=float, default=5e-3,
+        help="Anneal μ only when |min_vib_eval| < this value (default 5e-3).",
+    )
+    parser.add_argument(
+        "--neg-mode-line-search", action="store_true", default=False,
+        help="During stagnation escape, also do a line search along the most negative "
+             "eigenvector to find where curvature changes sign.",
+    )
+    parser.add_argument(
+        "--trust-radius-floor", type=float, default=0.01,
+        help="Minimum trust radius (Å). Prevents optimizer from shrinking to tiny "
+             "displacements (default 0.01).",
+    )
+
     # Gradient descent parameters
     parser.add_argument("--step-size", type=float, default=0.01,
                         help="Fixed step size for gradient descent")
@@ -416,6 +480,15 @@ def main() -> None:
         "cleanup_nr_threshold": args.cleanup_nr_threshold,
         "cleanup_max_steps": args.cleanup_max_steps,
         "log_spectrum_k": args.log_spectrum_k,
+        # v3 additions
+        "shift_epsilon": args.shift_epsilon,
+        "stagnation_window": args.stagnation_window,
+        "escape_alpha": args.escape_alpha,
+        "lm_mu_anneal_factor": args.lm_mu_anneal_factor,
+        "lm_mu_anneal_n_neg_leq": args.lm_mu_anneal_n_neg_leq,
+        "lm_mu_anneal_eval_leq": args.lm_mu_anneal_eval_leq,
+        "neg_mode_line_search": args.neg_mode_line_search,
+        "trust_radius_floor": args.trust_radius_floor,
     }
 
     processor = ParallelSCINEProcessor(

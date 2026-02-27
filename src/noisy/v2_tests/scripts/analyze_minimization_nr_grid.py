@@ -29,18 +29,28 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 
 # ---------------------------------------------------------------------------
-# Folder-name regex — accept both legacy (tr) and new (nrt / lmmu) tags
+# Folder-name regex — accept legacy (tr), v2 (nrt / lmmu), and v3 (se) tags
 # ---------------------------------------------------------------------------
-# New format: mad<v>_nrt<v>_pg<bool>_ph<bool>
-# LM format:  mad<v>_lmmu<v>_pg<bool>_ph<bool>
-# Legacy:     mad<v>_tr<v>_pg<bool>_ph<bool>
+# Hard filter: mad<v>_nrt<v>_pg<bool>_ph<bool>[_af<v>][_ct<v>]
+# LM damping:  mad<v>_lmmu<v>_pg<bool>_ph<bool>[_af<v>][_sw<v>_ea<v>][_diag*]
+# Shifted NR:  mad<v>_se<v>_pg<bool>_ph<bool>[_sw<v>_ea<v>[_ls]]
+# Legacy:      mad<v>_tr<v>_pg<bool>_ph<bool>
 COMBO_RE_NRT = re.compile(
     r"mad(?P<mad>[^_]+)_nrt(?P<nrt>[^_]+)_pg(?P<pg>true|false)_ph(?P<ph>true|false)"
     r"(?:_ec(?P<ec>[^_]+))?(?:_af(?P<af>[^_]+))?(?:_ct(?P<ct>[^_]+))?$"
 )
 COMBO_RE_LM = re.compile(
-    r"mad(?P<mad>[^_]+)_lmmu(?P<lmmu>[^_]+)_pg(?P<pg>true|false)_ph(?P<ph>true|false)"
-    r"(?:_ec(?P<ec>[^_]+))?$"
+    r"mad(?P<mad>[^_]+)_lmmu(?P<lmmu>[^_]+)"
+    r"(?:_af(?P<af>[^_]+))?"
+    r"(?:_sw(?P<sw>[^_]+)_ea(?P<ea>[^_]+))?"
+    r"(?:_(?P<diag>diag[^_]*))?"
+    r"_pg(?P<pg>true|false)_ph(?P<ph>true|false)$"
+)
+COMBO_RE_SHIFTED = re.compile(
+    r"mad(?P<mad>[^_]+)_se(?P<se>[^_]+)"
+    r"(?:_sw(?P<sw>[^_]+)_ea(?P<ea>[^_]+))?"
+    r"(?:_(?P<ls>ls))?"
+    r"_pg(?P<pg>true|false)_ph(?P<ph>true|false)$"
 )
 COMBO_RE_LEGACY = re.compile(
     r"mad(?P<mad>[^_]+)_tr(?P<tr>[^_]+)_pg(?P<pg>true|false)_ph(?P<ph>true|false)$"
@@ -55,9 +65,14 @@ class ComboRecord:
     tag: str
     path: str
     max_atom_disp: float
-    nr_threshold: float          # 0.0 for LM-damping runs
-    lm_mu: float                 # 0.0 for hard-filter runs
+    nr_threshold: float          # 0.0 for LM-damping / shifted NR runs
+    lm_mu: float                 # 0.0 for hard-filter / shifted NR runs
+    shift_epsilon: float         # 0.0 for non-shifted runs (v3)
     anneal_force_threshold: float
+    stagnation_window: int       # 0 for no stagnation escape (v3)
+    escape_alpha: float          # v3
+    lm_mu_anneal_factor: float   # 0.0 for no annealing (v3)
+    neg_mode_line_search: bool   # v3
     project_gradient_and_v: bool
     purify_hessian: bool
     n_samples: int
@@ -67,6 +82,8 @@ class ComboRecord:
     mean_steps_when_converged: float
     mean_wall_time: float
     total_wall_time: float
+    total_escapes: int = 0
+    total_line_searches: int = 0
     # cascade_table from the results JSON (may be empty for old runs)
     cascade_table: Dict[str, Any] = field(default_factory=dict)
     results: List[Dict[str, Any]] = field(default_factory=list)
@@ -120,6 +137,15 @@ def _parse_combo_tag(combo_tag: str) -> Optional[Dict[str, Any]]:
 
     Returns None if the tag can't be matched.
     """
+    # Default v3 fields
+    _v3_defaults = {
+        "shift_epsilon": 0.0,
+        "stagnation_window": 0,
+        "escape_alpha": 0.0,
+        "lm_mu_anneal_factor": 0.0,
+        "neg_mode_line_search": False,
+    }
+
     m = COMBO_RE_NRT.fullmatch(combo_tag)
     if m:
         return {
@@ -129,6 +155,7 @@ def _parse_combo_tag(combo_tag: str) -> Optional[Dict[str, Any]]:
             "anneal_force_threshold": _safe_float(m.group("af") or "0.0", 0.0),
             "project_gradient_and_v": m.group("pg") == "true",
             "purify_hessian": m.group("ph") == "true",
+            **_v3_defaults,
         }
 
     m = COMBO_RE_LM.fullmatch(combo_tag)
@@ -138,6 +165,27 @@ def _parse_combo_tag(combo_tag: str) -> Optional[Dict[str, Any]]:
             "nr_threshold": 0.0,
             "lm_mu": _safe_float(m.group("lmmu")),
             "anneal_force_threshold": 0.0,
+            "lm_mu_anneal_factor": _safe_float(m.group("af") or "0.0", 0.0),
+            "stagnation_window": int(_safe_float(m.group("sw") or "0", 0.0)),
+            "escape_alpha": _safe_float(m.group("ea") or "0.0", 0.0),
+            "shift_epsilon": 0.0,
+            "neg_mode_line_search": False,
+            "project_gradient_and_v": m.group("pg") == "true",
+            "purify_hessian": m.group("ph") == "true",
+        }
+
+    m = COMBO_RE_SHIFTED.fullmatch(combo_tag)
+    if m:
+        return {
+            "mad": _safe_float(m.group("mad")),
+            "nr_threshold": 0.0,
+            "lm_mu": 0.0,
+            "shift_epsilon": _safe_float(m.group("se")),
+            "anneal_force_threshold": 0.0,
+            "stagnation_window": int(_safe_float(m.group("sw") or "0", 0.0)),
+            "escape_alpha": _safe_float(m.group("ea") or "0.0", 0.0),
+            "lm_mu_anneal_factor": 0.0,
+            "neg_mode_line_search": m.group("ls") is not None,
             "project_gradient_and_v": m.group("pg") == "true",
             "purify_hessian": m.group("ph") == "true",
         }
@@ -151,6 +199,7 @@ def _parse_combo_tag(combo_tag: str) -> Optional[Dict[str, Any]]:
             "anneal_force_threshold": 0.0,
             "project_gradient_and_v": m.group("pg") == "true",
             "purify_hessian": m.group("ph") == "true",
+            **_v3_defaults,
         }
 
     return None
@@ -178,14 +227,24 @@ def load_records(grid_dir: Path, result_glob: str) -> List[ComboRecord]:
             payload = json.load(f)
 
         metrics = payload.get("metrics", {})
+        # Aggregate escape/line-search counts from per-sample results
+        per_sample_results = list(metrics.get("results", []))
+        total_escapes = sum(r.get("total_escapes", 0) for r in per_sample_results)
+        total_line_searches = sum(r.get("total_line_searches", 0) for r in per_sample_results)
+
         records.append(
             ComboRecord(
                 tag=combo_tag,
                 path=str(result_path),
                 max_atom_disp=parsed["mad"],
                 nr_threshold=parsed["nr_threshold"],
-                lm_mu=parsed["lm_mu"],
-                anneal_force_threshold=parsed["anneal_force_threshold"],
+                lm_mu=parsed.get("lm_mu", 0.0),
+                shift_epsilon=parsed.get("shift_epsilon", 0.0),
+                anneal_force_threshold=parsed.get("anneal_force_threshold", 0.0),
+                stagnation_window=int(parsed.get("stagnation_window", 0)),
+                escape_alpha=parsed.get("escape_alpha", 0.0),
+                lm_mu_anneal_factor=parsed.get("lm_mu_anneal_factor", 0.0),
+                neg_mode_line_search=bool(parsed.get("neg_mode_line_search", False)),
                 project_gradient_and_v=parsed["project_gradient_and_v"],
                 purify_hessian=parsed["purify_hessian"],
                 n_samples=int(metrics.get("n_samples", 0)),
@@ -195,8 +254,10 @@ def load_records(grid_dir: Path, result_glob: str) -> List[ComboRecord]:
                 mean_steps_when_converged=_safe_float(metrics.get("mean_steps_when_converged")),
                 mean_wall_time=_safe_float(metrics.get("mean_wall_time")),
                 total_wall_time=_safe_float(metrics.get("total_wall_time")),
+                total_escapes=total_escapes,
+                total_line_searches=total_line_searches,
                 cascade_table=metrics.get("cascade_table", {}),
-                results=list(metrics.get("results", [])),
+                results=per_sample_results,
             )
         )
 
@@ -299,18 +360,12 @@ def build_cascade_cross_table(records: List[ComboRecord]) -> Dict[str, Any]:
     (populated by run_minimization_parallel.py v2). Old runs without this field
     are silently skipped.
     """
-    # Collect unique nr_threshold values (rows) and eval thresholds (cols)
+    # Collect unique parameter values for each optimizer mode
     nrt_values = sorted({r.nr_threshold for r in records if r.nr_threshold > 0})
     lm_mu_values = sorted({r.lm_mu for r in records if r.lm_mu > 0})
+    se_values = sorted({r.shift_epsilon for r in records if r.shift_epsilon > 0})
 
-    # ---- Hard-filter runs (grouped by nr_threshold) ----
-    rows_nrt: List[Dict[str, Any]] = []
-    for nrt in nrt_values:
-        bucket = [r for r in records if math.isclose(r.nr_threshold, nrt, rel_tol=1e-6)
-                  and r.lm_mu == 0.0 and r.cascade_table]
-        if not bucket:
-            continue
-        row: Dict[str, Any] = {"optimizer_mode": f"hard_filter", "nr_threshold": nrt, "lm_mu": 0.0}
+    def _fill_eval_columns(bucket: List[ComboRecord], row: Dict[str, Any]) -> None:
         for thr in CASCADE_THRESHOLDS:
             rates = []
             for rec in bucket:
@@ -320,33 +375,47 @@ def build_cascade_cross_table(records: List[ComboRecord]) -> Dict[str, Any]:
                     rates.append(float(rate))
             row[f"eval_{thr}"] = _mean(rates)
         row["optimizer_strict_rate"] = _mean(r.convergence_rate for r in bucket)
+
+    # ---- Hard-filter runs (grouped by nr_threshold) ----
+    rows_nrt: List[Dict[str, Any]] = []
+    for nrt in nrt_values:
+        bucket = [r for r in records if math.isclose(r.nr_threshold, nrt, rel_tol=1e-6)
+                  and r.lm_mu == 0.0 and r.shift_epsilon == 0.0 and r.cascade_table]
+        if not bucket:
+            continue
+        row: Dict[str, Any] = {"optimizer_mode": "hard_filter", "nr_threshold": nrt, "lm_mu": 0.0, "shift_epsilon": 0.0}
+        _fill_eval_columns(bucket, row)
         rows_nrt.append(row)
 
     # ---- LM-damping runs (grouped by lm_mu) ----
     rows_lm: List[Dict[str, Any]] = []
     for mu in lm_mu_values:
         bucket = [r for r in records if math.isclose(r.lm_mu, mu, rel_tol=1e-6)
+                  and r.shift_epsilon == 0.0 and r.cascade_table]
+        if not bucket:
+            continue
+        row = {"optimizer_mode": "lm_damping", "nr_threshold": 0.0, "lm_mu": mu, "shift_epsilon": 0.0}
+        _fill_eval_columns(bucket, row)
+        rows_lm.append(row)
+
+    # ---- Shifted Newton runs (grouped by shift_epsilon) ----
+    rows_se: List[Dict[str, Any]] = []
+    for se in se_values:
+        bucket = [r for r in records if math.isclose(r.shift_epsilon, se, rel_tol=1e-6)
                   and r.cascade_table]
         if not bucket:
             continue
-        row = {"optimizer_mode": "lm_damping", "nr_threshold": 0.0, "lm_mu": mu}
-        for thr in CASCADE_THRESHOLDS:
-            rates = []
-            for rec in bucket:
-                ct = rec.cascade_table
-                rate = ct.get("rate_at_thr", {}).get(str(thr))
-                if rate is not None:
-                    rates.append(float(rate))
-            row[f"eval_{thr}"] = _mean(rates)
-        row["optimizer_strict_rate"] = _mean(r.convergence_rate for r in bucket)
-        rows_lm.append(row)
+        row = {"optimizer_mode": "shifted_newton", "nr_threshold": 0.0, "lm_mu": 0.0, "shift_epsilon": se}
+        _fill_eval_columns(bucket, row)
+        rows_se.append(row)
 
-    all_rows = rows_nrt + rows_lm
+    all_rows = rows_nrt + rows_lm + rows_se
 
     return {
         "eval_thresholds": CASCADE_THRESHOLDS,
         "nr_thresholds_tested": nrt_values,
         "lm_mu_tested": lm_mu_values,
+        "shift_epsilon_tested": se_values,
         "table": all_rows,
     }
 
@@ -372,7 +441,10 @@ def print_cascade_table(cross: Dict[str, Any]) -> None:
         mode = row.get("optimizer_mode", "?")
         nrt = row.get("nr_threshold", 0.0)
         mu = row.get("lm_mu", 0.0)
-        if mode == "lm_damping":
+        se = row.get("shift_epsilon", 0.0)
+        if mode == "shifted_newton":
+            label = f"SN  ε={se:g}"
+        elif mode == "lm_damping":
             label = f"LM  μ={mu:g}"
         else:
             label = f"HF  nrt={nrt:g}"
@@ -424,12 +496,23 @@ def print_report(
     for row in ranked[:actual_top_k]:
         steps = row.mean_steps_when_converged
         steps_text = f"{steps:.1f}" if math.isfinite(steps) else "nan"
-        lm_info = f" lm_mu={row.lm_mu:g}" if row.lm_mu > 0 else ""
+        extras = []
+        if row.lm_mu > 0:
+            extras.append(f"lm_mu={row.lm_mu:g}")
+        if row.shift_epsilon > 0:
+            extras.append(f"se={row.shift_epsilon:g}")
+        if row.stagnation_window > 0:
+            extras.append(f"sw={row.stagnation_window}")
+        if row.total_escapes > 0:
+            extras.append(f"escapes={row.total_escapes}")
+        if row.lm_mu_anneal_factor > 0:
+            extras.append(f"anneal={row.lm_mu_anneal_factor:g}")
+        extra_str = " " + " ".join(extras) if extras else ""
         print(
             f"  {row.tag}: conv={row.n_converged}/{row.n_samples} "
             f"({row.convergence_rate:.2f}), steps={steps_text}, "
             f"wall={row.mean_wall_time:.2f}s, errors={row.n_errors}"
-            f"{lm_info}"
+            f"{extra_str}"
         )
     print("")
 
@@ -494,7 +577,7 @@ def write_cascade_csv(path: Path, cross: Dict[str, Any]) -> None:
     if not table:
         return
     thresholds = cross.get("eval_thresholds", CASCADE_THRESHOLDS)
-    fieldnames = ["optimizer_mode", "nr_threshold", "lm_mu"]
+    fieldnames = ["optimizer_mode", "nr_threshold", "lm_mu", "shift_epsilon"]
     fieldnames += [f"eval_{t}" for t in thresholds]
     fieldnames += ["optimizer_strict_rate"]
     with open(path, "w", newline="") as f:
@@ -551,6 +634,9 @@ def main() -> None:
         "max_atom_disp": summarize_main_effect(records, "max_atom_disp"),
         "nr_threshold": summarize_main_effect(records, "nr_threshold"),
         "lm_mu": summarize_main_effect(records, "lm_mu"),
+        "shift_epsilon": summarize_main_effect(records, "shift_epsilon"),
+        "stagnation_window": summarize_main_effect(records, "stagnation_window"),
+        "lm_mu_anneal_factor": summarize_main_effect(records, "lm_mu_anneal_factor"),
         "project_gradient_and_v": summarize_main_effect(records, "project_gradient_and_v"),
         "purify_hessian": summarize_main_effect(records, "purify_hessian"),
     }
@@ -594,7 +680,12 @@ def main() -> None:
                 "max_atom_disp": r.max_atom_disp,
                 "nr_threshold": r.nr_threshold,
                 "lm_mu": r.lm_mu,
+                "shift_epsilon": r.shift_epsilon,
                 "anneal_force_threshold": r.anneal_force_threshold,
+                "stagnation_window": r.stagnation_window,
+                "escape_alpha": r.escape_alpha,
+                "lm_mu_anneal_factor": r.lm_mu_anneal_factor,
+                "neg_mode_line_search": r.neg_mode_line_search,
                 "project_gradient_and_v": r.project_gradient_and_v,
                 "purify_hessian": r.purify_hessian,
                 "n_samples": r.n_samples,
@@ -604,6 +695,8 @@ def main() -> None:
                 "mean_steps_when_converged": r.mean_steps_when_converged,
                 "mean_wall_time": r.mean_wall_time,
                 "total_wall_time": r.total_wall_time,
+                "total_escapes": r.total_escapes,
+                "total_line_searches": r.total_line_searches,
                 "path": r.path,
             }
             for idx, r in enumerate(ranked)
@@ -613,9 +706,13 @@ def main() -> None:
             ranked_rows,
             [
                 "rank", "tag", "max_atom_disp", "nr_threshold", "lm_mu",
-                "anneal_force_threshold", "project_gradient_and_v", "purify_hessian",
+                "shift_epsilon", "anneal_force_threshold",
+                "stagnation_window", "escape_alpha", "lm_mu_anneal_factor",
+                "neg_mode_line_search",
+                "project_gradient_and_v", "purify_hessian",
                 "n_samples", "n_converged", "n_errors", "convergence_rate",
-                "mean_steps_when_converged", "mean_wall_time", "total_wall_time", "path",
+                "mean_steps_when_converged", "mean_wall_time", "total_wall_time",
+                "total_escapes", "total_line_searches", "path",
             ],
         )
         write_csv(

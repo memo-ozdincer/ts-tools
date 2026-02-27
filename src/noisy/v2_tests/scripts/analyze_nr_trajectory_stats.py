@@ -42,8 +42,12 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
 
+# Accept all folder tag formats: legacy (tr), v2 (nrt, lmmu), v3 (se)
+# We only need the combo tag string for grouping; we don't parse individual params here.
 COMBO_RE = re.compile(
-    r"mad(?P<mad>[^_]+)_tr(?P<tr>[^_]+)_pg(?P<pg>true|false)_ph(?P<ph>true|false)$"
+    r"mad(?P<mad>[^_]+)_"
+    r"(?:tr|nrt|lmmu|se)"
+    r".+"  # rest of the tag
 )
 
 
