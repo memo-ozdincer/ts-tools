@@ -339,10 +339,19 @@ def _nr_step_shifted_newton(
     So the step is more aggressive along the problematic directions.
 
     As σ→0 near a true minimum, this recovers the pure Newton step.
+
+    Safety: shifted_lam is clamped to ≥ shift_epsilon so that when lam_min ≈ 0
+    (near a flat/converged geometry) the shift σ ≈ shift_epsilon does not make
+    near-zero modes explode.  Without this, a mode with λ ≈ 0 gets
+    weight 1/shift_epsilon which is 1e4 for ε=1e-4 — blowing up the step.
     """
     lam_min = float(lam_all.min().item())
     sigma = max(0.0, -lam_min) + shift_epsilon
-    shifted_lam = lam_all + sigma  # all positive
+    shifted_lam = lam_all + sigma  # nominally all positive
+    # Clamp: no shifted eigenvalue may be smaller than shift_epsilon.
+    # This caps the maximum weight at 1/shift_epsilon and prevents explosive
+    # steps when near-zero modes remain after the shift is applied.
+    shifted_lam = torch.clamp(shifted_lam, min=shift_epsilon)
     coeffs = V_all.T @ grad
     nr_step = V_all @ (coeffs / shifted_lam)
     delta_x = -nr_step

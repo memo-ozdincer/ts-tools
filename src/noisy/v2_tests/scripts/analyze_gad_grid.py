@@ -55,12 +55,33 @@ COMBO_RE_TRFILT = re.compile(
 COMBO_RE_LEGACY = re.compile(
     r"mad(?P<mad>[^_]+)_tr(?P<tr>[^_]+)_bl(?P<bl>.+)_pg(?P<pg>true|false)$"
 )
+# Phase D (v3): {step_mode}_mad{mad}_sft{sft}_ao{ao}_cf{cf}_cl{cl}
+COMBO_RE_V3 = re.compile(
+    r"(?P<step_mode>first_order|newton_gad)_mad(?P<mad>[^_]+)_sft(?P<sft>[^_]+)_ao(?P<ao>T|F)_cf(?P<cf>T|F)_cl(?P<cl>\d+)$"
+)
 
 # Cascade thresholds must match CASCADE_THRESHOLDS in run_gad_baselines_parallel.py
 CASCADE_THRESHOLDS: List[float] = [0.0, 1e-4, 5e-4, 1e-3, 2e-3, 5e-3, 8e-3, 1e-2]
 
 
 def _parse_combo_tag(combo_tag: str) -> Optional[Dict[str, Any]]:
+    # Phase D (v3) pattern
+    m = COMBO_RE_V3.fullmatch(combo_tag)
+    if m:
+        return {
+            "mad": _safe_float(m.group("mad")),
+            "tr": 8e-3,  # TR_DIAGNOSTIC from slurm script
+            "trf": float("nan"),
+            "tr_filter_eig": False,
+            "bl": "mode_tracked",
+            "pg": True,
+            "tse": 1e-5,
+            "step_mode": m.group("step_mode"),
+            "step_filter_threshold": _safe_float(m.group("sft")),
+            "anti_overshoot": m.group("ao") == "T",
+            "converge_on_filtered": m.group("cf") == "T",
+            "cleanup_steps": int(m.group("cl")),
+        }
     # Phase A/B pattern
     m = COMBO_RE_NEW.fullmatch(combo_tag)
     if m:
@@ -119,6 +140,11 @@ class ComboRecord:
     mean_wall_time: float
     total_wall_time: float
     neg_vib_counts: Dict[int, int]
+    step_mode: str = "first_order"
+    step_filter_threshold: float = float("nan")
+    anti_overshoot: bool = False
+    converge_on_filtered: bool = False
+    cleanup_steps: int = 0
     # cascade_table from results JSON (may be empty for old runs)
     cascade_table: Dict[str, Any] = field(default_factory=dict)
     results: List[Dict[str, Any]] = field(default_factory=list)
@@ -192,6 +218,11 @@ def load_records(grid_dir: Path, result_glob: str) -> List[ComboRecord]:
                 mean_wall_time=_safe_float(metrics.get("mean_wall_time")),
                 total_wall_time=_safe_float(metrics.get("total_wall_time")),
                 neg_vib_counts=neg_vib_counts,
+                step_mode=parsed.get("step_mode", "first_order"),
+                step_filter_threshold=parsed.get("step_filter_threshold", float("nan")),
+                anti_overshoot=parsed.get("anti_overshoot", False),
+                converge_on_filtered=parsed.get("converge_on_filtered", False),
+                cleanup_steps=parsed.get("cleanup_steps", 0),
                 cascade_table=metrics.get("cascade_table", {}),
                 results=list(metrics.get("results", [])),
             )
@@ -245,6 +276,23 @@ def summarize_mad_tr_interaction(records: List[ComboRecord]) -> List[Dict[str, A
         for tr in trs:
             bucket = [r for r in records if r.max_atom_disp == mad and r.tr_threshold == tr]
             row[f"tr_{tr:g}"] = _mean(r.success_rate for r in bucket)
+        table.append(row)
+    return table
+
+
+def summarize_mad_sft_interaction(records: List[ComboRecord]) -> List[Dict[str, Any]]:
+    mads = sorted({r.max_atom_disp for r in records})
+    sfts = sorted({r.step_filter_threshold for r in records if not math.isnan(r.step_filter_threshold)})
+
+    if not sfts:
+        return []
+
+    table: List[Dict[str, Any]] = []
+    for mad in mads:
+        row: Dict[str, Any] = {"max_atom_disp": mad}
+        for sft in sfts:
+            bucket = [r for r in records if r.max_atom_disp == mad and r.step_filter_threshold == sft]
+            row[f"sft_{sft:g}"] = _mean(r.success_rate for r in bucket)
         table.append(row)
     return table
 
@@ -564,6 +612,7 @@ def print_report(
     top_k: int,
     main_effects: Dict[str, List[Dict[str, Any]]],
     mad_tr_table: List[Dict[str, Any]],
+    mad_sft_table: List[Dict[str, Any]],
     baseline_table: List[Dict[str, Any]],
     sample_hardness: List[Dict[str, Any]],
     neg_vib_dist: Dict[str, Any],
@@ -636,6 +685,17 @@ def print_report(
             parts.append(f"{key.replace('tr_', 'tr=')}:{val_text}")
         print("  " + ", ".join(parts))
     print("")
+
+    if mad_sft_table:
+        print("Interaction: mean success rate by max_atom_disp x step_filter_threshold")
+        for row in mad_sft_table:
+            parts = [f"mad={row['max_atom_disp']:g}"]
+            for key in sorted(k for k in row if k.startswith("sft_")):
+                val = row[key]
+                val_text = f"{val:.2f}" if math.isfinite(val) else "nan"
+                parts.append(f"{key.replace('sft_', 'sft=')}:{val_text}")
+            print("  " + ", ".join(parts))
+        print("")
 
     print("Interaction: plain vs mode_tracked at each (mad, tr)")
     for row in baseline_table:
@@ -731,11 +791,17 @@ def main() -> None:
         "baseline": summarize_main_effect(records, "baseline"),
         "project_gradient_and_v": summarize_main_effect(records, "project_gradient_and_v"),
         "tr_filter_eig": summarize_main_effect(records, "tr_filter_eig"),
+        "step_mode": summarize_main_effect(records, "step_mode"),
+        "step_filter_threshold": summarize_main_effect(records, "step_filter_threshold"),
+        "anti_overshoot": summarize_main_effect(records, "anti_overshoot"),
+        "converge_on_filtered": summarize_main_effect(records, "converge_on_filtered"),
+        "cleanup_steps": summarize_main_effect(records, "cleanup_steps"),
     }
     # Drop constant axes
     main_effects = {k: v for k, v in main_effects.items() if len(v) > 1}
 
     mad_tr_table = summarize_mad_tr_interaction(records)
+    mad_sft_table = summarize_mad_sft_interaction(records)
     baseline_table = summarize_baseline_interaction(records)
     sample_hardness = summarize_sample_hardness(records)
     neg_vib_dist = summarize_neg_vib_distribution(records)
@@ -748,6 +814,7 @@ def main() -> None:
         top_k=args.top_k,
         main_effects=main_effects,
         mad_tr_table=mad_tr_table,
+        mad_sft_table=mad_sft_table,
         baseline_table=baseline_table,
         sample_hardness=sample_hardness,
         neg_vib_dist=neg_vib_dist,
@@ -767,6 +834,7 @@ def main() -> None:
             "best_config": asdict(ranked[0]),
             "main_effects": main_effects,
             "mad_tr_interaction": mad_tr_table,
+            "mad_sft_interaction": mad_sft_table,
             "baseline_interaction": baseline_table,
             "sample_hardness": sample_hardness,
             "neg_vib_distribution": neg_vib_dist,
@@ -787,6 +855,11 @@ def main() -> None:
                 "baseline": r.baseline,
                 "project_gradient_and_v": r.project_gradient_and_v,
                 "tr_filter_eig": r.tr_filter_eig,
+                "step_mode": r.step_mode,
+                "step_filter_threshold": r.step_filter_threshold,
+                "anti_overshoot": r.anti_overshoot,
+                "converge_on_filtered": r.converge_on_filtered,
+                "cleanup_steps": r.cleanup_steps,
                 "n_samples": r.n_samples,
                 "n_success": r.n_success,
                 "n_errors": r.n_errors,
@@ -804,6 +877,8 @@ def main() -> None:
             [
                 "rank", "tag", "max_atom_disp", "tr_threshold", "ts_eps",
                 "baseline", "project_gradient_and_v", "tr_filter_eig",
+                "step_mode", "step_filter_threshold", "anti_overshoot",
+                "converge_on_filtered", "cleanup_steps",
                 "n_samples", "n_success", "n_errors", "success_rate",
                 "mean_steps_when_success", "mean_wall_time", "total_wall_time", "path",
             ],
