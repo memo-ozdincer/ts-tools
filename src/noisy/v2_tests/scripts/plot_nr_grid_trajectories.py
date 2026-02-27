@@ -6,8 +6,8 @@ and creates six plots per trajectory:
 1) Trust radius vs actual displacement
 2) Force norm and retries
 3) Hessian condition number
-4) Largest vibrational eigenvalue over time
-5) Smallest vibrational eigenvalue over time
+4) Largest |eigenvalue| used in condition-number numerator
+5) Smallest |eigenvalue| used in condition-number denominator
 6) Cascading n_neg counts over time for all logged thresholds
 """
 
@@ -52,6 +52,57 @@ def _select_evenly_spaced(files, n_select):
     return selected
 
 
+def _robust_ylim(values, *, iqr_mult=3.0, include=None):
+    """Compute robust y-limits by clipping IQR outliers."""
+    arr = np.asarray(values, dtype=float)
+    arr = arr[np.isfinite(arr)]
+    if arr.size == 0:
+        return None
+
+    q1, q3 = np.quantile(arr, [0.25, 0.75])
+    iqr = q3 - q1
+    if iqr > 0:
+        low_clip = q1 - iqr_mult * iqr
+        high_clip = q3 + iqr_mult * iqr
+        core = arr[(arr >= low_clip) & (arr <= high_clip)]
+        if core.size > 0:
+            low = float(core.min())
+            high = float(core.max())
+        else:
+            low = float(arr.min())
+            high = float(arr.max())
+    else:
+        low = float(np.quantile(arr, 0.05))
+        high = float(np.quantile(arr, 0.95))
+
+    if include is not None:
+        for v in include:
+            if np.isfinite(v):
+                low = min(low, float(v))
+                high = max(high, float(v))
+
+    if low == high:
+        pad = abs(low) * 0.1 if low != 0 else 1.0
+        return low - pad, high + pad
+
+    pad = 0.08 * (high - low)
+    return low - pad, high + pad
+
+
+def _robust_log_ylim(values, *, iqr_mult=3.0):
+    """Robust y-limits in log-space for positive-valued series."""
+    arr = np.asarray(values, dtype=float)
+    arr = arr[np.isfinite(arr) & (arr > 0)]
+    if arr.size == 0:
+        return None
+
+    log_arr = np.log10(arr)
+    lim = _robust_ylim(log_arr, iqr_mult=iqr_mult)
+    if lim is None:
+        return None
+    return float(10 ** lim[0]), float(10 ** lim[1])
+
+
 def plot_trajectory(traj_path: Path, output_dir: Path):
     with open(traj_path) as f:
         data = json.load(f)
@@ -70,15 +121,43 @@ def plot_trajectory(traj_path: Path, output_dir: Path):
     retries = [t.get("retries", 0) for t in trajectory]
     cond_nums = [t.get("cond_num", np.nan) for t in trajectory]
     force_norms = [t.get("force_norm", np.nan) for t in trajectory]
-    max_vib_evals = [t.get("max_vib_eval", np.nan) for t in trajectory]
-    min_vib_evals = [t.get("min_vib_eval", np.nan) for t in trajectory]
+
+    # Reconstruct the exact eigenvalue magnitudes used by cond_num:
+    # cond_num = max_abs_eval / min_abs_eval
+    # max_abs_eval can be reconstructed from min/max signed eigenvalues.
+    max_abs_vib_evals = []
+    min_abs_vib_evals = []
+    for t in trajectory:
+        min_eval = t.get("min_vib_eval", np.nan)
+        max_eval = t.get("max_vib_eval", np.nan)
+        cond = t.get("cond_num", np.nan)
+
+        if np.isfinite(min_eval) and np.isfinite(max_eval):
+            max_abs = max(abs(float(min_eval)), abs(float(max_eval)))
+        else:
+            max_abs = np.nan
+
+        if np.isfinite(cond) and cond > 0 and np.isfinite(max_abs):
+            min_abs = np.nan if np.isinf(cond) else (max_abs / float(cond))
+        else:
+            min_abs = np.nan
+
+        max_abs_vib_evals.append(max_abs)
+        min_abs_vib_evals.append(min_abs)
+
     cascade_thresholds = _get_threshold_keys(trajectory)
-    
-    fig, axs = plt.subplots(6, 1, figsize=(12, 22), sharex=True)
+
+    fig, axs = plt.subplots(3, 2, figsize=(16, 12), sharex='col')
     fig.suptitle(f"Minimization Trajectory: {sample_id} ({method})", fontsize=14)
-    
+
+    ax = axs[0, 0]
+    ax2 = axs[0, 1]
+    ax3 = axs[1, 0]
+    ax4 = axs[1, 1]
+    ax5 = axs[2, 0]
+    ax6 = axs[2, 1]
+
     # Plot 1: Trust Radius vs Actual Displacement
-    ax = axs[0]
     ax.plot(steps, trust_radii, label="Trust Radius Limit", linestyle="--", color="blue", alpha=0.7)
     ax.plot(steps, actual_disps, label="Actual Max Atom Displacement", color="green")
     
@@ -95,7 +174,6 @@ def plot_trajectory(traj_path: Path, output_dir: Path):
     ax.set_title("Step Size Evolution")
     
     # Plot 2: Retries and Force Norm
-    ax2 = axs[1]
     color = 'tab:orange'
     ax2.set_ylabel('Force Norm (eV/Å)', color=color)
     ax2.plot(steps, force_norms, color=color, label="Force Norm")
@@ -112,30 +190,37 @@ def plot_trajectory(traj_path: Path, output_dir: Path):
     ax2.grid(True, alpha=0.3)
     
     # Plot 3: Condition Number
-    ax3 = axs[2]
     ax3.plot(steps, cond_nums, color="brown")
     ax3.set_ylabel("Condition Number")
     ax3.set_yscale('log')
     ax3.set_title("Hessian Condition Number (|λ_max| / |λ_min|)")
     ax3.grid(True, alpha=0.3)
+    cond_ylim = _robust_log_ylim(cond_nums, iqr_mult=3.0)
+    if cond_ylim is not None:
+        ax3.set_ylim(*cond_ylim)
 
-    # Plot 4: Maximum Eigenvalue
-    ax4 = axs[3]
-    ax4.plot(steps, max_vib_evals, color="steelblue")
-    ax4.set_ylabel("Max Eigenvalue")
-    ax4.set_title("Largest Vibrational Eigenvalue Over Time")
+    # Plot 4: Largest absolute eigenvalue used in cond_num numerator
+    ax4.plot(steps, max_abs_vib_evals, color="steelblue")
+    ax4.set_ylabel("Eigenvalue Magnitude")
+    ax4.set_yscale('log')
+    ax4.set_title("Largest |Eigenvalue| Used in Condition Number")
     ax4.grid(True, alpha=0.3)
+    max_abs_ylim = _robust_log_ylim(max_abs_vib_evals, iqr_mult=3.0)
+    if max_abs_ylim is not None:
+        ax4.set_ylim(*max_abs_ylim)
 
-    # Plot 5: Minimum Eigenvalue
-    ax5 = axs[4]
-    ax5.plot(steps, min_vib_evals, color="darkred")
-    ax5.axhline(0.0, color="black", linewidth=1.0, alpha=0.4)
-    ax5.set_ylabel("Min Eigenvalue")
-    ax5.set_title("Smallest Vibrational Eigenvalue Over Time")
+    # Plot 5: Smallest absolute eigenvalue used in cond_num denominator
+    ax5.plot(steps, min_abs_vib_evals, color="darkred")
+    ax5.set_ylabel("Eigenvalue Magnitude")
+    ax5.set_yscale('log')
+    ax5.set_title("Smallest |Eigenvalue| Used in Condition Number")
     ax5.grid(True, alpha=0.3)
+    min_abs_ylim = _robust_log_ylim(min_abs_vib_evals, iqr_mult=3.0)
+    if min_abs_ylim is not None:
+        ax5.set_ylim(*min_abs_ylim)
+    ax5.set_xlabel("Step")
 
     # Plot 6: Cascading n_neg thresholds over full trajectory
-    ax6 = axs[5]
     style_map = {
         0.01: ("black", "--"),
         0.001: ("hotpink", "-"),
