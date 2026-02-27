@@ -123,6 +123,26 @@ def classify_trajectory(traj_data: Dict[str, Any]) -> Dict[str, Any]:
     final_tr = valid_tr[-1] if valid_tr else float("nan")
     min_tr = min(valid_tr) if valid_tr else float("nan")
 
+    # --- v4 diagnostics ---
+    total_mode_follows = traj_data.get("total_mode_follows", 0)
+
+    # Blind correction info from final step
+    blind_info = last.get("blind_correction", {})
+    n_blind_corrections = blind_info.get("n_blind_modes", 0)
+
+    # Neg-mode trust radius from final step
+    final_neg_tr = last.get("neg_trust_radius")
+    if final_neg_tr is None:
+        final_neg_tr = float("nan")
+
+    # Count escape accepted/rejected events
+    escape_accepted_count = sum(1 for s in trajectory if s.get("escape_accepted"))
+    escape_rejected_count = sum(1 for s in trajectory if s.get("escape_rejected"))
+
+    # Mode-follow events
+    mode_follow_steps = [s.get("step", i) for i, s in enumerate(trajectory)
+                         if s.get("mode_follow_triggered")]
+
     # --- Classification ---
     if final_n_neg >= 0 and abs(final_min_eval) < 2e-3 and final_n_neg <= 3:
         classification = "almost_converged"
@@ -162,6 +182,13 @@ def classify_trajectory(traj_data: Dict[str, Any]) -> Dict[str, Any]:
         "n_escape_events": len(escape_steps),
         "final_trust_radius": final_tr,
         "min_trust_radius": min_tr,
+        # v4 diagnostics
+        "total_mode_follows": total_mode_follows,
+        "n_blind_corrections": n_blind_corrections,
+        "final_neg_trust_radius": final_neg_tr,
+        "escape_accepted_count": escape_accepted_count,
+        "escape_rejected_count": escape_rejected_count,
+        "n_mode_follow_events": len(mode_follow_steps),
     }
 
 
@@ -296,6 +323,9 @@ def main() -> None:
         "min_grad_overlap", "step_along_neg_frac",
         "total_escapes", "total_line_searches",
         "final_trust_radius", "min_trust_radius",
+        # v4
+        "total_mode_follows", "n_blind_corrections", "final_neg_trust_radius",
+        "escape_accepted_count", "escape_rejected_count", "n_mode_follow_events",
     ]
     with open(csv_path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")

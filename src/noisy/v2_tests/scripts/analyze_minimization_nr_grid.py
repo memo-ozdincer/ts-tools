@@ -46,6 +46,21 @@ COMBO_RE_LM = re.compile(
     r"(?:_(?P<diag>diag[^_]*))?"
     r"_pg(?P<pg>true|false)_ph(?P<ph>true|false)$"
 )
+# v4 shifted Newton with optional v4 features
+# mad<v>_se<v>[_ntf<v>][_bmt<v>_bca<v>][_atr][_sw<v>_ea<v>[_ebd]][_ls][_mft<v>][_mfa<v>]_pg<bool>_ph<bool>
+COMBO_RE_SHIFTED_V4 = re.compile(
+    r"mad(?P<mad>[^_]+)_se(?P<se>[^_]+)"
+    r"(?:_ntf(?P<ntf>[^_]+))?"
+    r"(?:_bmt(?P<bmt>[^_]+)_bca(?P<bca>[^_]+))?"
+    r"(?:_(?P<atr>atr))?"
+    r"(?:_sw(?P<sw>[^_]+)_ea(?P<ea>[^_]+))?"
+    r"(?:_(?P<ebd>ebd))?"
+    r"(?:_(?P<ls>ls))?"
+    r"(?:_mft(?P<mft>[^_]+))?"
+    r"(?:_mfa(?P<mfa>[^_]+))?"
+    r"_pg(?P<pg>true|false)_ph(?P<ph>true|false)$"
+)
+# v3 shifted Newton (simpler tag format, tried after v4)
 COMBO_RE_SHIFTED = re.compile(
     r"mad(?P<mad>[^_]+)_se(?P<se>[^_]+)"
     r"(?:_sw(?P<sw>[^_]+)_ea(?P<ea>[^_]+))?"
@@ -84,6 +99,14 @@ class ComboRecord:
     total_wall_time: float
     total_escapes: int = 0
     total_line_searches: int = 0
+    # v4 fields
+    neg_trust_floor: float = 0.0
+    blind_mode_threshold: float = 0.0
+    blind_correction_alpha: float = 0.02
+    aggressive_trust_recovery: bool = False
+    escape_bidirectional: bool = False
+    mode_follow_eval_threshold: float = 0.0
+    total_mode_follows: int = 0
     # cascade_table from the results JSON (may be empty for old runs)
     cascade_table: Dict[str, Any] = field(default_factory=dict)
     results: List[Dict[str, Any]] = field(default_factory=list)
@@ -145,6 +168,15 @@ def _parse_combo_tag(combo_tag: str) -> Optional[Dict[str, Any]]:
         "lm_mu_anneal_factor": 0.0,
         "neg_mode_line_search": False,
     }
+    # Default v4 fields
+    _v4_defaults = {
+        "neg_trust_floor": 0.0,
+        "blind_mode_threshold": 0.0,
+        "blind_correction_alpha": 0.02,
+        "aggressive_trust_recovery": False,
+        "escape_bidirectional": False,
+        "mode_follow_eval_threshold": 0.0,
+    }
 
     m = COMBO_RE_NRT.fullmatch(combo_tag)
     if m:
@@ -156,6 +188,7 @@ def _parse_combo_tag(combo_tag: str) -> Optional[Dict[str, Any]]:
             "project_gradient_and_v": m.group("pg") == "true",
             "purify_hessian": m.group("ph") == "true",
             **_v3_defaults,
+            **_v4_defaults,
         }
 
     m = COMBO_RE_LM.fullmatch(combo_tag)
@@ -172,8 +205,34 @@ def _parse_combo_tag(combo_tag: str) -> Optional[Dict[str, Any]]:
             "neg_mode_line_search": False,
             "project_gradient_and_v": m.group("pg") == "true",
             "purify_hessian": m.group("ph") == "true",
+            **_v4_defaults,
         }
 
+    # Try v4 shifted newton first (more specific regex)
+    m = COMBO_RE_SHIFTED_V4.fullmatch(combo_tag)
+    if m:
+        return {
+            "mad": _safe_float(m.group("mad")),
+            "nr_threshold": 0.0,
+            "lm_mu": 0.0,
+            "shift_epsilon": _safe_float(m.group("se")),
+            "anneal_force_threshold": 0.0,
+            "stagnation_window": int(_safe_float(m.group("sw") or "0", 0.0)),
+            "escape_alpha": _safe_float(m.group("ea") or "0.0", 0.0),
+            "lm_mu_anneal_factor": 0.0,
+            "neg_mode_line_search": m.group("ls") is not None,
+            "project_gradient_and_v": m.group("pg") == "true",
+            "purify_hessian": m.group("ph") == "true",
+            # v4 fields
+            "neg_trust_floor": _safe_float(m.group("ntf") or "0.0", 0.0),
+            "blind_mode_threshold": _safe_float(m.group("bmt") or "0.0", 0.0),
+            "blind_correction_alpha": _safe_float(m.group("bca") or "0.02", 0.02),
+            "aggressive_trust_recovery": m.group("atr") is not None,
+            "escape_bidirectional": m.group("ebd") is not None,
+            "mode_follow_eval_threshold": _safe_float(m.group("mft") or "0.0", 0.0),
+        }
+
+    # v3 shifted newton (simpler tag, fallback)
     m = COMBO_RE_SHIFTED.fullmatch(combo_tag)
     if m:
         return {
@@ -188,6 +247,7 @@ def _parse_combo_tag(combo_tag: str) -> Optional[Dict[str, Any]]:
             "neg_mode_line_search": m.group("ls") is not None,
             "project_gradient_and_v": m.group("pg") == "true",
             "purify_hessian": m.group("ph") == "true",
+            **_v4_defaults,
         }
 
     m = COMBO_RE_LEGACY.fullmatch(combo_tag)
@@ -200,6 +260,7 @@ def _parse_combo_tag(combo_tag: str) -> Optional[Dict[str, Any]]:
             "project_gradient_and_v": m.group("pg") == "true",
             "purify_hessian": m.group("ph") == "true",
             **_v3_defaults,
+            **_v4_defaults,
         }
 
     return None
@@ -227,10 +288,11 @@ def load_records(grid_dir: Path, result_glob: str) -> List[ComboRecord]:
             payload = json.load(f)
 
         metrics = payload.get("metrics", {})
-        # Aggregate escape/line-search counts from per-sample results
+        # Aggregate escape/line-search/mode-follow counts from per-sample results
         per_sample_results = list(metrics.get("results", []))
         total_escapes = sum(r.get("total_escapes", 0) for r in per_sample_results)
         total_line_searches = sum(r.get("total_line_searches", 0) for r in per_sample_results)
+        total_mode_follows = sum(r.get("total_mode_follows", 0) for r in per_sample_results)
 
         records.append(
             ComboRecord(
@@ -256,6 +318,14 @@ def load_records(grid_dir: Path, result_glob: str) -> List[ComboRecord]:
                 total_wall_time=_safe_float(metrics.get("total_wall_time")),
                 total_escapes=total_escapes,
                 total_line_searches=total_line_searches,
+                # v4 fields
+                neg_trust_floor=parsed.get("neg_trust_floor", 0.0),
+                blind_mode_threshold=parsed.get("blind_mode_threshold", 0.0),
+                blind_correction_alpha=parsed.get("blind_correction_alpha", 0.02),
+                aggressive_trust_recovery=bool(parsed.get("aggressive_trust_recovery", False)),
+                escape_bidirectional=bool(parsed.get("escape_bidirectional", False)),
+                mode_follow_eval_threshold=parsed.get("mode_follow_eval_threshold", 0.0),
+                total_mode_follows=total_mode_follows,
                 cascade_table=metrics.get("cascade_table", {}),
                 results=per_sample_results,
             )
@@ -507,6 +577,18 @@ def print_report(
             extras.append(f"escapes={row.total_escapes}")
         if row.lm_mu_anneal_factor > 0:
             extras.append(f"anneal={row.lm_mu_anneal_factor:g}")
+        if row.neg_trust_floor > 0:
+            extras.append(f"ntf={row.neg_trust_floor:g}")
+        if row.blind_mode_threshold > 0:
+            extras.append(f"bmt={row.blind_mode_threshold:g}")
+        if row.aggressive_trust_recovery:
+            extras.append("atr")
+        if row.escape_bidirectional:
+            extras.append("ebd")
+        if row.mode_follow_eval_threshold > 0:
+            extras.append(f"mft={row.mode_follow_eval_threshold:g}")
+        if row.total_mode_follows > 0:
+            extras.append(f"mode_follows={row.total_mode_follows}")
         extra_str = " " + " ".join(extras) if extras else ""
         print(
             f"  {row.tag}: conv={row.n_converged}/{row.n_samples} "
@@ -637,6 +719,11 @@ def main() -> None:
         "shift_epsilon": summarize_main_effect(records, "shift_epsilon"),
         "stagnation_window": summarize_main_effect(records, "stagnation_window"),
         "lm_mu_anneal_factor": summarize_main_effect(records, "lm_mu_anneal_factor"),
+        "neg_trust_floor": summarize_main_effect(records, "neg_trust_floor"),
+        "blind_mode_threshold": summarize_main_effect(records, "blind_mode_threshold"),
+        "aggressive_trust_recovery": summarize_main_effect(records, "aggressive_trust_recovery"),
+        "escape_bidirectional": summarize_main_effect(records, "escape_bidirectional"),
+        "mode_follow_eval_threshold": summarize_main_effect(records, "mode_follow_eval_threshold"),
         "project_gradient_and_v": summarize_main_effect(records, "project_gradient_and_v"),
         "purify_hessian": summarize_main_effect(records, "purify_hessian"),
     }
@@ -686,6 +773,12 @@ def main() -> None:
                 "escape_alpha": r.escape_alpha,
                 "lm_mu_anneal_factor": r.lm_mu_anneal_factor,
                 "neg_mode_line_search": r.neg_mode_line_search,
+                "neg_trust_floor": r.neg_trust_floor,
+                "blind_mode_threshold": r.blind_mode_threshold,
+                "blind_correction_alpha": r.blind_correction_alpha,
+                "aggressive_trust_recovery": r.aggressive_trust_recovery,
+                "escape_bidirectional": r.escape_bidirectional,
+                "mode_follow_eval_threshold": r.mode_follow_eval_threshold,
                 "project_gradient_and_v": r.project_gradient_and_v,
                 "purify_hessian": r.purify_hessian,
                 "n_samples": r.n_samples,
@@ -697,6 +790,7 @@ def main() -> None:
                 "total_wall_time": r.total_wall_time,
                 "total_escapes": r.total_escapes,
                 "total_line_searches": r.total_line_searches,
+                "total_mode_follows": r.total_mode_follows,
                 "path": r.path,
             }
             for idx, r in enumerate(ranked)
@@ -709,10 +803,14 @@ def main() -> None:
                 "shift_epsilon", "anneal_force_threshold",
                 "stagnation_window", "escape_alpha", "lm_mu_anneal_factor",
                 "neg_mode_line_search",
+                "neg_trust_floor", "blind_mode_threshold",
+                "blind_correction_alpha", "aggressive_trust_recovery",
+                "escape_bidirectional", "mode_follow_eval_threshold",
                 "project_gradient_and_v", "purify_hessian",
                 "n_samples", "n_converged", "n_errors", "convergence_rate",
                 "mean_steps_when_converged", "mean_wall_time", "total_wall_time",
-                "total_escapes", "total_line_searches", "path",
+                "total_escapes", "total_line_searches",
+                "total_mode_follows", "path",
             ],
         )
         write_csv(

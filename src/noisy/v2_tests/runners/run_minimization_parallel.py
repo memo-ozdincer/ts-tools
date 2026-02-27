@@ -156,6 +156,15 @@ def run_single_sample(
                 lm_mu_anneal_eval_leq=params.get("lm_mu_anneal_eval_leq", 5e-3),
                 neg_mode_line_search=params.get("neg_mode_line_search", False),
                 trust_radius_floor=params.get("trust_radius_floor", 0.01),
+                # v4
+                neg_trust_floor=params.get("neg_trust_floor", 0.0),
+                blind_mode_threshold=params.get("blind_mode_threshold", 0.0),
+                blind_correction_alpha=params.get("blind_correction_alpha", 0.02),
+                aggressive_trust_recovery=params.get("aggressive_trust_recovery", False),
+                escape_bidirectional=params.get("escape_bidirectional", False),
+                mode_follow_eval_threshold=params.get("mode_follow_eval_threshold", 0.0),
+                mode_follow_alpha=params.get("mode_follow_alpha", 0.15),
+                mode_follow_after_steps=params.get("mode_follow_after_steps", 2000),
             )
         else:
             raise ValueError(f"Unknown method: {method}")
@@ -185,6 +194,7 @@ def run_single_sample(
                         "cleanup_steps_taken": result.get("cleanup_steps_taken", 0),
                         "total_escapes": result.get("total_escapes", 0),
                         "total_line_searches": result.get("total_line_searches", 0),
+                        "total_mode_follows": result.get("total_mode_follows", 0),
                         "trajectory": trajectory,
                     },
                     f,
@@ -207,6 +217,7 @@ def run_single_sample(
             "cleanup_steps_taken": result.get("cleanup_steps_taken", 0),
             "total_escapes": result.get("total_escapes", 0),
             "total_line_searches": result.get("total_line_searches", 0),
+            "total_mode_follows": result.get("total_mode_follows", 0),
             "wall_time": wall_time,
             "error": None,
         }
@@ -440,6 +451,46 @@ def main() -> None:
              "displacements (default 0.01).",
     )
 
+    # --- v4 flags ---
+    parser.add_argument(
+        "--neg-trust-floor", type=float, default=0.0,
+        help="Separate trust-radius floor for negative-mode subspace (Å). "
+             "0 = off (use single trust radius). >0 enables split trust regions "
+             "with independent neg/pos capping (default 0.0).",
+    )
+    parser.add_argument(
+        "--blind-mode-threshold", type=float, default=0.0,
+        help="Gradient overlap threshold for blind-mode correction. Negative modes "
+             "with |g·v_i|/|g| < this get a fixed perturbation. 0 = off (default).",
+    )
+    parser.add_argument(
+        "--blind-correction-alpha", type=float, default=0.02,
+        help="Max atom displacement (Å) for blind-mode correction (default 0.02).",
+    )
+    parser.add_argument(
+        "--aggressive-trust-recovery", action="store_true", default=False,
+        help="Softer trust-radius shrink (×0.5 instead of ×0.25) near convergence, "
+             "plus automatic recovery when eigenvalues improve.",
+    )
+    parser.add_argument(
+        "--escape-bidirectional", action="store_true", default=False,
+        help="Use v4 bidirectional stagnation escape: probe ±v_0 and pick direction "
+             "with less negative eigenvalue. Conditional acceptance.",
+    )
+    parser.add_argument(
+        "--mode-follow-eval-threshold", type=float, default=0.0,
+        help="Trigger mode-following when |min_vib_eval| > this (true saddle). "
+             "0 = off (default). Typical: 0.01-0.05.",
+    )
+    parser.add_argument(
+        "--mode-follow-alpha", type=float, default=0.15,
+        help="Displacement magnitude (Å) for mode-following probes (default 0.15).",
+    )
+    parser.add_argument(
+        "--mode-follow-after-steps", type=int, default=2000,
+        help="Only trigger mode-following after this many steps (default 2000).",
+    )
+
     # Gradient descent parameters
     parser.add_argument("--step-size", type=float, default=0.01,
                         help="Fixed step size for gradient descent")
@@ -489,6 +540,15 @@ def main() -> None:
         "lm_mu_anneal_eval_leq": args.lm_mu_anneal_eval_leq,
         "neg_mode_line_search": args.neg_mode_line_search,
         "trust_radius_floor": args.trust_radius_floor,
+        # v4 additions
+        "neg_trust_floor": args.neg_trust_floor,
+        "blind_mode_threshold": args.blind_mode_threshold,
+        "blind_correction_alpha": args.blind_correction_alpha,
+        "aggressive_trust_recovery": args.aggressive_trust_recovery,
+        "escape_bidirectional": args.escape_bidirectional,
+        "mode_follow_eval_threshold": args.mode_follow_eval_threshold,
+        "mode_follow_alpha": args.mode_follow_alpha,
+        "mode_follow_after_steps": args.mode_follow_after_steps,
     }
 
     processor = ParallelSCINEProcessor(
