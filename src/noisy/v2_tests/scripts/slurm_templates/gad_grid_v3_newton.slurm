@@ -193,9 +193,8 @@ run_v3() {
     if [ "$anti_os" = "true" ]; then
         EXTRA_FLAGS="$EXTRA_FLAGS --anti-overshoot"
     fi
-    if [ "$conv_filt" = "true" ]; then
-        EXTRA_FLAGS="$EXTRA_FLAGS --converge-on-filtered"
-    fi
+    # converge-on-filtered removed: produced false convergences by
+    # masking negative eigenvalues below step_filter_threshold.
 
     if python "$PROJECT_DIR/src/noisy/v2_tests/runners/run_gad_baselines_parallel.py" \
             --h5-path "$H5_PATH" \
