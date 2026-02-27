@@ -103,6 +103,17 @@ def _robust_log_ylim(values, *, iqr_mult=3.0):
     return float(10 ** lim[0]), float(10 ** lim[1])
 
 
+def _first_converged_step(trajectory):
+    """Return first step index where strict negative-eigenvalue count is zero."""
+    for step in trajectory:
+        n_neg = step.get("n_neg_at_0.0")
+        if n_neg is None:
+            n_neg = step.get("n_neg_evals")
+        if n_neg == 0:
+            return step.get("step")
+    return None
+
+
 def plot_trajectory(traj_path: Path, output_dir: Path):
     with open(traj_path) as f:
         data = json.load(f)
@@ -146,6 +157,7 @@ def plot_trajectory(traj_path: Path, output_dir: Path):
         min_abs_vib_evals.append(min_abs)
 
     cascade_thresholds = _get_threshold_keys(trajectory)
+    converged_step = _first_converged_step(trajectory)
 
     fig, axs = plt.subplots(3, 2, figsize=(16, 12), sharex='col')
     fig.suptitle(f"Minimization Trajectory: {sample_id} ({method})", fontsize=14)
@@ -160,6 +172,15 @@ def plot_trajectory(traj_path: Path, output_dir: Path):
     # Plot 1: Trust Radius vs Actual Displacement
     ax.plot(steps, trust_radii, label="Trust Radius Limit", linestyle="--", color="blue", alpha=0.7)
     ax.plot(steps, actual_disps, label="Actual Max Atom Displacement", color="green")
+    if converged_step is not None:
+        ax.axvline(
+            converged_step,
+            color="green",
+            linestyle="--",
+            linewidth=1.3,
+            alpha=0.9,
+            label="Converged (n_neg=0)",
+        )
     
     # Highlight points where trust radius was hit
     hit_steps = [s for s, h in zip(steps, hit_radius) if h]
@@ -188,6 +209,8 @@ def plot_trajectory(traj_path: Path, output_dir: Path):
     
     ax2.set_title("Forces and Step Retries")
     ax2.grid(True, alpha=0.3)
+    if converged_step is not None:
+        ax2.axvline(converged_step, color="green", linestyle="--", linewidth=1.3, alpha=0.9)
     
     # Plot 3: Condition Number
     ax3.plot(steps, cond_nums, color="brown")
@@ -195,6 +218,8 @@ def plot_trajectory(traj_path: Path, output_dir: Path):
     ax3.set_yscale('log')
     ax3.set_title("Hessian Condition Number (|λ_max| / |λ_min|)")
     ax3.grid(True, alpha=0.3)
+    if converged_step is not None:
+        ax3.axvline(converged_step, color="green", linestyle="--", linewidth=1.3, alpha=0.9)
     cond_ylim = _robust_log_ylim(cond_nums, iqr_mult=3.0)
     if cond_ylim is not None:
         ax3.set_ylim(*cond_ylim)
@@ -205,6 +230,8 @@ def plot_trajectory(traj_path: Path, output_dir: Path):
     ax4.set_yscale('log')
     ax4.set_title("Largest |Eigenvalue| Used in Condition Number")
     ax4.grid(True, alpha=0.3)
+    if converged_step is not None:
+        ax4.axvline(converged_step, color="green", linestyle="--", linewidth=1.3, alpha=0.9)
     max_abs_ylim = _robust_log_ylim(max_abs_vib_evals, iqr_mult=3.0)
     if max_abs_ylim is not None:
         ax4.set_ylim(*max_abs_ylim)
@@ -215,6 +242,8 @@ def plot_trajectory(traj_path: Path, output_dir: Path):
     ax5.set_yscale('log')
     ax5.set_title("Smallest |Eigenvalue| Used in Condition Number")
     ax5.grid(True, alpha=0.3)
+    if converged_step is not None:
+        ax5.axvline(converged_step, color="green", linestyle="--", linewidth=1.3, alpha=0.9)
     min_abs_ylim = _robust_log_ylim(min_abs_vib_evals, iqr_mult=3.0)
     if min_abs_ylim is not None:
         ax5.set_ylim(*min_abs_ylim)
@@ -243,6 +272,8 @@ def plot_trajectory(traj_path: Path, output_dir: Path):
     ax6.set_xlabel("Step")
     ax6.set_title("Negative-Eigenvalue Counts at Cascade Thresholds")
     ax6.grid(True, alpha=0.3)
+    if converged_step is not None:
+        ax6.axvline(converged_step, color="green", linestyle="--", linewidth=1.3, alpha=0.9)
     
     plt.tight_layout()
     
