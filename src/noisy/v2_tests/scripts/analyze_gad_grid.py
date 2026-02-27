@@ -79,7 +79,6 @@ def _parse_combo_tag(combo_tag: str) -> Optional[Dict[str, Any]]:
             "step_mode": m.group("step_mode"),
             "step_filter_threshold": _safe_float(m.group("sft")),
             "anti_overshoot": m.group("ao") == "T",
-            "converge_on_filtered": m.group("cf") == "T",
             "cleanup_steps": int(m.group("cl")),
         }
     # Phase A/B pattern
@@ -143,7 +142,6 @@ class ComboRecord:
     step_mode: str = "first_order"
     step_filter_threshold: float = float("nan")
     anti_overshoot: bool = False
-    converge_on_filtered: bool = False
     cleanup_steps: int = 0
     # cascade_table from results JSON (may be empty for old runs)
     cascade_table: Dict[str, Any] = field(default_factory=dict)
@@ -221,7 +219,6 @@ def load_records(grid_dir: Path, result_glob: str) -> List[ComboRecord]:
                 step_mode=parsed.get("step_mode", "first_order"),
                 step_filter_threshold=parsed.get("step_filter_threshold", float("nan")),
                 anti_overshoot=parsed.get("anti_overshoot", False),
-                converge_on_filtered=parsed.get("converge_on_filtered", False),
                 cleanup_steps=parsed.get("cleanup_steps", 0),
                 cascade_table=metrics.get("cascade_table", {}),
                 results=list(metrics.get("results", [])),
@@ -794,7 +791,6 @@ def main() -> None:
         "step_mode": summarize_main_effect(records, "step_mode"),
         "step_filter_threshold": summarize_main_effect(records, "step_filter_threshold"),
         "anti_overshoot": summarize_main_effect(records, "anti_overshoot"),
-        "converge_on_filtered": summarize_main_effect(records, "converge_on_filtered"),
         "cleanup_steps": summarize_main_effect(records, "cleanup_steps"),
     }
     # Drop constant axes
@@ -858,7 +854,6 @@ def main() -> None:
                 "step_mode": r.step_mode,
                 "step_filter_threshold": r.step_filter_threshold,
                 "anti_overshoot": r.anti_overshoot,
-                "converge_on_filtered": r.converge_on_filtered,
                 "cleanup_steps": r.cleanup_steps,
                 "n_samples": r.n_samples,
                 "n_success": r.n_success,
@@ -878,7 +873,7 @@ def main() -> None:
                 "rank", "tag", "max_atom_disp", "tr_threshold", "ts_eps",
                 "baseline", "project_gradient_and_v", "tr_filter_eig",
                 "step_mode", "step_filter_threshold", "anti_overshoot",
-                "converge_on_filtered", "cleanup_steps",
+                "cleanup_steps",
                 "n_samples", "n_success", "n_errors", "success_rate",
                 "mean_steps_when_success", "mean_wall_time", "total_wall_time", "path",
             ],

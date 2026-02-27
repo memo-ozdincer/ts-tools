@@ -293,7 +293,6 @@ def run_gad_baseline(
     # ── v3 Newton-GAD improvements ──────────────────────────────
     step_mode: str = "first_order",
     step_filter_threshold: float = 8e-3,
-    converge_on_filtered: bool = False,
     anti_overshoot: bool = False,
     cleanup_steps: int = 0,
 ) -> Dict[str, Any]:
@@ -317,12 +316,6 @@ def run_gad_baseline(
 
         step_filter_threshold: eigenvalue magnitude threshold for Newton step.
             Modes with |λ| < this are zeroed out in the step (noise filtering).
-            Also used for the convergence gate when converge_on_filtered=True.
-
-        converge_on_filtered: if True, the eig_product convergence gate uses
-            eigenvalues filtered by step_filter_threshold (prevents overshooting
-            past the TS due to near-zero λ₁ suppressing the product).  The cascade
-            table always reports unfiltered n_neg for honest evaluation.
 
         anti_overshoot: if True, monitors the Morse index each step and reduces
             the trust radius when approaching Morse-1, preventing the optimizer
@@ -454,14 +447,6 @@ def run_gad_baseline(
                 v_prev = v.detach().clone().reshape(-1)
             else:
                 v_prev = None
-
-            # eig_product uses the (possibly filtered) eigenvalues for the convergence gate.
-            # converge_on_filtered: use step_filter_threshold to remove noise modes from
-            # the eig_product check *independently* of the old tr_filter_eig pathway.
-            if converge_on_filtered and not tr_filter_eig:
-                _conv_mask = evals_vib.abs() > float(step_filter_threshold)
-                _conv_idx = torch.where(_conv_mask)[0]
-                evals_vib_conv = evals_vib[_conv_mask] if int(_conv_idx.numel()) >= 2 else evals_vib
 
             if int(evals_vib_conv.numel()) >= 2:
                 evals_vib_0 = float(evals_vib_conv[0].item())
@@ -773,7 +758,6 @@ def run_single_sample(
             # v3 Newton-GAD improvements
             step_mode=params.get("step_mode", "first_order"),
             step_filter_threshold=params.get("step_filter_threshold", 8e-3),
-            converge_on_filtered=params.get("converge_on_filtered", False),
             anti_overshoot=params.get("anti_overshoot", False),
             cleanup_steps=params.get("cleanup_steps", 0),
         )
@@ -1085,16 +1069,7 @@ def main() -> None:
         type=float,
         default=8e-3,
         help="Eigenvalue magnitude threshold for the Newton step: modes with |λ| < this "
-             "are zeroed out (noise filtering). Also used for the convergence gate when "
-             "--converge-on-filtered is set. Default 8e-3 (proven optimal for NR minimization).",
-    )
-    parser.add_argument(
-        "--converge-on-filtered",
-        action="store_true",
-        default=False,
-        help="Use filtered eigenvalues (|λ| > step_filter_threshold) for the eig_product "
-             "convergence gate, preventing near-zero λ₁ from suppressing the product and "
-             "causing overshoot.  Cascade table always reports unfiltered n_neg.",
+             "are zeroed out (noise filtering). Default 8e-3 (proven optimal for NR minimization).",
     )
     parser.add_argument(
         "--anti-overshoot",
@@ -1141,7 +1116,6 @@ def main() -> None:
         # v3 Newton-GAD improvements
         "step_mode": args.step_mode,
         "step_filter_threshold": args.step_filter_threshold,
-        "converge_on_filtered": args.converge_on_filtered,
         "anti_overshoot": args.anti_overshoot,
         "cleanup_steps": args.cleanup_steps,
     }
