@@ -1,0 +1,350 @@
+          failed: neg_total=10.09, ghost_band=1.03
+                              1,1           Top
+Discovering trajectories in /scratch/memoozd/ts-tools-scratch/runs/min_nr_v4_1086092 with glob '*/diagnostics/*_trajectory.json' ...
+  Found 577 trajectory files.
+  Successfully loaded 577 trajectories.
+  Converged: 112, Failed: 465
+
+Running A1: Band Evolution Statistics ...
+Running A2: Tolerance Sweep Experiment ...
+Running A3: Physical Significance Analysis ...
+eigenvalue_justification_report
+  Found 577 trajectory files.
+  Successfully loaded 577 trajectories.
+  Converged: 112, Failed: 465
+
+Running A1: Band Evolution Statistics ...
+Running A2: Tolerance Sweep Experiment ...
+Running A3: Physical Significance Analysis ...
+Running A4: Stability / False Convergence Detection ...
+Running A5: Cascade Gap Analysis ...
+Running A6: Eigenvalue-Force-Energy Consistency Check ...
+
+Writing CSV outputs ...
+  Wrote /scratch/memoozd/ts-tools-scratch/runs/min_nr_v4_1086092/eigenvalue_justification/eigenvalue_tolerance_sweep.csv
+  Wrote /scratch/memoozd/ts-tools-scratch/runs/min_nr_v4_1086092/eigenvalue_justification/per_sample_required_tolerance.csv
+  Wrote /scratch/memoozd/ts-tools-scratch/runs/min_nr_v4_1086092/eigenvalue_justification/band_evolution_summary.csv
+  Wrote /scratch/memoozd/ts-tools-scratch/runs/min_nr_v4_1086092/eigenvalue_justification/ghost_mode_analysis.csv
+  Wrote /scratch/memoozd/ts-tools-scratch/runs/min_nr_v4_1086092/eigenvalue_justification/false_convergence_analysis.csv
+  Wrote /scratch/memoozd/ts-tools-scratch/runs/min_nr_v4_1086092/eigenvalue_justification/force_eigenvalue_consistency.csv
+
+Writing JSON summary ...
+  Wrote /scratch/memoozd/ts-tools-scratch/runs/min_nr_v4_1086092/eigenvalue_justification/eigenvalue_justification.json
+
+Generating plots ...
+  Wrote /scratch/memoozd/ts-tools-scratch/runs/min_nr_v4_1086092/eigenvalue_justification/eigenvalue_distribution_final.png
+  Wrote /scratch/memoozd/ts-tools-scratch/runs/min_nr_v4_1086092/eigenvalue_justification/min_eval_cdf_failed.png
+  Wrote /scratch/memoozd/ts-tools-scratch/runs/min_nr_v4_1086092/eigenvalue_justification/convergence_rate_vs_tolerance.png
+  Wrote /scratch/memoozd/ts-tools-scratch/runs/min_nr_v4_1086092/eigenvalue_justification/eigenvalue_timeline_sample_000.png
+  Wrote /scratch/memoozd/ts-tools-scratch/runs/min_nr_v4_1086092/eigenvalue_justification/eigenvalue_timeline_sample_002.png
+  Wrote /scratch/memoozd/ts-tools-scratch/runs/min_nr_v4_1086092/eigenvalue_justification/eigenvalue_timeline_sample_009.png
+  Wrote /scratch/memoozd/ts-tools-scratch/runs/min_nr_v4_1086092/eigenvalue_justification/eigenvalue_timeline_sample_010.png
+  Wrote /scratch/memoozd/ts-tools-scratch/runs/min_nr_v4_1086092/eigenvalue_justification/eigenvalue_timeline_sample_016.png
+  Wrote /scratch/memoozd/ts-tools-scratch/runs/min_nr_v4_1086092/eigenvalue_justification/eigenvalue_timeline_sample_018.png
+  Wrote /scratch/memoozd/ts-tools-scratch/runs/min_nr_v4_1086092/eigenvalue_justification/eigenvalue_timeline_sample_019.png
+  Wrote /scratch/memoozd/ts-tools-scratch/runs/min_nr_v4_1086092/eigenvalue_justification/eigenvalue_timeline_sample_020.png
+  Wrote /scratch/memoozd/ts-tools-scratch/runs/min_nr_v4_1086092/eigenvalue_justification/eigenvalue_timeline_sample_022.png
+  Wrote /scratch/memoozd/ts-tools-scratch/runs/min_nr_v4_1086092/eigenvalue_justification/eigenvalue_timeline_sample_023.png
+  Wrote /scratch/memoozd/ts-tools-scratch/runs/min_nr_v4_1086092/eigenvalue_justification/band_evolution_converged_vs_failed.png
+  Wrote /scratch/memoozd/ts-tools-scratch/runs/min_nr_v4_1086092/eigenvalue_justification/sample_tolerance_heatmap.png
+  Wrote /scratch/memoozd/ts-tools-scratch/runs/min_nr_v4_1086092/eigenvalue_justification/ghost_onset_histogram.png
+  Wrote /scratch/memoozd/ts-tools-scratch/runs/min_nr_v4_1086092/eigenvalue_justification/false_convergence_vs_tolerance.png
+  Wrote /scratch/memoozd/ts-tools-scratch/runs/min_nr_v4_1086092/eigenvalue_justification/force_vs_min_eigenvalue.png
+
+
+================================================================================
+  EIGENVALUE TOLERANCE JUSTIFICATION REPORT
+================================================================================
+  Total trajectories:   577
+  Converged (exact):    112
+  Failed:               465
+  Exact convergence rate: 0.1941
+
+================================================================================
+  A1. BAND EVOLUTION STATISTICS
+================================================================================
+
+  Ghost onset (first step with evals in [-1e-4,0) and NONE below -1e-4):
+    Converged trajectories with ghost onset: 72
+      Mean onset step:   1512.2
+      Median onset step: 623.0
+      Min / Max:         21 / 9895
+    Failed trajectories with ghost onset: 170
+      Mean onset step:   3064.6
+      Median onset step: 2368.5
+      Min / Max:         28 / 9686
+
+  Milestone band populations (mean):
+    Step 0:
+       converged: neg_total=6.92, ghost_band=0.29
+          failed: neg_total=10.09, ghost_band=1.03
+    Step 7:
+       converged: neg_total=0.00, ghost_band=0.00
+    Step 10:
+       converged: neg_total=4.46, ghost_band=0.71
+          failed: neg_total=7.47, ghost_band=1.43
+    Step 25:
+       converged: neg_total=0.00, ghost_band=0.00
+    Step 29:
+       converged: neg_total=0.00, ghost_band=0.00
+    Step 32:
+       converged: neg_total=0.00, ghost_band=0.00
+    Step 35:
+       converged: neg_total=0.00, ghost_band=0.00
+    Step 36:
+       converged: neg_total=0.00, ghost_band=0.00
+    Step 42:
+       converged: neg_total=0.00, ghost_band=0.00
+    Step 43:
+       converged: neg_total=0.00, ghost_band=0.00
+    Step 44:
+       converged: neg_total=0.00, ghost_band=0.00
+    Step 46:
+       converged: neg_total=0.00, ghost_band=0.00
+    Step 49:
+       converged: neg_total=0.00, ghost_band=0.00
+    Step 61:
+       converged: neg_total=0.00, ghost_band=0.00
+    Step 62:
+       converged: neg_total=0.00, ghost_band=0.00
+    Step 80:
+       converged: neg_total=0.00, ghost_band=0.00
+    Step 82:
+       converged: neg_total=0.00, ghost_band=0.00
+    Step 83:
+       converged: neg_total=0.00, ghost_band=0.00
+    Step 89:
+       converged: neg_total=0.00, ghost_band=0.00
+    Step 100:
+       converged: neg_total=2.27, ghost_band=0.73
+          failed: neg_total=6.37, ghost_band=2.38
+    Step 150:
+       converged: neg_total=0.00, ghost_band=0.00
+    Step 413:
+       converged: neg_total=0.00, ghost_band=0.00
+    Step 499:
+       converged: neg_total=0.00, ghost_band=0.00
+    Step 500:
+       converged: neg_total=1.91, ghost_band=0.79
+          failed: neg_total=6.02, ghost_band=2.90
+    Step 593:
+       converged: neg_total=0.00, ghost_band=0.00
+    Step 761:
+       converged: neg_total=0.00, ghost_band=0.00
+    Step 764:
+       converged: neg_total=0.00, ghost_band=0.00
+    Step 995:
+       converged: neg_total=0.00, ghost_band=0.00
+    Step 1148:
+       converged: neg_total=0.00, ghost_band=0.00
+    Step 1150:
+       converged: neg_total=0.00, ghost_band=0.00
+    Step 1296:
+       converged: neg_total=0.00, ghost_band=0.00
+    Step 1311:
+       converged: neg_total=0.00, ghost_band=0.00
+    Step 1360:
+       converged: neg_total=0.00, ghost_band=0.00
+    Step 1402:
+       converged: neg_total=0.00, ghost_band=0.00
+    Step 1525:
+       converged: neg_total=0.00, ghost_band=0.00
+    Step 1613:
+       converged: neg_total=0.00, ghost_band=0.00
+    Step 1887:
+       converged: neg_total=0.00, ghost_band=0.00
+    Step 1988:
+       converged: neg_total=0.00, ghost_band=0.00
+    Step 2045:
+       converged: neg_total=0.00, ghost_band=0.00
+    Step 2069:
+       converged: neg_total=0.00, ghost_band=0.00
+    Step 2146:
+       converged: neg_total=0.00, ghost_band=0.00
+    Step 2165:
+       converged: neg_total=0.00, ghost_band=0.00
+    Step 2176:
+       converged: neg_total=0.00, ghost_band=0.00
+    Step 2183:
+       converged: neg_total=0.00, ghost_band=0.00
+    Step 2226:
+       converged: neg_total=0.00, ghost_band=0.00
+    Step 2354:
+       converged: neg_total=0.00, ghost_band=0.00
+    Step 2364:
+       converged: neg_total=0.00, ghost_band=0.00
+    Step 2815:
+       converged: neg_total=0.00, ghost_band=0.00
+    Step 3067:
+       converged: neg_total=0.00, ghost_band=0.00
+    Step 3163:
+       converged: neg_total=0.00, ghost_band=0.00
+    Step 3328:
+       converged: neg_total=0.00, ghost_band=0.00
+    Step 3543:
+       converged: neg_total=0.00, ghost_band=0.00
+    Step 3552:
+       converged: neg_total=0.00, ghost_band=0.00
+    Step 3753:
+       converged: neg_total=0.00, ghost_band=0.00
+    Step 3951:
+       converged: neg_total=0.00, ghost_band=0.00
+    Step 4061:
+       converged: neg_total=0.00, ghost_band=0.00
+    Step 4228:
+       converged: neg_total=0.00, ghost_band=0.00
+    Step 4243:
+       converged: neg_total=0.00, ghost_band=0.00
+    Step 4281:
+       converged: neg_total=0.00, ghost_band=0.00
+    Step 4584:
+       converged: neg_total=0.00, ghost_band=0.00
+    Step 4851:
+       converged: neg_total=0.00, ghost_band=0.00
+    Step 5053:
+       converged: neg_total=0.00, ghost_band=0.00
+    Step 5475:
+       converged: neg_total=0.00, ghost_band=0.00
+    Step 5626:
+       converged: neg_total=0.00, ghost_band=0.00
+    Step 6068:
+       converged: neg_total=0.00, ghost_band=0.00
+    Step 6404:
+       converged: neg_total=0.00, ghost_band=0.00
+    Step 6971:
+       converged: neg_total=0.00, ghost_band=0.00
+    Step 7012:
+       converged: neg_total=0.00, ghost_band=0.00
+    Step 7325:
+       converged: neg_total=0.00, ghost_band=0.00
+    Step 7428:
+       converged: neg_total=0.00, ghost_band=0.00
+              failed: neg_total=4.46, ghost_band=4.27
+
+================================================================================
+  A2. TOLERANCE SWEEP EXPERIMENT
+================================================================================
+
+  Tolerance  |  Premature Stops  |  Frac  |  Failed Recovery  |  Frac
+  ------------------------------------------------------------
+      0e+00  |                0  |  0.0000  |                0  |  0.0000
+      1e-05  |               56  |  0.5000  |               15  |  0.0323
+      5e-05  |               66  |  0.5893  |               17  |  0.0366
+      1e-04  |               72  |  0.6429  |               18  |  0.0387
+      2e-04  |               75  |  0.6696  |               23  |  0.0495
+      5e-04  |               82  |  0.7321  |               29  |  0.0624
+      1e-03  |               83  |  0.7411  |               38  |  0.0817
+      2e-03  |               85  |  0.7589  |               43  |  0.0925
+      5e-03  |               87  |  0.7768  |               47  |  0.1011
+      1e-02  |              108  |  0.9643  |               50  |  0.1075
+
+  Spectrum before convergence (steps before n_neg==0):
+      1 steps before: 112 samples, 210 neg evals, min=-1.657518e+01, median=-5.803158e-03
+     10 steps before: 108 samples, 372 neg evals, min=-1.084200e+02, median=-4.980183e-02
+    100 steps before: 68 samples, 280 neg evals, min=-2.129973e+02, median=-2.983272e-03
+    500 steps before: 63 samples, 246 neg evals, min=-2.137050e+02, median=-1.835526e-03
+
+================================================================================
+  A3. PHYSICAL SIGNIFICANCE ANALYSIS
+================================================================================
+
+  Estimated Hessian numerical noise floor: nan
+  (from 0 stagnant-tail samples)
+
+  Ghost eigenvalue records: 14776235
+  Below noise floor (|eval| / noise < 1.0): 0
+  Above noise floor:                        0
+  |eval|/noise ratio: mean=nan, median=nan, min=nan, max=nan
+
+================================================================================
+  A4. STABILITY / FALSE CONVERGENCE DETECTION
+================================================================================
+
+  False convergence rate by tolerance and lookahead window:
+
+  Tolerance  |  LA=   1  |  LA=   5  |  LA=  10  |  LA=  50  |  LA= 100  |  LA= 500
+  ------------------------------------------------------------
+      1e-05    |  0.796(162)  |  0.957(162)  |  0.957(162)  |  0.957(162)  |  0.963(162)  |  0.963(162)
+      5e-05    |  0.781(215)  |  0.953(215)  |  0.958(215)  |  0.958(215)  |  0.963(215)  |  0.963(215)
+      1e-04    |  0.798(242)  |  0.963(242)  |  0.967(242)  |  0.967(242)  |  0.971(242)  |  0.971(242)
+      2e-04    |  0.790(271)  |  0.959(271)  |  0.967(271)  |  0.974(271)  |  0.974(271)  |  0.978(271)
+      5e-04    |  0.841(308)  |  0.971(308)  |  0.971(308)  |  0.981(308)  |  0.984(308)  |  0.987(308)
+      1e-03    |  0.820(333)  |  0.973(333)  |  0.976(333)  |  0.982(333)  |  0.988(333)  |  0.994(333)
+      2e-03    |  0.811(354)  |  0.969(354)  |  0.977(354)  |  0.980(354)  |  0.992(354)  |  1.000(354)
+      5e-03    |  0.784(412)  |  0.964(412)  |  0.976(412)  |  0.985(412)  |  0.995(412)  |  1.000(412)
+      1e-02    |  0.787(447)  |  0.962(447)  |  0.969(447)  |  0.984(447)  |  0.991(447)  |  0.998(447)
+
+  Mode rotation at qualifying steps (mean across qualifying events):
+    T=1e-04: mean rotations=0.71, mean continuity_min=0.5441 (n=242)
+    T=1e-03: mean rotations=0.53, mean continuity_min=0.6032 (n=333)
+    T=1e-02: mean rotations=0.50, mean continuity_min=0.6346 (n=447)
+
+================================================================================
+  A5. CASCADE GAP ANALYSIS
+================================================================================
+
+  Total failed samples: 465
+  Required tolerance range: [7.745676e-16, 3.258952e+02]
+  Median required tolerance: 3.700431e+00
+
+  Top gaps in required-tolerance CDF:
+    Gap 1: [2.222235e+02, 3.258952e+02] size=1.036717e+02 log_ratio=0.17
+    Gap 2: [4.601340e+01, 7.144100e+01] size=2.542760e+01 log_ratio=0.19
+    Gap 3: [2.186100e+01, 4.601340e+01] size=2.415240e+01 log_ratio=0.32
+    Gap 4: [8.251874e+01, 1.062221e+02] size=2.370338e+01 log_ratio=0.11
+    Gap 5: [1.062221e+02, 1.215115e+02] size=1.528943e+01 log_ratio=0.06
+
+  Per-tolerance pass/fail counts:
+    T=1e-05: pass=15, fail=450, total=465
+    T=5e-05: pass=17, fail=448, total=465
+    T=1e-04: pass=18, fail=447, total=465
+    T=2e-04: pass=23, fail=442, total=465
+    T=5e-04: pass=29, fail=436, total=465
+    T=1e-03: pass=38, fail=427, total=465
+    T=2e-03: pass=43, fail=422, total=465
+    T=5e-03: pass=47, fail=418, total=465
+    T=1e-02: pass=50, fail=415, total=465
+
+================================================================================
+  A6. EIGENVALUE-FORCE-ENERGY CONSISTENCY CHECK
+================================================================================
+
+  Force norm stats for failed samples that would pass under tolerance T:
+    T=1e-05: n=15, mean_force=7.700909e-01, median_force=3.012204e-01, max_force=2.277862e+00, n_force>1e-4=15, n_force>1e-3=15
+    T=5e-05: n=17, mean_force=6.919612e-01, median_force=2.807850e-01, max_force=2.277862e+00, n_force>1e-4=17, n_force>1e-3=17
+    T=1e-04: n=18, mean_force=6.573266e-01, median_force=2.807718e-01, max_force=2.277862e+00, n_force>1e-4=18, n_force>1e-3=18
+    T=2e-04: n=23, mean_force=5.383987e-01, median_force=2.807585e-01, max_force=2.277862e+00, n_force>1e-4=23, n_force>1e-3=23
+    T=5e-04: n=29, mean_force=4.392245e-01, median_force=1.692648e-01, max_force=2.277862e+00, n_force>1e-4=29, n_force>1e-3=29
+    T=1e-03: n=38, mean_force=3.677007e-01, median_force=9.616287e-02, max_force=2.277862e+00, n_force>1e-4=38, n_force>1e-3=37
+    T=2e-03: n=43, mean_force=3.395387e-01, median_force=8.908020e-02, max_force=2.277862e+00, n_force>1e-4=43, n_force>1e-3=42
+    T=5e-03: n=47, mean_force=3.136957e-01, median_force=8.648136e-02, max_force=2.277862e+00, n_force>1e-4=47, n_force>1e-3=46
+    T=1e-02: n=50, mean_force=3.056420e-01, median_force=8.737753e-02, max_force=2.277862e+00, n_force>1e-4=50, n_force>1e-3=49
+
+================================================================================
+  FINDINGS
+================================================================================
+
+  Evidence FOR eigenvalue tolerance filtering:
+
+    - No ghost eigenvalue instances found for noise floor comparison
+    - At T=1e-04: 18 failed trajectories (3.9%) would be reclassified as converged
+    - At T=5e-04: 29 failed trajectories (6.2%) would be reclassified as converged
+    - At T=1e-03: 38 failed trajectories (8.2%) would be reclassified as converged
+    - 72 converged trajectories passed through a ghost-only phase (evals in [-1e-4,0) with none below)
+
+  Evidence AGAINST eigenvalue tolerance filtering:
+
+    - At T=1e-04: 72 converged trajectories (64.3%) would have been stopped prematurely
+    - At T=5e-04: 82 converged trajectories (73.2%) would have been stopped prematurely
+    - At T=1e-03: 83 converged trajectories (74.1%) would have been stopped prematurely
+    - At T=1e-04: false convergence rate = 97.1% (LA=100, n=242)
+    - At T=5e-04: false convergence rate = 98.4% (LA=100, n=308)
+    - At T=1e-03: false convergence rate = 98.8% (LA=100, n=333)
+    - At T=1e-04: 18/18 qualifying failed samples still have force_norm > 1e-3 (NOT at a minimum)
+    - At T=5e-04: 29/29 qualifying failed samples still have force_norm > 1e-3 (NOT at a minimum)
+    - At T=1e-03: 37/38 qualifying failed samples still have force_norm > 1e-3 (NOT at a minimum)
+
+================================================================================
+  END OF REPORT
+================================================================================
+

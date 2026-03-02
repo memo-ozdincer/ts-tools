@@ -169,6 +169,13 @@ def run_single_sample(
                 mode_follow_eval_threshold=params.get("mode_follow_eval_threshold", 0.0),
                 mode_follow_alpha=params.get("mode_follow_alpha", 0.15),
                 mode_follow_after_steps=params.get("mode_follow_after_steps", 2000),
+                # v5 SPDN
+                optimizer_mode=params.get("optimizer_mode", ""),
+                spdn_tau_hard=params.get("spdn_tau_hard", 0.01),
+                spdn_tau_soft=params.get("spdn_tau_soft", 1e-4),
+                spdn_diis_size=params.get("spdn_diis_size", 8),
+                spdn_diis_every=params.get("spdn_diis_every", 5),
+                spdn_momentum=params.get("spdn_momentum", 0.0),
             )
         else:
             raise ValueError(f"Unknown method: {method}")
@@ -199,6 +206,10 @@ def run_single_sample(
                         "total_escapes": result.get("total_escapes", 0),
                         "total_line_searches": result.get("total_line_searches", 0),
                         "total_mode_follows": result.get("total_mode_follows", 0),
+                        "total_diis_attempts": result.get("total_diis_attempts", 0),
+                        "total_diis_accepts": result.get("total_diis_accepts", 0),
+                        "total_diis_energy_accepts": result.get("total_diis_energy_accepts", 0),
+                        "optimizer_mode": result.get("optimizer_mode", ""),
                         "trajectory": trajectory,
                     },
                     f,
@@ -508,6 +519,37 @@ def main() -> None:
         help="Only trigger mode-following after this many steps (default 2000).",
     )
 
+    # --- v5 SPDN flags ---
+    parser.add_argument(
+        "--optimizer-mode", type=str, default="",
+        help="Optimizer mode: '' (default, use v1-v4 logic), 'spdn' (Spectrally-Partitioned "
+             "DIIS-Newton: spectral step builder + GDIIS + backtracking line search).",
+    )
+    parser.add_argument(
+        "--spdn-tau-hard", type=float, default=0.01,
+        help="SPDN: hard-mode threshold. Eigenvalues with |λ|>tau_hard get full Newton "
+             "weight; others are capped at 1/tau_hard (default 0.01).",
+    )
+    parser.add_argument(
+        "--spdn-tau-soft", type=float, default=1e-4,
+        help="SPDN: ghost-mode threshold. Eigenvalues with |λ|<=tau_soft are treated as "
+             "effectively zero for convergence. Default 1e-4.",
+    )
+    parser.add_argument(
+        "--spdn-diis-size", type=int, default=8,
+        help="SPDN: GDIIS buffer size (number of stored geometry/gradient pairs). "
+             "Should match or exceed the oscillation period (default 8).",
+    )
+    parser.add_argument(
+        "--spdn-diis-every", type=int, default=5,
+        help="SPDN: attempt GDIIS extrapolation every N steps (default 5).",
+    )
+    parser.add_argument(
+        "--spdn-momentum", type=float, default=0.0,
+        help="SPDN: Polyak heavy-ball momentum coefficient. 0 = off (default). "
+             "Typical: 0.2-0.5.",
+    )
+
     # Gradient descent parameters
     parser.add_argument("--step-size", type=float, default=0.01,
                         help="Fixed step size for gradient descent")
@@ -566,6 +608,13 @@ def main() -> None:
         "mode_follow_eval_threshold": args.mode_follow_eval_threshold,
         "mode_follow_alpha": args.mode_follow_alpha,
         "mode_follow_after_steps": args.mode_follow_after_steps,
+        # v5 SPDN additions
+        "optimizer_mode": args.optimizer_mode,
+        "spdn_tau_hard": args.spdn_tau_hard,
+        "spdn_tau_soft": args.spdn_tau_soft,
+        "spdn_diis_size": args.spdn_diis_size,
+        "spdn_diis_every": args.spdn_diis_every,
+        "spdn_momentum": args.spdn_momentum,
     }
 
     processor = ParallelSCINEProcessor(

@@ -1,71 +1,70 @@
-
 Loaded 25 configurations.
 Ranking metric: Convergence Rate (desc) → Total Converged (desc) → Mean Steps (asc) → Wall Time (asc)
 
 🏆 Best overall configuration by convergence, then speed:
-  mad1.3_se5e-4_pgtrue_phfalse | converged 16/30 (0.53), mean steps 2401.4, mean wall 85.99s
+  mad1.3_se5e-4_pgtrue_phfalse | converged 16/30 (0.53), mean steps 2401.4, mean wall 87.48s
 
 =================================================================
 🥇 Top 25 Configurations (Best First):
 =================================================================
-  mad1.3_se5e-4_pgtrue_phfalse: conv=16/30 (0.53), steps=2401.4, wall=85.99s, errors=0 se=0.0005
-  mad1.3_se2e-4_pgtrue_phfalse: conv=16/30 (0.53), steps=3230.5, wall=82.53s, errors=0 se=0.0002
-  mad1.3_se3e-4_pgtrue_phfalse: conv=12/30 (0.40), steps=1875.2, wall=96.06s, errors=0 se=0.0003
-  mad1.3_se7e-4_pgtrue_phfalse: conv=12/30 (0.40), steps=2500.2, wall=103.03s, errors=0 se=0.0007
-  mad1.3_se5e-4_ntf0.05_bmt0.05_bca0.02_atr_sw100_ea0.05_ebd_mft0.01_pgtrue_phfalse: conv=5/30 (0.17), steps=1911.2, wall=57.29s, errors=10 se=0.0005 sw=100 ntf=0.05 bmt=0.05 atr ebd mft=0.01 mode_follows=82737
-  mad1.3_se5e-4_ntf0.05_bmt0.05_bca0.02_atr_sw100_ea0.05_ebd_mft0.01_mfa0.15_pgtrue_phfalse: conv=5/30 (0.17), steps=1911.2, wall=57.48s, errors=10 se=0.0005 sw=100 ntf=0.05 bmt=0.05 atr ebd mft=0.01 mode_follows=82737
-  mad1.3_se5e-4_ntf0.05_bmt0.05_bca0.02_atr_sw100_ea0.05_ebd_mft0.05_pgtrue_phfalse: conv=4/30 (0.13), steps=2171.5, wall=58.54s, errors=9 se=0.0005 sw=100 ntf=0.05 bmt=0.05 atr ebd mft=0.05 mode_follows=94813
-  mad1.3_se3e-4_ntf0.05_bmt0.05_bca0.05_pgtrue_phfalse: conv=4/30 (0.13), steps=3173.0, wall=101.59s, errors=8 se=0.0003 ntf=0.05 bmt=0.05
-  mad1.3_se5e-4_ntf0.1_pgtrue_phfalse: conv=3/30 (0.10), steps=614.7, wall=100.12s, errors=8 se=0.0005 ntf=0.1
-  mad1.3_se5e-4_ntf0.03_pgtrue_phfalse: conv=3/30 (0.10), steps=614.7, wall=100.20s, errors=8 se=0.0005 ntf=0.03
-  mad1.3_se5e-4_ntf0.05_pgtrue_phfalse: conv=3/30 (0.10), steps=614.7, wall=100.50s, errors=8 se=0.0005 ntf=0.05
-  mad1.3_se3e-4_ntf0.03_pgtrue_phfalse: conv=3/30 (0.10), steps=747.3, wall=101.41s, errors=8 se=0.0003 ntf=0.03
-  mad1.3_se3e-4_ntf0.1_pgtrue_phfalse: conv=3/30 (0.10), steps=747.3, wall=101.42s, errors=8 se=0.0003 ntf=0.1
-  mad1.3_se3e-4_ntf0.05_pgtrue_phfalse: conv=3/30 (0.10), steps=747.3, wall=101.98s, errors=8 se=0.0003 ntf=0.05
-  mad1.3_se3e-4_ntf0.05_bmt0.05_bca0.02_pgtrue_phfalse: conv=2/30 (0.07), steps=35.5, wall=104.07s, errors=8 se=0.0003 ntf=0.05 bmt=0.05
-  mad1.3_se3e-4_ntf0.05_bmt0.05_bca0.02_atr_pgtrue_phfalse: conv=2/30 (0.07), steps=35.5, wall=106.05s, errors=8 se=0.0003 ntf=0.05 bmt=0.05 atr
-  mad1.3_se5e-4_ntf0.05_bmt0.05_bca0.02_atr_sw100_ea0.03_ebd_pgtrue_phfalse: conv=2/30 (0.07), steps=1199.5, wall=105.72s, errors=8 se=0.0005 sw=100 ntf=0.05 bmt=0.05 atr ebd
-  mad1.3_se5e-4_ntf0.05_bmt0.05_bca0.02_atr_sw100_ea0.05_ebd_pgtrue_phfalse: conv=2/30 (0.07), steps=1199.5, wall=105.93s, errors=8 se=0.0005 sw=100 ntf=0.05 bmt=0.05 atr ebd
-  mad1.3_se5e-4_ntf0.05_bmt0.05_bca0.02_atr_sw100_ea0.05_pgtrue_phfalse: conv=2/30 (0.07), steps=1199.5, wall=106.67s, errors=8 se=0.0005 sw=100 ntf=0.05 bmt=0.05 atr
-  mad1.3_se5e-4_ntf0.05_bmt0.05_bca0.02_atr_sw100_ea0.03_pgtrue_phfalse: conv=2/30 (0.07), steps=1199.5, wall=106.95s, errors=8 se=0.0005 sw=100 ntf=0.05 bmt=0.05 atr
-  mad1.3_se5e-4_ntf0.05_bmt0.05_bca0.02_atr_pgtrue_phfalse: conv=2/30 (0.07), steps=1199.5, wall=107.31s, errors=8 se=0.0005 ntf=0.05 bmt=0.05 atr
-  mad1.3_se5e-4_ntf0.05_bmt0.05_bca0.02_pgtrue_phfalse: conv=2/30 (0.07), steps=2139.0, wall=107.55s, errors=8 se=0.0005 ntf=0.05 bmt=0.05
-  mad1.3_se5e-4_ntf0.05_bmt0.05_bca0.01_pgtrue_phfalse: conv=2/30 (0.07), steps=4262.0, wall=109.79s, errors=8 se=0.0005 ntf=0.05 bmt=0.05
-  mad1.3_se5e-4_ntf0.05_bmt0.05_bca0.05_pgtrue_phfalse: conv=1/30 (0.03), steps=25.0, wall=110.93s, errors=8 se=0.0005 ntf=0.05 bmt=0.05
-  mad1.3_se3e-4_ntf0.05_bmt0.05_bca0.01_pgtrue_phfalse: conv=1/30 (0.03), steps=35.0, wall=109.80s, errors=8 se=0.0003 ntf=0.05 bmt=0.05
+  mad1.3_se5e-4_pgtrue_phfalse: conv=16/30 (0.53), steps=2401.4, wall=87.48s, errors=0 se=0.0005
+  mad1.3_se2e-4_pgtrue_phfalse: conv=16/30 (0.53), steps=3230.5, wall=83.46s, errors=0 se=0.0002
+  mad1.3_se3e-4_pgtrue_phfalse: conv=12/30 (0.40), steps=1875.2, wall=97.30s, errors=0 se=0.0003
+  mad1.3_se7e-4_pgtrue_phfalse: conv=12/30 (0.40), steps=2500.2, wall=104.18s, errors=0 se=0.0007
+  mad1.3_se5e-4_ntf0.05_bmt0.05_bca0.02_atr_sw100_ea0.05_ebd_mft0.01_mfa0.15_pgtrue_phfalse: conv=5/30 (0.17), steps=1911.2, wall=58.62s, errors=10 se=0.0005 sw=100 ntf=0.05 bmt=0.05 atr ebd mft=0.01 mode_follows=82737
+  mad1.3_se5e-4_ntf0.05_bmt0.05_bca0.02_atr_sw100_ea0.05_ebd_mft0.01_pgtrue_phfalse: conv=5/30 (0.17), steps=1911.2, wall=58.67s, errors=10 se=0.0005 sw=100 ntf=0.05 bmt=0.05 atr ebd mft=0.01 mode_follows=82737
+  mad1.3_se5e-4_ntf0.05_bmt0.05_bca0.02_atr_sw100_ea0.05_ebd_mft0.05_pgtrue_phfalse: conv=4/30 (0.13), steps=2171.5, wall=60.00s, errors=9 se=0.0005 sw=100 ntf=0.05 bmt=0.05 atr ebd mft=0.05 mode_follows=94813
+  mad1.3_se3e-4_ntf0.05_bmt0.05_bca0.05_pgtrue_phfalse: conv=4/30 (0.13), steps=3173.0, wall=102.50s, errors=8 se=0.0003 ntf=0.05 bmt=0.05
+  mad1.3_se5e-4_ntf0.05_pgtrue_phfalse: conv=3/30 (0.10), steps=614.7, wall=101.04s, errors=8 se=0.0005 ntf=0.05
+  mad1.3_se5e-4_ntf0.1_pgtrue_phfalse: conv=3/30 (0.10), steps=614.7, wall=101.48s, errors=8 se=0.0005 ntf=0.1
+  mad1.3_se5e-4_ntf0.03_pgtrue_phfalse: conv=3/30 (0.10), steps=614.7, wall=102.04s, errors=8 se=0.0005 ntf=0.03
+  mad1.3_se3e-4_ntf0.03_pgtrue_phfalse: conv=3/30 (0.10), steps=747.3, wall=101.84s, errors=8 se=0.0003 ntf=0.03
+  mad1.3_se3e-4_ntf0.05_pgtrue_phfalse: conv=3/30 (0.10), steps=747.3, wall=102.75s, errors=8 se=0.0003 ntf=0.05
+  mad1.3_se3e-4_ntf0.1_pgtrue_phfalse: conv=3/30 (0.10), steps=747.3, wall=103.34s, errors=8 se=0.0003 ntf=0.1
+  mad1.3_se3e-4_ntf0.05_bmt0.05_bca0.02_pgtrue_phfalse: conv=2/30 (0.07), steps=35.5, wall=105.07s, errors=8 se=0.0003 ntf=0.05 bmt=0.05
+  mad1.3_se3e-4_ntf0.05_bmt0.05_bca0.02_atr_pgtrue_phfalse: conv=2/30 (0.07), steps=35.5, wall=106.44s, errors=8 se=0.0003 ntf=0.05 bmt=0.05 atr
+  mad1.3_se5e-4_ntf0.05_bmt0.05_bca0.02_atr_sw100_ea0.05_pgtrue_phfalse: conv=2/30 (0.07), steps=1199.5, wall=107.15s, errors=8 se=0.0005 sw=100 ntf=0.05 bmt=0.05 atr
+  mad1.3_se5e-4_ntf0.05_bmt0.05_bca0.02_atr_sw100_ea0.05_ebd_pgtrue_phfalse: conv=2/30 (0.07), steps=1199.5, wall=107.23s, errors=8 se=0.0005 sw=100 ntf=0.05 bmt=0.05 atr ebd
+  mad1.3_se5e-4_ntf0.05_bmt0.05_bca0.02_atr_sw100_ea0.03_pgtrue_phfalse: conv=2/30 (0.07), steps=1199.5, wall=107.77s, errors=8 se=0.0005 sw=100 ntf=0.05 bmt=0.05 atr
+  mad1.3_se5e-4_ntf0.05_bmt0.05_bca0.02_atr_sw100_ea0.03_ebd_pgtrue_phfalse: conv=2/30 (0.07), steps=1199.5, wall=107.83s, errors=8 se=0.0005 sw=100 ntf=0.05 bmt=0.05 atr ebd
+  mad1.3_se5e-4_ntf0.05_bmt0.05_bca0.02_atr_pgtrue_phfalse: conv=2/30 (0.07), steps=1199.5, wall=108.09s, errors=8 se=0.0005 ntf=0.05 bmt=0.05 atr
+  mad1.3_se5e-4_ntf0.05_bmt0.05_bca0.02_pgtrue_phfalse: conv=2/30 (0.07), steps=2139.0, wall=108.99s, errors=8 se=0.0005 ntf=0.05 bmt=0.05
+  mad1.3_se5e-4_ntf0.05_bmt0.05_bca0.01_pgtrue_phfalse: conv=2/30 (0.07), steps=4262.0, wall=110.32s, errors=8 se=0.0005 ntf=0.05 bmt=0.05
+  mad1.3_se5e-4_ntf0.05_bmt0.05_bca0.05_pgtrue_phfalse: conv=1/30 (0.03), steps=25.0, wall=112.04s, errors=8 se=0.0005 ntf=0.05 bmt=0.05
+  mad1.3_se3e-4_ntf0.05_bmt0.05_bca0.01_pgtrue_phfalse: conv=1/30 (0.03), steps=35.0, wall=111.61s, errors=8 se=0.0003 ntf=0.05 bmt=0.05
 
 --- Main effect: shift_epsilon ---
-  0.0002: mean_conv_rate=0.533, mean_n_converged=16.00, mean_steps=3230.5, mean_wall=82.53s
-  0.0003: mean_conv_rate=0.125, mean_n_converged=3.75, mean_steps=924.5, mean_wall=102.80s
-  0.0005: mean_conv_rate=0.120, mean_n_converged=3.60, mean_steps=1510.9, mean_wall=94.73s
-  0.0007: mean_conv_rate=0.400, mean_n_converged=12.00, mean_steps=2500.2, mean_wall=103.03s
+  0.0002: mean_conv_rate=0.533, mean_n_converged=16.00, mean_steps=3230.5, mean_wall=83.46s
+  0.0003: mean_conv_rate=0.125, mean_n_converged=3.75, mean_steps=924.5, mean_wall=103.86s
+  0.0005: mean_conv_rate=0.120, mean_n_converged=3.60, mean_steps=1510.9, mean_wall=95.92s
+  0.0007: mean_conv_rate=0.400, mean_n_converged=12.00, mean_steps=2500.2, mean_wall=104.18s
 
 --- Main effect: stagnation_window ---
-  0: mean_conv_rate=0.167, mean_n_converged=5.00, mean_steps=1388.8, mean_wall=101.68s
-  100: mean_conv_rate=0.105, mean_n_converged=3.14, mean_steps=1541.7, mean_wall=85.51s
+  0: mean_conv_rate=0.167, mean_n_converged=5.00, mean_steps=1388.8, mean_wall=102.78s
+  100: mean_conv_rate=0.105, mean_n_converged=3.14, mean_steps=1541.7, mean_wall=86.75s
 
 --- Main effect: neg_trust_floor ---
-  0.0: mean_conv_rate=0.467, mean_n_converged=14.00, mean_steps=2501.8, mean_wall=91.90s
-  0.03: mean_conv_rate=0.100, mean_n_converged=3.00, mean_steps=681.0, mean_wall=100.81s
-  0.05: mean_conv_rate=0.086, mean_n_converged=2.59, mean_steps=1356.4, mean_wall=97.54s
-  0.1: mean_conv_rate=0.100, mean_n_converged=3.00, mean_steps=681.0, mean_wall=100.77s
+  0.0: mean_conv_rate=0.467, mean_n_converged=14.00, mean_steps=2501.8, mean_wall=93.10s
+  0.03: mean_conv_rate=0.100, mean_n_converged=3.00, mean_steps=681.0, mean_wall=101.94s
+  0.05: mean_conv_rate=0.086, mean_n_converged=2.59, mean_steps=1356.4, mean_wall=98.60s
+  0.1: mean_conv_rate=0.100, mean_n_converged=3.00, mean_steps=681.0, mean_wall=102.41s
 
 --- Main effect: blind_mode_threshold ---
-  0.0: mean_conv_rate=0.247, mean_n_converged=7.40, mean_steps=1409.3, mean_wall=97.32s
-  0.05: mean_conv_rate=0.084, mean_n_converged=2.53, mean_steps=1446.4, mean_wall=97.04s
+  0.0: mean_conv_rate=0.247, mean_n_converged=7.40, mean_steps=1409.3, mean_wall=98.49s
+  0.05: mean_conv_rate=0.084, mean_n_converged=2.53, mean_steps=1446.4, mean_wall=98.16s
 
 --- Main effect: aggressive_trust_recovery ---
-  False: mean_conv_rate=0.179, mean_n_converged=5.38, mean_steps=1485.2, mean_wall=101.06s
-  True: mean_conv_rate=0.096, mean_n_converged=2.89, mean_steps=1336.3, mean_wall=90.21s
+  False: mean_conv_rate=0.179, mean_n_converged=5.38, mean_steps=1485.2, mean_wall=102.21s
+  True: mean_conv_rate=0.096, mean_n_converged=2.89, mean_steps=1336.3, mean_wall=91.31s
 
 --- Main effect: escape_bidirectional ---
-  False: mean_conv_rate=0.157, mean_n_converged=4.70, mean_steps=1369.8, mean_wall=102.20s
-  True: mean_conv_rate=0.120, mean_n_converged=3.60, mean_steps=1678.6, mean_wall=76.99s
+  False: mean_conv_rate=0.157, mean_n_converged=4.70, mean_steps=1369.8, mean_wall=103.24s
+  True: mean_conv_rate=0.120, mean_n_converged=3.60, mean_steps=1678.6, mean_wall=78.47s
 
 --- Main effect: mode_follow_eval_threshold ---
-  0.0: mean_conv_rate=0.148, mean_n_converged=4.45, mean_steps=1354.4, mean_wall=102.53s
-  0.01: mean_conv_rate=0.167, mean_n_converged=5.00, mean_steps=1911.2, mean_wall=57.38s
-  0.05: mean_conv_rate=0.133, mean_n_converged=4.00, mean_steps=2171.5, mean_wall=58.54s
+  0.0: mean_conv_rate=0.148, mean_n_converged=4.45, mean_steps=1354.4, mean_wall=103.63s
+  0.01: mean_conv_rate=0.167, mean_n_converged=5.00, mean_steps=1911.2, mean_wall=58.65s
+  0.05: mean_conv_rate=0.133, mean_n_converged=4.00, mean_steps=2171.5, mean_wall=60.00s
 
 =================================================================
 Hardest samples (lowest convergence across configs):
@@ -96,13 +95,8 @@ Columns = eval threshold (how strict we count n_neg at final geometry).
 Gap between eval_0.0 and eval_2e-3 → false-rejection problem.
 Flat across all eval thresholds → optimizer genuinely failing.
 
-Wrote analysis artifacts to: /scratch/memoozd/ts-tools-scratch/runs/min_nr_v4_1073909/analysis
+Wrote analysis artifacts to: /scratch/memoozd/ts-tools-scratch/runs/min_nr_v4_1086092/analysis
   nr_grid_summary.json         — full summary (JSON)
   nr_grid_ranked.csv           — ranked configurations
   nr_grid_sample_hardness.csv  — per-sample convergence rates
   nr_grid_cascade_table.csv    — 2D cascade diagnostic table
-~
-~
-~
-
-

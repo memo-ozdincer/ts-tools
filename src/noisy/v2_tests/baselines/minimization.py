@@ -113,6 +113,86 @@ def _eigenvalue_band_populations(evals_vib: torch.Tensor) -> Dict[str, int]:
     return result
 
 
+def _spectral_conditioning_diagnostics(
+    evals_vib: torch.Tensor,
+    prev_evals_vib: Optional[torch.Tensor],
+    tau_hard: float,
+    tau_soft: float,
+) -> Dict[str, Any]:
+    """Compute detailed spectral conditioning diagnostics.
+
+    Partitions the spectrum into hard/soft/null regimes and reports
+    condition numbers, eigenvalue ranges, and step-to-step change rates.
+    """
+    abs_evals = torch.abs(evals_vib)
+    n_modes = evals_vib.numel()
+    if n_modes == 0:
+        return {"n_total": 0}
+
+    hard_pos_mask = evals_vib > tau_hard
+    hard_neg_mask = evals_vib < -tau_hard
+    soft_mask = (abs_evals > tau_soft) & (abs_evals <= tau_hard)
+    null_mask = abs_evals <= tau_soft
+
+    n_hard_pos = int(hard_pos_mask.sum().item())
+    n_hard_neg = int(hard_neg_mask.sum().item())
+    n_soft = int(soft_mask.sum().item())
+    n_null = int(null_mask.sum().item())
+
+    # Condition numbers
+    pos_evals = evals_vib[evals_vib > 0]
+    neg_evals = evals_vib[evals_vib < 0]
+
+    cond_full = float(abs_evals.max().item() / max(abs_evals.min().item(), 1e-30))
+
+    cond_hard = float("nan")
+    hard_mask = abs_evals > tau_hard
+    if hard_mask.any():
+        hard_abs = abs_evals[hard_mask]
+        cond_hard = float(hard_abs.max().item() / hard_abs.min().item())
+
+    # Eigenvalue range and spread
+    eval_range = float(evals_vib.max().item() - evals_vib.min().item())
+    eval_spread_pos = (
+        float(pos_evals.max().item() - pos_evals.min().item())
+        if pos_evals.numel() > 1 else 0.0
+    )
+    eval_spread_neg = (
+        float(neg_evals.min().item() - neg_evals.max().item())
+        if neg_evals.numel() > 1 else 0.0
+    )
+
+    # Step-to-step change rate
+    eval_change_rate_mean: Optional[float] = None
+    eval_max_change: Optional[float] = None
+    eval_change_rate_hard: Optional[float] = None
+    if prev_evals_vib is not None and prev_evals_vib.numel() == n_modes:
+        changes = torch.abs(evals_vib - prev_evals_vib)
+        rel_changes = changes / torch.clamp(torch.abs(prev_evals_vib), min=1e-10)
+        eval_change_rate_mean = float(rel_changes.mean().item())
+        eval_max_change = float(changes.max().item())
+        if hard_mask.any():
+            eval_change_rate_hard = float(rel_changes[hard_mask].mean().item())
+
+    return {
+        "n_hard_pos": n_hard_pos,
+        "n_hard_neg": n_hard_neg,
+        "n_soft": n_soft,
+        "n_null": n_null,
+        "n_total": n_modes,
+        "cond_full": cond_full,
+        "cond_hard_only": cond_hard,
+        "eval_range": eval_range,
+        "eval_spread_positive": eval_spread_pos,
+        "eval_spread_negative": eval_spread_neg,
+        "eval_change_rate_mean": eval_change_rate_mean,
+        "eval_max_change": eval_max_change,
+        "eval_change_rate_hard": eval_change_rate_hard,
+        "min_pos_eval": float(pos_evals.min().item()) if pos_evals.numel() > 0 else None,
+        "max_neg_eval": float(neg_evals.max().item()) if neg_evals.numel() > 0 else None,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Utility helpers
 # ---------------------------------------------------------------------------
@@ -577,6 +657,193 @@ def _nr_step_shifted_newton(
     nr_step = V_all @ (coeffs / shifted_lam)
     delta_x = -nr_step
     return delta_x, V_all, lam_all
+
+
+def _nr_step_spectral_partitioned(
+    grad: torch.Tensor,
+    V_all: torch.Tensor,
+    lam_all: torch.Tensor,
+    tau_hard: float = 0.01,
+    tau_soft: float = 1e-4,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, Any]]:
+    """Spectrally-partitioned Newton step (SPDN step builder).
+
+    Eigenvalues are partitioned into three reliability regimes:
+      Hard:  |λ| > tau_hard   → weight = 1/|λ| (full Newton)
+      Soft:  tau_soft < |λ| ≤ tau_hard → weight = 1/tau_hard (capped)
+      Null:  |λ| ≤ tau_soft   → weight = 1/tau_hard (ghost modes, bounded)
+
+    Maximum amplification is bounded at 1/tau_hard (default 100×),
+    preventing the explosive step sizes (2000×) that cause trust-radius
+    collapse in shifted Newton where σ → ε for the most negative mode.
+
+    All modes contribute (none excluded), ensuring the step captures the
+    full gradient. For well-conditioned modes (|λ| > tau_hard), the step
+    is identical to the pure Newton step.
+
+    Returns:
+        delta_x: the step direction (3N,)
+        V_all: all eigenvectors (for backward compat)
+        lam_all: all eigenvalues (for backward compat)
+        info: diagnostic dict with partition counts and weights
+    """
+    abs_lam = torch.abs(lam_all)
+    # Clamp: effective eigenvalue is at least tau_hard → max weight = 1/tau_hard
+    effective_lam = torch.clamp(abs_lam, min=tau_hard)
+    weights = 1.0 / effective_lam
+
+    coeffs = V_all.T @ grad
+    nr_step = V_all @ (coeffs * weights)
+    delta_x = -nr_step
+
+    # Diagnostics
+    hard_pos_mask = lam_all > tau_hard
+    hard_neg_mask = lam_all < -tau_hard
+    soft_mask = (abs_lam > tau_soft) & (abs_lam <= tau_hard)
+    null_mask = abs_lam <= tau_soft
+
+    info: Dict[str, Any] = {
+        "n_hard_pos": int(hard_pos_mask.sum().item()),
+        "n_hard_neg": int(hard_neg_mask.sum().item()),
+        "n_soft": int(soft_mask.sum().item()),
+        "n_null": int(null_mask.sum().item()),
+        "max_weight": float(weights.max().item()),
+        "min_weight": float(weights.min().item()),
+        "cond_effective": float(
+            weights.max().item() / max(weights.min().item(), 1e-30)
+        ),
+    }
+
+    return delta_x, V_all, lam_all, info
+
+
+# ---------------------------------------------------------------------------
+# v5: GDIIS (Geometry Direct Inversion of the Iterative Subspace)
+# ---------------------------------------------------------------------------
+
+class _GDIISExtrapolator:
+    """Geometry DIIS for breaking optimizer oscillation cycles.
+
+    Stores recent (geometry, gradient) pairs and computes an extrapolated
+    geometry that minimizes the predicted gradient norm.  GDIIS is the
+    standard fix for oscillating optimizers in computational chemistry
+    (Pulay, 1980; Csaszar & Pulay, 1984).
+
+    For an oscillation with period P, a buffer of size ≥ P captures
+    the full cycle.  The DIIS equations find the linear combination of
+    stored geometries whose interpolated gradient is smallest — this is
+    typically the center of the oscillation cycle, which is much closer
+    to the true minimum.
+
+    The constrained minimization problem is:
+        min ||Σ cᵢ eᵢ||²   subject to Σ cᵢ = 1
+    where eᵢ is the gradient (error vector) at geometry xᵢ.
+
+    This leads to the linear system:
+        [B  1] [c]   [0]
+        [1  0] [λ] = [1]
+    where Bᵢⱼ = eᵢ · eⱼ.
+    """
+
+    def __init__(self, max_size: int = 8, min_size: int = 3):
+        self.max_size = max_size
+        self.min_size = min_size
+        self.coords_history: List[torch.Tensor] = []
+        self.grad_history: List[torch.Tensor] = []
+
+    def store(self, coords_flat: torch.Tensor, grad_flat: torch.Tensor) -> None:
+        """Store a (geometry, gradient) pair."""
+        self.coords_history.append(coords_flat.detach().clone())
+        self.grad_history.append(grad_flat.detach().clone())
+        if len(self.coords_history) > self.max_size:
+            self.coords_history.pop(0)
+            self.grad_history.pop(0)
+
+    @property
+    def n_stored(self) -> int:
+        return len(self.coords_history)
+
+    def can_extrapolate(self) -> bool:
+        return self.n_stored >= self.min_size
+
+    def extrapolate(self) -> Tuple[Optional[torch.Tensor], Dict[str, Any]]:
+        """Attempt GDIIS extrapolation.
+
+        Returns:
+            (extrapolated_coords_flat, info_dict)
+            extrapolated_coords_flat is None if GDIIS failed.
+        """
+        n = self.n_stored
+        if n < self.min_size:
+            return None, {"status": "insufficient_data", "n_stored": n}
+
+        device = self.grad_history[0].device
+        dtype = self.grad_history[0].dtype
+
+        # Build error matrix Bᵢⱼ = eᵢ · eⱼ
+        B = torch.zeros(n, n, dtype=dtype, device=device)
+        for i in range(n):
+            for j in range(i, n):
+                dot = torch.dot(self.grad_history[i], self.grad_history[j])
+                B[i, j] = dot
+                B[j, i] = dot
+
+        # Augmented system with constraint Σ cᵢ = 1
+        A = torch.zeros(n + 1, n + 1, dtype=dtype, device=device)
+        A[:n, :n] = B
+        A[:n, n] = 1.0
+        A[n, :n] = 1.0
+
+        rhs = torch.zeros(n + 1, dtype=dtype, device=device)
+        rhs[n] = 1.0
+
+        try:
+            solution = torch.linalg.solve(A, rhs)
+            coeffs = solution[:n]
+        except torch.linalg.LinAlgError:
+            return None, {"status": "singular_matrix", "n_stored": n}
+
+        max_coeff = float(coeffs.abs().max().item())
+        if max_coeff > 10.0:
+            return None, {
+                "status": "poor_conditioning",
+                "n_stored": n,
+                "max_coeff": max_coeff,
+            }
+
+        # Extrapolated geometry and residual
+        x_diis = torch.zeros_like(self.coords_history[0])
+        g_diis = torch.zeros_like(self.grad_history[0])
+        for i in range(n):
+            x_diis = x_diis + coeffs[i] * self.coords_history[i]
+            g_diis = g_diis + coeffs[i] * self.grad_history[i]
+
+        residual_diis = float(g_diis.norm().item())
+        residual_current = float(self.grad_history[-1].norm().item())
+
+        # Condition of the B matrix (for diagnostics)
+        try:
+            b_cond = float(torch.linalg.cond(B).item())
+        except Exception:
+            b_cond = float("inf")
+
+        info: Dict[str, Any] = {
+            "status": "success",
+            "n_stored": n,
+            "coefficients": [float(c) for c in coeffs.tolist()],
+            "max_coeff": max_coeff,
+            "residual_diis": residual_diis,
+            "residual_current": residual_current,
+            "residual_ratio": residual_diis / max(residual_current, 1e-30),
+            "B_cond": b_cond,
+        }
+
+        return x_diis, info
+
+    def reset(self) -> None:
+        """Clear all stored data."""
+        self.coords_history.clear()
+        self.grad_history.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -1092,6 +1359,13 @@ def run_newton_raphson(
     mode_follow_eval_threshold: float = 0.0,
     mode_follow_alpha: float = 0.15,
     mode_follow_after_steps: int = 2000,
+    # --- v5 SPDN options ---
+    optimizer_mode: str = "",
+    spdn_tau_hard: float = 0.01,
+    spdn_tau_soft: float = 1e-4,
+    spdn_diis_size: int = 8,
+    spdn_diis_every: int = 5,
+    spdn_momentum: float = 0.0,
 ) -> Tuple[Dict[str, Any], list]:
     """Newton-Raphson optimization to find energy minimum.
 
@@ -1102,16 +1376,21 @@ def run_newton_raphson(
     it is always a descent direction.
 
     Step-building modes (selected at runtime by which parameters are nonzero):
-      1. Shifted Newton (shift_epsilon > 0):
+      1. SPDN (optimizer_mode == "spdn"):
+         Spectrally-Partitioned DIIS-Newton. Uses spectral step builder with
+         bounded weights (max 1/tau_hard), GDIIS extrapolation to break
+         oscillation cycles, and backtracking line search instead of
+         quadratic trust region.
+      2. Shifted Newton (shift_epsilon > 0):
          step_i = (g·v_i) / (λ_i + σ), σ = max(0, -λ_min) + shift_epsilon.
          Makes all effective eigenvalues positive. Negative modes get larger
          weights → more aggressive along problematic directions.
-      2. LM damping (lm_mu > 0, shift_epsilon == 0):
+      3. LM damping (lm_mu > 0, shift_epsilon == 0):
          step_i = (g·v_i) * |λ_i| / (λ_i² + μ²). No hard cutoff; flat modes
          contribute a vanishingly small amount.
-      3. Two-phase annealing (anneal_force_threshold > 0, lm_mu == 0):
+      4. Two-phase annealing (anneal_force_threshold > 0, lm_mu == 0):
          Phase 1: hard filter with nr_threshold. Phase 2: cleanup_nr_threshold.
-      4. Hard filter (default, all above == 0):
+      5. Hard filter (default, all above == 0):
          Exclude |λ| < nr_threshold from pseudoinverse.
 
     v3 features:
@@ -1131,6 +1410,18 @@ def run_newton_raphson(
         perturbation along negative modes with low gradient overlap.
       - Aggressive trust recovery: softer shrink near zero eigenvalues, reset on
         n_neg decrease, grow on 50-step eigenvalue improvement.
+
+    v5 SPDN features (optimizer_mode == "spdn"):
+      - Spectral partitioning: eigenvalues split into hard (|λ|>tau_hard),
+        soft (tau_soft<|λ|<=tau_hard), null (|λ|<=tau_soft) regimes with
+        bounded weights preventing trust-radius collapse.
+      - GDIIS extrapolation: breaks period-8 oscillation cycles by finding
+        the center of the cycle via constrained least-squares.
+      - Backtracking line search: replaces quadratic trust region with
+        Armijo-condition backtracking, robust to Hessian inaccuracy.
+      - Modified convergence: n_neg_reliable==0 (ignoring ghost eigenvalues
+        below tau_soft) AND force_norm < force_converged.
+      - Momentum (optional): Polyak heavy-ball for oscillation damping.
       - Bidirectional escape: probes both +/- along most negative mode, conditional
         acceptance prevents eigenvalue worsening.
       - Mode-following (mode_follow_eval_threshold > 0): for true saddle points,
@@ -1165,10 +1456,11 @@ def run_newton_raphson(
     prev_neg_evecs: Optional[torch.Tensor] = None
     prev_neg_evals: Optional[torch.Tensor] = None
 
-    # --- Mode selection (priority: shifted > LM > anneal > hard filter) ---
-    use_shifted = shift_epsilon > 0.0
-    use_lm = (not use_shifted) and lm_mu > 0.0
-    use_anneal = (not use_shifted) and (not use_lm) and anneal_force_threshold > 0.0
+    # --- Mode selection (priority: SPDN > shifted > LM > anneal > hard filter) ---
+    use_spdn = optimizer_mode.lower() == "spdn"
+    use_shifted = (not use_spdn) and shift_epsilon > 0.0
+    use_lm = (not use_spdn) and (not use_shifted) and lm_mu > 0.0
+    use_anneal = (not use_spdn) and (not use_shifted) and (not use_lm) and anneal_force_threshold > 0.0
     in_cleanup_phase = False
 
     # Effective LM mu (may be annealed)
@@ -1192,6 +1484,16 @@ def run_newton_raphson(
     prev_min_vib_eval_for_trust: Optional[float] = None
     total_mode_follows = 0
     min_eval_history_50: List[float] = []  # rolling window for aggressive trust recovery
+
+    # v5 SPDN state
+    gdiis: Optional[_GDIISExtrapolator] = None
+    total_diis_attempts = 0
+    total_diis_accepts = 0
+    total_diis_energy_accepts = 0
+    prev_evals_vib_for_spdn: Optional[torch.Tensor] = None
+    prev_coords_flat: Optional[torch.Tensor] = None  # for momentum
+    if use_spdn:
+        gdiis = _GDIISExtrapolator(max_size=spdn_diis_size, min_size=3)
 
     # Evaluate initial state
     out = predict_fn(coords, atomic_nums, do_hessian=True, require_grad=False)
@@ -1329,15 +1631,39 @@ def run_newton_raphson(
 
         step_record["eigenvec_continuity"] = evec_cont
 
+        # v5 SPDN spectral conditioning diagnostics
+        if use_spdn:
+            spec_cond = _spectral_conditioning_diagnostics(
+                evals_vib, prev_evals_vib_for_spdn, spdn_tau_hard, spdn_tau_soft,
+            )
+            step_record["spectral_conditioning"] = spec_cond
+
+            # Saddle point detection (diagnostic only, not used for optimization)
+            n_neg_reliable = int((evals_vib < -spdn_tau_soft).sum().item())
+            step_record["n_neg_reliable"] = n_neg_reliable
+            step_record["saddle_diagnostic"] = {
+                "is_saddle_like": force_norm < 0.01 and n_neg_reliable > 0,
+                "n_neg_reliable": n_neg_reliable,
+                "force_norm": force_norm,
+            }
+
+            prev_evals_vib_for_spdn = evals_vib.clone()
+
         trajectory.append(step_record)
 
         # ---------------------------------------------------------------
-        # Convergence check: strict n_neg == 0
+        # Convergence check
         # ---------------------------------------------------------------
-        converged_now = n_neg == 0
+        if use_spdn:
+            # SPDN: ignore ghost eigenvalues (|λ| ≤ tau_soft) but require
+            # force convergence to prevent false positives.
+            n_neg_reliable = int((evals_vib < -spdn_tau_soft).sum().item())
+            converged_now = (n_neg_reliable == 0) and (force_norm < force_converged)
+        else:
+            converged_now = n_neg == 0
         anneal_gate_passed = (not use_anneal) or in_cleanup_phase
         if converged_now and anneal_gate_passed:
-            return {
+            result_dict: Dict[str, Any] = {
                 "converged": True,
                 "converged_step": step,
                 "final_energy": energy,
@@ -1355,7 +1681,63 @@ def run_newton_raphson(
                 "total_escapes": total_escapes,
                 "total_line_searches": total_line_searches,
                 "total_mode_follows": total_mode_follows,
-            }, trajectory
+            }
+            if use_spdn:
+                result_dict["total_diis_attempts"] = total_diis_attempts
+                result_dict["total_diis_accepts"] = total_diis_accepts
+                result_dict["total_diis_energy_accepts"] = total_diis_energy_accepts
+                result_dict["optimizer_mode"] = "spdn"
+            return result_dict, trajectory
+
+        # ---------------------------------------------------------------
+        # v5 SPDN: GDIIS extrapolation attempt
+        # ---------------------------------------------------------------
+        if use_spdn and gdiis is not None:
+            # Build projected gradient for GDIIS storage
+            grad_for_diis = -forces.reshape(-1)
+            if project_gradient_and_v:
+                grad_for_diis = -project_vector_to_vibrational_torch(
+                    forces.reshape(-1), coords, atomsymbols,
+                )
+            gdiis.store(coords.reshape(-1), grad_for_diis)
+
+            # Attempt extrapolation every spdn_diis_every steps
+            if (step > 0
+                    and step % spdn_diis_every == 0
+                    and gdiis.can_extrapolate()):
+                total_diis_attempts += 1
+                diis_coords_flat, diis_info = gdiis.extrapolate()
+                step_record["gdiis_info"] = diis_info
+
+                if diis_coords_flat is not None:
+                    diis_coords = diis_coords_flat.reshape(-1, 3)
+
+                    # Check physical validity
+                    if _min_interatomic_distance(diis_coords) >= min_interatomic_dist:
+                        # Evaluate at DIIS geometry
+                        diis_out = predict_fn(
+                            diis_coords, atomic_nums,
+                            do_hessian=True, require_grad=False,
+                        )
+                        diis_energy = _to_float(diis_out["energy"])
+
+                        # Accept if energy decreased
+                        if diis_energy < energy + 1e-6:
+                            total_diis_accepts += 1
+                            if diis_energy < energy - 1e-8:
+                                total_diis_energy_accepts += 1
+                            coords = diis_coords.detach()
+                            out = diis_out
+                            step_record["gdiis_accepted"] = True
+                            step_record["gdiis_energy_change"] = diis_energy - energy
+                            step += 1
+                            continue
+                        else:
+                            step_record["gdiis_accepted"] = False
+                            step_record["gdiis_energy_change"] = diis_energy - energy
+                    else:
+                        step_record["gdiis_accepted"] = False
+                        step_record["gdiis_reject_reason"] = "min_dist_violation"
 
         # ---------------------------------------------------------------
         # v4: Mode-following for large negative eigenvalues (true saddle)
@@ -1512,9 +1894,21 @@ def run_newton_raphson(
         lam_all = evals_vib.to(device=grad.device, dtype=work_dtype)
 
         # ---------------------------------------------------------------
-        # Compute NR step (four modes, priority: shifted > LM > anneal > HF)
+        # Compute NR step (five modes, priority: SPDN > shifted > LM > anneal > HF)
         # ---------------------------------------------------------------
-        if use_shifted:
+        if use_spdn:
+            delta_x, V, lam, spdn_step_info = _nr_step_spectral_partitioned(
+                grad, V_all, lam_all, spdn_tau_hard, spdn_tau_soft,
+            )
+            step_record["step_mode"] = "spdn"
+            step_record["spdn_step_info"] = spdn_step_info
+
+            # Optional momentum (Polyak heavy-ball)
+            if spdn_momentum > 0.0 and prev_coords_flat is not None:
+                momentum_vec = spdn_momentum * (coords.reshape(-1) - prev_coords_flat)
+                delta_x = delta_x + momentum_vec.to(dtype=delta_x.dtype)
+                step_record["spdn_momentum_applied"] = True
+        elif use_shifted:
             delta_x, V, lam = _nr_step_shifted_newton(grad, V_all, lam_all, shift_epsilon)
             step_record["step_mode"] = "shifted_newton"
         elif use_lm:
@@ -1534,84 +1928,145 @@ def run_newton_raphson(
         # ---------------------------------------------------------------
         # v4: Blind-mode correction (gradient-independent perturbation)
         # ---------------------------------------------------------------
-        if blind_mode_threshold > 0.0 and n_neg > 0:
+        if blind_mode_threshold > 0.0 and n_neg > 0 and not use_spdn:
             delta_x, blind_info = _blind_mode_correction(
                 delta_x, grad, evals_vib, evecs_vib_3N,
                 blind_mode_threshold, blind_correction_alpha, step,
             )
             step_record["blind_correction"] = blind_info
 
+        # Save coords for momentum calculation (before update)
+        if use_spdn:
+            prev_coords_flat = coords.reshape(-1).clone()
+
         step_disp = delta_x.reshape(-1, 3)
 
-        # ---------------------------------------------------------------
-        # Adaptive Trust Region
-        # ---------------------------------------------------------------
-        accepted = False
-        max_retries = 10
-        retries = 0
+        if use_spdn:
+            # ---------------------------------------------------------------
+            # v5 SPDN: Backtracking line search (Armijo condition)
+            # ---------------------------------------------------------------
+            # Cap initial step to max_atom_disp
+            capped_disp = _cap_displacement(step_disp, max_atom_disp)
+            direction = capped_disp.reshape(-1)
+            directional_deriv = float(grad.dot(direction).item())
 
-        while not accepted and retries < max_retries:
-            radius_used_for_step = current_trust_radius
+            alpha = 1.0
+            c1 = 1e-4  # Armijo sufficient decrease constant
+            n_backtracks = 0
+            max_backtracks = 15
+            ls_accepted = False
 
-            # v4: split capping for separate neg-mode trust radius
-            if use_split_trust and n_neg > 0:
-                capped_disp = _cap_displacement_split(
-                    step_disp, evals_vib, evecs_vib_3N,
-                    pos_trust_radius=radius_used_for_step,
-                    neg_trust_radius=current_neg_trust_radius,
+            while n_backtracks < max_backtracks:
+                trial_disp = (alpha * direction).reshape(-1, 3)
+                trial_coords = coords + trial_disp
+
+                if _min_interatomic_distance(trial_coords) < min_interatomic_dist:
+                    alpha *= 0.5
+                    n_backtracks += 1
+                    continue
+
+                trial_out = predict_fn(
+                    trial_coords, atomic_nums, do_hessian=True, require_grad=False,
                 )
-            else:
-                capped_disp = _cap_displacement(step_disp, radius_used_for_step)
+                trial_energy = _to_float(trial_out["energy"])
 
-            # Predict energy change using spectral form over the modes used for the step
-            dx_flat = capped_disp.reshape(-1).to(work_dtype)
-            dx_red = V.T @ dx_flat
-            pred_dE = float((grad.dot(dx_flat) + 0.5 * (lam * dx_red * dx_red).sum()).item())
+                # Armijo condition: f(x+αd) ≤ f(x) + c₁·α·∇f·d
+                if trial_energy <= energy + c1 * alpha * directional_deriv:
+                    ls_accepted = True
+                    coords = trial_coords.detach()
+                    out = trial_out
+                    capped_disp = trial_disp
+                    break
 
-            new_coords = coords + capped_disp
+                alpha *= 0.5
+                n_backtracks += 1
 
-            if _min_interatomic_distance(new_coords) < min_interatomic_dist:
-                current_trust_radius = max(current_trust_radius * 0.5, trust_radius_floor)
-                retries += 1
-                continue
+            if not ls_accepted:
+                # Fall back: take the last tried step
+                coords = trial_coords.detach()
+                out = trial_out
+                capped_disp = trial_disp
 
-            # Evaluate new energy
-            out_new = predict_fn(new_coords, atomic_nums, do_hessian=True, require_grad=False)
-            energy_new = _to_float(out_new["energy"])
-            actual_dE = energy_new - energy
+            step_record["spdn_linesearch"] = {
+                "alpha": alpha,
+                "n_backtracks": n_backtracks,
+                "accepted": ls_accepted,
+                "directional_deriv": directional_deriv,
+                "energy_change": _to_float(out["energy"]) - energy,
+            }
+            radius_used_for_step = max_atom_disp  # for logging
+            retries = n_backtracks
 
-            # Accept if energy decreased (allow tiny numerical noise)
-            if actual_dE <= 1e-5:
-                accepted = True
+        else:
+            # ---------------------------------------------------------------
+            # Legacy: Adaptive Trust Region (v1-v4 modes)
+            # ---------------------------------------------------------------
+            accepted = False
+            max_retries = 10
+            retries = 0
 
-                # Update trust radius based on rho
-                rho = actual_dE / pred_dE if pred_dE < -1e-8 else 0.0
+            while not accepted and retries < max_retries:
+                radius_used_for_step = current_trust_radius
 
-                if rho > 0.75:
-                    current_trust_radius = min(current_trust_radius * 1.5, max_atom_disp)
-                elif rho < 0.25:
+                # v4: split capping for separate neg-mode trust radius
+                if use_split_trust and n_neg > 0:
+                    capped_disp = _cap_displacement_split(
+                        step_disp, evals_vib, evecs_vib_3N,
+                        pos_trust_radius=radius_used_for_step,
+                        neg_trust_radius=current_neg_trust_radius,
+                    )
+                else:
+                    capped_disp = _cap_displacement(step_disp, radius_used_for_step)
+
+                # Predict energy change using spectral form over the modes used for the step
+                dx_flat = capped_disp.reshape(-1).to(work_dtype)
+                dx_red = V.T @ dx_flat
+                pred_dE = float((grad.dot(dx_flat) + 0.5 * (lam * dx_red * dx_red).sum()).item())
+
+                new_coords = coords + capped_disp
+
+                if _min_interatomic_distance(new_coords) < min_interatomic_dist:
                     current_trust_radius = max(current_trust_radius * 0.5, trust_radius_floor)
-                elif rho < 0.0:
-                    # v4: softer shrink in near-zero eigenvalue regime (ρ unreliable)
+                    retries += 1
+                    continue
+
+                # Evaluate new energy
+                out_new = predict_fn(new_coords, atomic_nums, do_hessian=True, require_grad=False)
+                energy_new = _to_float(out_new["energy"])
+                actual_dE = energy_new - energy
+
+                # Accept if energy decreased (allow tiny numerical noise)
+                if actual_dE <= 1e-5:
+                    accepted = True
+
+                    # Update trust radius based on rho
+                    rho = actual_dE / pred_dE if pred_dE < -1e-8 else 0.0
+
+                    if rho > 0.75:
+                        current_trust_radius = min(current_trust_radius * 1.5, max_atom_disp)
+                    elif rho < 0.25:
+                        current_trust_radius = max(current_trust_radius * 0.5, trust_radius_floor)
+                    elif rho < 0.0:
+                        # v4: softer shrink in near-zero eigenvalue regime (ρ unreliable)
+                        if aggressive_trust_recovery and abs(min_vib_eval) < 0.01:
+                            current_trust_radius = max(current_trust_radius * 0.5, trust_radius_floor)
+                        else:
+                            current_trust_radius = max(current_trust_radius * 0.25, trust_radius_floor)
+
+                    coords = new_coords.detach()
+                    out = out_new
+                else:
+                    # v4: softer shrink on rejection in near-zero eigenvalue regime
                     if aggressive_trust_recovery and abs(min_vib_eval) < 0.01:
                         current_trust_radius = max(current_trust_radius * 0.5, trust_radius_floor)
                     else:
                         current_trust_radius = max(current_trust_radius * 0.25, trust_radius_floor)
+                    retries += 1
 
+            if not accepted:
+                # If all retries failed, take the smallest step anyway and continue
                 coords = new_coords.detach()
                 out = out_new
-            else:
-                # v4: softer shrink on rejection in near-zero eigenvalue regime
-                if aggressive_trust_recovery and abs(min_vib_eval) < 0.01:
-                    current_trust_radius = max(current_trust_radius * 0.5, trust_radius_floor)
-                else:
-                    current_trust_radius = max(current_trust_radius * 0.25, trust_radius_floor)
-                retries += 1
-
-        if not accepted:
-            # If all retries failed, take the smallest step anyway and continue
-            coords = new_coords.detach()
-            out = out_new
 
         # ---------------------------------------------------------------
         # v4: Aggressive trust recovery — reset on n_neg decrease,
@@ -1669,7 +2124,7 @@ def run_newton_raphson(
                 break
 
     last = trajectory[-1] if trajectory else {}
-    return {
+    timeout_result: Dict[str, Any] = {
         "converged": False,
         "converged_step": None,
         "final_energy": last.get("energy", float("nan")),
@@ -1687,4 +2142,10 @@ def run_newton_raphson(
         "total_escapes": total_escapes,
         "total_line_searches": total_line_searches,
         "total_mode_follows": total_mode_follows,
-    }, trajectory
+    }
+    if use_spdn:
+        timeout_result["total_diis_attempts"] = total_diis_attempts
+        timeout_result["total_diis_accepts"] = total_diis_accepts
+        timeout_result["total_diis_energy_accepts"] = total_diis_energy_accepts
+        timeout_result["optimizer_mode"] = "spdn"
+    return timeout_result, trajectory

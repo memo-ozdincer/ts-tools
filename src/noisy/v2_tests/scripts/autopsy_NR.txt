@@ -5,10 +5,11 @@ FAILURE AUTOPSY SUMMARY
 ======================================================================
 
 Overall classification distribution:
-  oscillating              :  413 ( 71.6%)
+  oscillating              :  403 ( 69.8%)
   converged                :  112 ( 19.4%)
-  slow_convergence         :   36 (  6.2%)
-  almost_converged         :   16 (  2.8%)
+  slow_convergence         :   33 (  5.7%)
+  ghost_modes              :   18 (  3.1%)
+  almost_converged         :   11 (  1.9%)
 
 ======================================================================
 PER-COMBO FAILURE MODES
@@ -16,7 +17,8 @@ PER-COMBO FAILURE MODES
 
 --- mad1.3_se2e-4_pgtrue_phfalse (16/30 converged) ---
   oscillating: 11
-  almost_converged: 3
+  ghost_modes: 2
+  almost_converged: 1
 
 --- mad1.3_se3e-4_ntf0.03_pgtrue_phfalse (3/22 converged) ---
   oscillating: 19
@@ -42,7 +44,8 @@ PER-COMBO FAILURE MODES
 
 --- mad1.3_se3e-4_pgtrue_phfalse (12/30 converged) ---
   oscillating: 11
-  almost_converged: 6
+  almost_converged: 4
+  ghost_modes: 2
   slow_convergence: 1
 
 --- mad1.3_se5e-4_ntf0.03_pgtrue_phfalse (3/22 converged) ---
@@ -64,16 +67,19 @@ PER-COMBO FAILURE MODES
   slow_convergence: 1
 
 --- mad1.3_se5e-4_ntf0.05_bmt0.05_bca0.02_atr_sw100_ea0.05_ebd_mft0.01_mfa0.15_pgtrue_phfalse (5/20 converged) ---
-  slow_convergence: 8
-  oscillating: 7
+  slow_convergence: 7
+  ghost_modes: 5
+  oscillating: 3
 
 --- mad1.3_se5e-4_ntf0.05_bmt0.05_bca0.02_atr_sw100_ea0.05_ebd_mft0.01_pgtrue_phfalse (5/20 converged) ---
-  slow_convergence: 8
-  oscillating: 7
+  slow_convergence: 7
+  ghost_modes: 5
+  oscillating: 3
 
 --- mad1.3_se5e-4_ntf0.05_bmt0.05_bca0.02_atr_sw100_ea0.05_ebd_mft0.05_pgtrue_phfalse (4/21 converged) ---
-  slow_convergence: 12
-  oscillating: 5
+  slow_convergence: 11
+  oscillating: 3
+  ghost_modes: 3
 
 --- mad1.3_se5e-4_ntf0.05_bmt0.05_bca0.02_atr_sw100_ea0.05_ebd_pgtrue_phfalse (2/22 converged) ---
   oscillating: 19
@@ -101,7 +107,8 @@ PER-COMBO FAILURE MODES
 
 --- mad1.3_se7e-4_pgtrue_phfalse (12/30 converged) ---
   oscillating: 11
-  almost_converged: 6
+  almost_converged: 5
+  ghost_modes: 1
   slow_convergence: 1
 
 ======================================================================
@@ -109,7 +116,7 @@ DETAILED FAILURE REPORTS (failed trajectories)
 ======================================================================
 
   sample_000: 25 failures across combos
-    Failure modes: oscillating, slow_convergence
+    Failure modes: ghost_modes, oscillating, slow_convergence
     Best attempt: mad1.3_se5e-4_ntf0.05_bmt0.05_bca0.02_atr_sw100_ea0.05_ebd_mft0.01_mfa0.15_pgtrue_phfalse
       final_n_neg=7, min_eval=-0.000000, force_norm=1.168948
       bottom_spectrum: [-0.00000, -0.00000, -0.00000, -0.00000, -0.00000]
@@ -119,7 +126,7 @@ DETAILED FAILURE REPORTS (failed trajectories)
       trust_radius: final=1.3000, min=0.0100
 
   sample_023: 25 failures across combos
-    Failure modes: almost_converged, oscillating, slow_convergence
+    Failure modes: ghost_modes, oscillating, slow_convergence
     Best attempt: mad1.3_se5e-4_ntf0.05_bmt0.05_bca0.02_atr_sw100_ea0.05_ebd_mft0.01_mfa0.15_pgtrue_phfalse
       final_n_neg=12, min_eval=-0.000000, force_norm=2.277862
       bottom_spectrum: [-0.00000, -0.00000, -0.00000, -0.00000, -0.00000]
@@ -149,7 +156,7 @@ DETAILED FAILURE REPORTS (failed trajectories)
       trust_radius: final=0.0100, min=0.0100
 
   sample_009: 24 failures across combos
-    Failure modes: almost_converged, oscillating
+    Failure modes: ghost_modes, oscillating
     Best attempt: mad1.3_se5e-4_ntf0.05_bmt0.05_bca0.02_atr_sw100_ea0.05_ebd_mft0.01_mfa0.15_pgtrue_phfalse
       final_n_neg=10, min_eval=-0.000001, force_norm=0.280759
       bottom_spectrum: [-0.00000, -0.00000, -0.00000, -0.00000, -0.00000]
@@ -169,7 +176,7 @@ DETAILED FAILURE REPORTS (failed trajectories)
       trust_radius: final=0.0100, min=0.0100
 
   sample_019: 24 failures across combos
-    Failure modes: almost_converged, oscillating, slow_convergence
+    Failure modes: ghost_modes, oscillating
     Best attempt: mad1.3_se5e-4_ntf0.05_bmt0.05_bca0.02_atr_sw100_ea0.05_ebd_mft0.01_mfa0.15_pgtrue_phfalse
       final_n_neg=10, min_eval=-0.000000, force_norm=0.301220
       bottom_spectrum: [-0.00000, -0.00000, -0.00000, -0.00000, -0.00000]
@@ -179,7 +186,7 @@ DETAILED FAILURE REPORTS (failed trajectories)
       trust_radius: final=1.3000, min=0.0100
 
   sample_022: 24 failures across combos
-    Failure modes: almost_converged, oscillating, slow_convergence
+    Failure modes: almost_converged, ghost_modes, oscillating, slow_convergence
     Best attempt: mad1.3_se5e-4_ntf0.05_bmt0.05_bca0.02_atr_sw100_ea0.05_ebd_mft0.05_pgtrue_phfalse
       final_n_neg=9, min_eval=-0.000000, force_norm=0.088274
       bottom_spectrum: [-0.00000, -0.00000, -0.00000, -0.00000, -0.00000]
@@ -219,7 +226,7 @@ DETAILED FAILURE REPORTS (failed trajectories)
       trust_radius: final=0.0100, min=0.0100
 
   sample_006: 23 failures across combos
-    Failure modes: almost_converged, oscillating, slow_convergence
+    Failure modes: ghost_modes, oscillating, slow_convergence
     Best attempt: mad1.3_se3e-4_pgtrue_phfalse
       final_n_neg=2, min_eval=-0.000013, force_norm=0.200153
       bottom_spectrum: [-0.00001, -0.00000, 0.00001, 0.00009, 0.00015]
@@ -239,7 +246,7 @@ DETAILED FAILURE REPORTS (failed trajectories)
       trust_radius: final=0.0100, min=0.0100
 
   sample_007: 22 failures across combos
-    Failure modes: almost_converged, oscillating, slow_convergence
+    Failure modes: almost_converged, ghost_modes, oscillating, slow_convergence
     Best attempt: mad1.3_se5e-4_ntf0.05_bmt0.05_bca0.02_atr_sw100_ea0.05_ebd_mft0.05_pgtrue_phfalse
       final_n_neg=9, min_eval=-0.000000, force_norm=0.280785
       bottom_spectrum: [-0.00000, -0.00000, -0.00000, -0.00000, -0.00000]
@@ -258,6 +265,8 @@ DETAILED FAILURE REPORTS (failed trajectories)
       stagnation: 1 steps (0.0%), eval_improving=False, energy_plateau=False
       trust_radius: final=0.0100, min=0.0100
 
-Wrote autopsy artifacts to: /scratch/memoozd/ts-tools-scratch/runs/min_nr_v4_1073909/autopsy
+Wrote autopsy artifacts to: /scratch/memoozd/ts-tools-scratch/runs/min_nr_v4_1086092/autopsy
   failure_autopsy.csv  — one row per trajectory
   failure_autopsy.json — structured summary
+~
+~

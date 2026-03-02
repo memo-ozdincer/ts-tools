@@ -360,6 +360,68 @@ run_combo "mad1.3_se5e-4_ntf0.05_bmt0.05_bca0.02_atr_sw100_ea0.05_ebd_mft0.01_mf
     --mode-follow-after-steps "2000"
 
 # =============================================================================
+# Phase H — SPDN (Spectrally-Partitioned DIIS-Newton)
+# New v5 optimizer: spectral step builder + GDIIS + backtracking line search.
+# Sweep tau_hard and DIIS parameters.
+# =============================================================================
+echo "=============================================="
+echo "Phase H — SPDN optimizer (tau_hard sweep)"
+echo "  Axes: tau_hard ∈ {0.005, 0.01, 0.02, 0.05}"
+echo "         + DIIS variations + momentum"
+echo "=============================================="
+
+# H1: tau_hard sweep (core SPDN, no momentum)
+for TH in "0.005" "0.01" "0.02" "0.05"; do
+    run_combo "mad1.3_spdn_th${TH}_pgtrue_phfalse" \
+        --optimizer-mode "spdn" \
+        --spdn-tau-hard "$TH" \
+        --spdn-tau-soft "1e-4" \
+        --spdn-diis-size "8" \
+        --spdn-diis-every "5"
+done
+
+# H2: DIIS window size sweep (with default tau_hard=0.01)
+for DS in "4" "8" "12"; do
+    run_combo "mad1.3_spdn_th0.01_ds${DS}_pgtrue_phfalse" \
+        --optimizer-mode "spdn" \
+        --spdn-tau-hard "0.01" \
+        --spdn-tau-soft "1e-4" \
+        --spdn-diis-size "$DS" \
+        --spdn-diis-every "5"
+done
+
+# H3: DIIS frequency sweep (with default tau_hard=0.01, diis_size=8)
+for DE in "3" "5" "10"; do
+    run_combo "mad1.3_spdn_th0.01_de${DE}_pgtrue_phfalse" \
+        --optimizer-mode "spdn" \
+        --spdn-tau-hard "0.01" \
+        --spdn-tau-soft "1e-4" \
+        --spdn-diis-size "8" \
+        --spdn-diis-every "$DE"
+done
+
+# H4: Momentum sweep (with best-guess SPDN params)
+for MOM in "0.0" "0.2" "0.4"; do
+    run_combo "mad1.3_spdn_th0.01_mom${MOM}_pgtrue_phfalse" \
+        --optimizer-mode "spdn" \
+        --spdn-tau-hard "0.01" \
+        --spdn-tau-soft "1e-4" \
+        --spdn-diis-size "8" \
+        --spdn-diis-every "5" \
+        --spdn-momentum "$MOM"
+done
+
+# H5: tau_soft sweep (ghost mode threshold)
+for TS in "1e-5" "1e-4" "5e-4"; do
+    run_combo "mad1.3_spdn_th0.01_ts${TS}_pgtrue_phfalse" \
+        --optimizer-mode "spdn" \
+        --spdn-tau-hard "0.01" \
+        --spdn-tau-soft "$TS" \
+        --spdn-diis-size "8" \
+        --spdn-diis-every "5"
+done
+
+# =============================================================================
 # Summary
 # =============================================================================
 echo "=============================================="
@@ -426,6 +488,17 @@ python "$PROJECT_DIR/src/noisy/v2_tests/scripts/analyze_nr_surface_forensics.py"
     --grid-dir "$OUT_DIR" --output-dir "$FORENSICS_OUT" \
     > "${FORENSICS_OUT}/report.txt" 2>&1
 echo "Surface forensics report: ${FORENSICS_OUT}/report.txt"
+
+# =============================================================================
+# SPDN diagnostics
+# =============================================================================
+SPDN_OUT="${OUT_DIR}/spdn_diagnostics"
+mkdir -p "$SPDN_OUT"
+echo "Running SPDN diagnostics analysis ..."
+python "$PROJECT_DIR/src/noisy/v2_tests/scripts/analyze_nr_spdn_diagnostics.py" \
+    --grid-dir "$OUT_DIR" --output-dir "$SPDN_OUT" \
+    > "${SPDN_OUT}/report.txt" 2>&1
+echo "SPDN diagnostics report: ${SPDN_OUT}/report.txt"
 
 echo "=============================================="
 echo "All done.  Results in: $OUT_DIR"

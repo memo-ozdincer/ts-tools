@@ -1,0 +1,205 @@
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               1,1           All
+/project/rrg-aspuru/memoozd/ts-tools/src/noisy/v2_tests/scripts/analyze_nr_surface_forensics.py:741: MatplotlibDeprecationWarning: The 'labels' parameter of boxplot() has been renamed 'tick_labels' since Matplotlib 3.9; support for the old name will be dropped in 3.11.
+  bp = ax.boxplot(data, labels=labels, patch_artist=True)
+/project/rrg-aspuru/memoozd/ts-tools/src/noisy/v2_tests/scripts/analyze_nr_surface_forensics.py:859: MatplotlibDeprecationWarning: The 'labels' parameter of boxplot() has been renamed 'tick_labels' since Matplotlib 3.9; support for the old name will be dropped in 3.11.
+  ax.boxplot([d for d, _ in non_empty_eval],
+/project/rrg-aspuru/memoozd/ts-tools/src/noisy/v2_tests/scripts/analyze_nr_surface_forensics.py:870: MatplotlibDeprecationWarning: The 'labels' parameter of boxplot() has been renamed 'tick_labels' since Matplotlib 3.9; support for the old name will be dropped in 3.11.
+  ax.boxplot([d for d, _ in non_empty_tr],
+/project/rrg-aspuru/memoozd/ts-tools/src/noisy/v2_tests/scripts/analyze_nr_surface_forensics.py:881: MatplotlibDeprecationWarning: The 'labels' parameter of boxplot() has been renamed 'tick_labels' since Matplotlib 3.9; support for the old name will be dropped in 3.11.
+  ax.boxplot([d for d, _ in non_empty_ov],
+Grid directory : /scratch/memoozd/ts-tools-scratch/runs/min_nr_v4_1086092
+Output directory: /scratch/memoozd/ts-tools-scratch/runs/min_nr_v4_1086092/surface_forensics
+Trajectory glob : */diagnostics/*_trajectory.json
+
+Loading trajectories ...
+  Loaded 577 trajectories.
+
+[F1] Trust-radius <-> eigenvalue correlation ...
+[F2] Eigenvalue band transition matrix ...
+[F3] Stagnation anatomy ...
+[F4] Oscillation cycle detection ...
+[F5] Distance evolution comparison ...
+[F6] Ghost-mode characterisation ...
+[F7] Trust-crushed population analysis ...
+
+Writing CSVs ...
+  Saved /scratch/memoozd/ts-tools-scratch/runs/min_nr_v4_1086092/surface_forensics/tr_eigenvalue_correlation.csv  (577 rows)
+  Saved /scratch/memoozd/ts-tools-scratch/runs/min_nr_v4_1086092/surface_forensics/stagnation_windows.csv  (903 rows)
+  Saved /scratch/memoozd/ts-tools-scratch/runs/min_nr_v4_1086092/surface_forensics/oscillation_analysis.csv  (573 rows)
+  Saved /scratch/memoozd/ts-tools-scratch/runs/min_nr_v4_1086092/surface_forensics/ghost_mode_characterization.csv  (577 rows)
+  Saved /scratch/memoozd/ts-tools-scratch/runs/min_nr_v4_1086092/surface_forensics/trust_crushed_analysis.csv  (577 rows)
+  Saved /scratch/memoozd/ts-tools-scratch/runs/min_nr_v4_1086092/surface_forensics/surface_forensics.json
+
+Generating plots ...
+  Saved /scratch/memoozd/ts-tools-scratch/runs/min_nr_v4_1086092/surface_forensics/tr_vs_nneg_scatter.png
+  Saved /scratch/memoozd/ts-tools-scratch/runs/min_nr_v4_1086092/surface_forensics/band_transition_matrix.png
+  Saved /scratch/memoozd/ts-tools-scratch/runs/min_nr_v4_1086092/surface_forensics/stagnation_anatomy_boxplots.png
+  Saved /scratch/memoozd/ts-tools-scratch/runs/min_nr_v4_1086092/surface_forensics/oscillation_period_histogram.png
+  Saved /scratch/memoozd/ts-tools-scratch/runs/min_nr_v4_1086092/surface_forensics/distance_to_reactant_evolution.png
+  Saved /scratch/memoozd/ts-tools-scratch/runs/min_nr_v4_1086092/surface_forensics/population_comparison.png
+
+========================================================================
+  SURFACE / FAILURE FORENSICS REPORT
+========================================================================
+  Total trajectories loaded : 577
+  Converged                 : 112
+  Failed                    : 465
+
+========================================================================
+  F1. Trust Radius <-> Eigenvalue Correlation
+========================================================================
+  Pearson(TR, n_neg)    : mean=0.0773  std=0.1446  n=577
+  Pearson(TR, min_eval) : mean=-0.1486  std=0.2999  n=577
+  TR collapse events (>50% drop in 1 step): 107964
+    mean drop fraction: 0.8317
+
+========================================================================
+  F2. Eigenvalue Band Transition Matrix
+========================================================================
+  Row-normalised transition probabilities (diagonal = stay):
+                <-1e-1 : self-transition = 0.785
+         (-1e-1,-1e-2) : self-transition = 0.404
+         (-1e-2,-1e-3) : self-transition = 0.445
+         (-1e-3,-1e-4) : self-transition = 0.440
+             (-1e-4,0) : self-transition = 0.721
+              (0,1e-4) : self-transition = 0.551
+           (1e-4,1e-3) : self-transition = 0.444
+                 >1e-3 : self-transition = 0.821
+  Mean residence time per band (steps):
+                <-1e-1 : 4.6
+         (-1e-1,-1e-2) : 1.7
+         (-1e-2,-1e-3) : 1.8
+         (-1e-3,-1e-4) : 1.8
+             (-1e-4,0) : 3.6
+              (0,1e-4) : 2.2
+           (1e-4,1e-3) : 1.8
+                 >1e-3 : 5.6
+
+========================================================================
+  F3. Stagnation Anatomy
+========================================================================
+  Stagnation windows found (>= 50 steps constant n_neg): 903
+    Length: mean=252  median=108  max=7918
+    Energy range during stagnation: mean=1.967437
+    Force-norm range: mean=2.956869
+
+========================================================================
+  F4. Oscillation Cycle Detection
+========================================================================
+  Trajectories with detected cycles: 571/573 (99.7%)
+             n_neg: n_detected=563  median_period=8  mean_period=7.8
+          min_eval: n_detected=509  median_period=6  mean_period=15.3
+      trust_radius: n_detected=218  median_period=8  mean_period=26.9
+            energy: n_detected=415  median_period=6  mean_period=11.7
+
+========================================================================
+  F5. Distance Evolution Comparison
+========================================================================
+  CONVERGED:
+    step     0: mean=3.0690  std=0.4798  n=112
+    step     7: mean=2.1545  std=0.0035  n=4
+    step    25: mean=3.1294  std=0.2500  n=2
+    step    29: mean=2.9184  std=0.0000  n=3
+    step    32: mean=3.8797  std=0.0000  n=1
+    step    35: mean=2.9291  std=0.0072  n=16
+    step    36: mean=2.3124  std=0.0672  n=3
+    step    42: mean=3.5595  std=0.1661  n=4
+    step    43: mean=3.6129  std=0.0000  n=1
+    step    44: mean=3.0626  std=0.0000  n=1
+    step    46: mean=3.8969  std=0.0000  n=1
+    step    49: mean=2.8328  std=0.0000  n=1
+    step    61: mean=3.2586  std=0.6953  n=2
+    step    62: mean=3.1041  std=0.0000  n=1
+    step    80: mean=2.0768  std=0.0000  n=1
+    step    82: mean=2.5877  std=0.0000  n=1
+    step    83: mean=2.1234  std=0.0000  n=1
+    step    89: mean=2.6197  std=0.0000  n=1
+    step   100: mean=3.3318  std=0.4402  n=68
+    step   150: mean=2.8978  std=0.0000  n=1
+    step   413: mean=4.3802  std=0.0000  n=3
+    step   499: mean=2.3795  std=0.0000  n=1
+    step   500: mean=3.4732  std=0.4751  n=63
+    step   593: mean=3.4374  std=0.0000  n=1
+    step   761: mean=2.4652  std=0.0000  n=1
+    step   764: mean=3.3088  std=0.0000  n=1
+    step   995: mean=2.9089  std=0.0000  n=1
+    step  1000: mean=3.4675  std=0.4955  n=59
+    step  1148: mean=3.4353  std=0.0000  n=1
+    step  1150: mean=2.8092  std=0.0000  n=1
+    step  1296: mean=3.1666  std=0.0000  n=1
+    step  1311: mean=2.8465  std=0.0000  n=1
+    step  1360: mean=2.9295  std=0.0000  n=1
+    step  1402: mean=4.2128  std=0.0000  n=3
+    step  1525: mean=3.3378  std=0.0000  n=1
+    step  1613: mean=3.6415  std=0.0000  n=1
+    step  1887: mean=3.2128  std=0.0000  n=1
+    step  1988: mean=2.5520  std=0.0000  n=1
+    step  2045: mean=6.0194  std=0.0000  n=2
+    step  2069: mean=4.6453  std=0.0000  n=1
+    step  2146: mean=2.5656  std=0.0000  n=1
+    step  2165: mean=3.0320  std=0.0000  n=3
+    step  2176: mean=2.2958  std=0.0000  n=1
+    step  2183: mean=5.4721  std=0.0000  n=2
+    step  2226: mean=10.3851  std=0.0000  n=2
+    step  2354: mean=7.5513  std=0.0000  n=1
+    step  2364: mean=3.8774  std=0.0000  n=5
+    step  2815: mean=4.2702  std=0.0000  n=1
+    step  3000: mean=3.7887  std=1.4409  n=28
+    step  3067: mean=7.1770  std=0.0000  n=2
+    step  3163: mean=3.5656  std=0.0000  n=1
+    step  3328: mean=3.0693  std=0.0000  n=1
+    step  3543: mean=2.5688  std=0.0000  n=1
+    step  3552: mean=3.1666  std=0.0000  n=1
+    step  3753: mean=3.4643  std=0.0000  n=1
+    step  3951: mean=3.8220  std=0.0000  n=1
+    step  4061: mean=2.7014  std=0.0000  n=1
+    step  4228: mean=18.7651  std=0.0000  n=1
+    step  4243: mean=4.7742  std=0.0000  n=1
+    step  4281: mean=5.1233  std=0.0000  n=1
+    step  4584: mean=4.0928  std=0.0000  n=1
+    step  4851: mean=4.7572  std=0.0000  n=1
+    step  5053: mean=2.7841  std=0.0000  n=1
+    step  5475: mean=3.1250  std=0.0000  n=1
+    step  5626: mean=3.0284  std=0.0000  n=1
+    step  6068: mean=2.8862  std=0.0000  n=1
+    step  6404: mean=2.7605  std=0.0000  n=1
+    step  6971: mean=3.2819  std=0.0000  n=1
+    step  7012: mean=3.1623  std=0.0000  n=1
+    step  7325: mean=3.4646  std=0.0000  n=1
+    step  7428: mean=2.7561  std=0.0000  n=1
+    step  7613: mean=4.1153  std=0.0000  n=1
+    step  7921: mean=2.9141  std=0.0000  n=1
+    step  8340: mean=4.0034  std=0.0000  n=1
+    step  8475: mean=3.4387  std=0.0000  n=1
+    step  9978: mean=3.4542  std=0.0000  n=1
+  FAILED:
+    step     0: mean=3.4128  std=0.4581  n=465
+    step   100: mean=3.6008  std=0.4543  n=465
+    step   500: mean=3.7863  std=0.5115  n=465
+    step  1000: mean=3.9458  std=0.9804  n=465
+    step  3000: mean=11.2226  std=33.2054  n=465
+    step  9999: mean=22.1704  std=85.8497  n=465
+
+========================================================================
+  F6. Ghost-Mode Characterisation
+========================================================================
+  Trajectories with any ghost steps: 242/577
+    Ghost fraction: mean=0.057  max=0.674
+    Pearson(n_atoms, ghost_frac) = 0.0647
+
+========================================================================
+  F7. Trust-Crushed Population Analysis
+========================================================================
+  Trajectories with TR < 0.015: 566/577
+    Crushed fraction: mean=0.751  max=1.000
+    Mean step_along_neg_frac at crush: 0.948842
+
+========================================================================
+  Population Summary (for Plot 6)
+========================================================================
+                  Converged: 112
+        Pop A (Ghost modes): 18
+      Pop B (Trust-crushed): 327
+             Pop C (Border): 120
+
+========================================================================
