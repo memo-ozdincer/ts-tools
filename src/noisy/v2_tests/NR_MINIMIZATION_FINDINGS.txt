@@ -1,0 +1,1150 @@
+================================================================================
+NR MINIMIZATION: COMPREHENSIVE FINDINGS & DOCUMENTATION
+================================================================================
+
+Project: ts-tools / src/noisy/v2_tests/
+Author:  Compiled from multi-session development & analysis
+Date:    March 2026
+
+This document records everything learned during the development and testing of
+the Newton-Raphson minimization pipeline for finding energy minima on potential
+energy surfaces, using the Transition1x dataset with DFTB0 semi-empirical
+calculations.
+
+Table of Contents:
+  1. Problem Statement & Physical Context
+  2. Dataset & Experimental Setup
+  3. Algorithm Evolution (v1 through v5)
+  4. Quantitative Results from v4 Grid Search (30-sample run)
+  5. Failure Mode Analysis (Autopsy Findings)
+  6. Eigenvalue Tolerance Investigation
+  7. Surface Forensics Findings
+  8. The SPDN Algorithm (v5 Design Rationale)
+  9. The Overfitting Problem & v5 Experimental Redesign
+  10. Per-Step Logging Fields (Complete Reference)
+  11. Analysis Pipeline Catalog
+  12. File Inventory
+  13. Open Questions & Next Steps
+
+
+================================================================================
+1. PROBLEM STATEMENT & PHYSICAL CONTEXT
+================================================================================
+
+GOAL: Given a molecular geometry near a transition state (TS), find the nearest
+local energy MINIMUM on the potential energy surface (PES).
+
+PHYSICAL CONTEXT:
+  - Transition states are saddle points on the PES (one imaginary frequency)
+  - Minima have all positive vibrational frequencies (n_neg == 0)
+  - The optimizer must navigate from a noisy starting geometry (near the TS)
+    to the closest minimum, crossing regions of mixed curvature
+
+TWO METHODS IMPLEMENTED:
+  1. Fixed-step gradient descent:
+       x_{k+1} = x_k - alpha * grad E(x_k)
+                = x_k + alpha * forces(x_k)
+
+  2. Newton-Raphson (the focus of all optimization work):
+       x_{k+1} = x_k - H(x_k)^{-1} * grad E(x_k)
+                = x_k + H(x_k)^{-1} * forces(x_k)
+     The inverse Hessian is computed via pseudoinverse in the vibrational
+     subspace to avoid singularities from translation/rotation modes.
+
+Both support optional Eckart projection of the gradient to prevent
+translation/rotation drift.
+
+CONVERGENCE CRITERION:
+  - Strict: n_neg == 0 (zero negative vibrational eigenvalues)
+  - SPDN:   n_neg_reliable == 0 AND force_norm < threshold
+            (ignores ghost eigenvalues below tau_soft)
+
+WHY THIS IS HARD:
+  - The PES has regions of negative curvature near the TS
+  - Small negative eigenvalues ("ghost modes") are numerically ambiguous
+  - The Hessian can be ill-conditioned (condition numbers > 10^6)
+  - Trust-radius dynamics can collapse, rendering steps useless
+  - Eigenvector rotation between steps makes mode-tracking unreliable
+
+
+================================================================================
+2. DATASET & EXPERIMENTAL SETUP
+================================================================================
+
+DATASET: Transition1x
+  - Source:  Official dataset (Schreiner et al.)
+  - Format:  HDF5 file (~1-2 GB)
+  - Content: Small organic molecules (H, C, N, O)
+  - Level:   wB97x/6-31G(d) DFT reference energies/forces
+  - Splits:  train, val, test
+  - Per-sample: reactant geometry, TS geometry, product geometry, atomic
+                numbers, DFT energy, DFT forces, reaction SMILES, formula
+
+CALCULATOR: DFTB0 (Density Functional Tight-Binding, zero-order)
+  - Semi-empirical quantum mechanics method
+  - ~2-3 orders of magnitude faster than full DFT
+  - Provides forces AND Hessians (needed for Newton-Raphson)
+  - Implemented via SCINE/Sparrow backend
+  - CPU-only, no GPU needed
+  - Can describe bond breaking/formation
+
+STARTING GEOMETRY CONSTRUCTION:
+  The starting geometry is constructed from the dataset sample:
+
+  Base geometries:
+    "reactant"       → batch.pos_reactant
+    "ts"             → batch.pos_transition
+    "midpoint_rt"    → 0.5 * pos_reactant + 0.5 * pos_transition
+    "three_quarter_rt" → 0.25 * pos_reactant + 0.75 * pos_transition
+
+  Noise application (e.g., "midpoint_rt_noise2.0A"):
+    1. Parse: base = "midpoint_rt", noise_level = 2.0 Angstroms
+    2. Seed: torch.manual_seed(noise_seed + sample_index)
+       → Each sample gets unique but reproducible noise
+    3. Noise: isotropic Gaussian, per-atom, std = noise_level
+       noise = torch.randn_like(coords_flat) * noise_rms_angstrom
+    4. Apply: noisy_coords = coords_flat + noise
+
+  v4 SETUP: "midpoint_rt_noise2.0A", seed=42, 30 samples
+  v5 SETUP: sweep noise {0.5, 1.0, 1.5, 2.0}A × seeds {42,123,456,789,1024}
+            × 50 samples
+
+PARALLELIZATION:
+  - ProcessPoolExecutor via ParallelSCINEProcessor
+  - N_WORKERS = TOTAL_CPUS / THREADS_PER_WORKER
+  - Default: 192 CPUs / 4 threads = 48 workers
+  - Each worker runs one sample independently
+
+
+================================================================================
+3. ALGORITHM EVOLUTION (v1 through v5)
+================================================================================
+
+--- v1: Basic Newton-Raphson ---
+
+  Step: delta_x = -H^{-1} * grad
+  Computed via eigendecomposition in vibrational subspace.
+  Hard filter: exclude modes with |lambda| < nr_threshold.
+  Trust region: cap max per-atom displacement at max_atom_disp.
+
+  Parameters:
+    nr_threshold:  8e-3 (eigenvalue cutoff)
+    max_atom_disp: 0.3 -> 1.3 A
+
+--- v2: Diagnostics & LM Damping ---
+
+  New features:
+  1. Cascading evaluation:
+     n_neg counted at 8 thresholds: [0, 1e-4, 5e-4, 1e-3, 2e-3, 5e-3, 8e-3, 1e-2]
+     Logged every step. Enables post-hoc threshold relaxation analysis.
+
+  2. Levenberg-Marquardt damping:
+     step_i = (g . v_i) * |lambda_i| / (lambda_i^2 + mu^2)
+     Smooth alternative to hard filter. Activated when lm_mu > 0.
+
+  3. Two-phase threshold annealing:
+     Bulk phase: use nr_threshold
+     Cleanup phase: drop to cleanup_nr_threshold when force < anneal_force_threshold
+
+  4. Spectral gap diagnostic:
+     |lambda_min| / |lambda_second_min| on vibrational eigenvalues
+     Logged every step. Detects dominant-mode vs multi-mode negative curvature.
+
+  5. Full bottom-K vibrational spectrum logged every step.
+
+--- v3: Shifted Newton & Stagnation Escape ---
+
+  New features:
+  1. Shifted Newton step:
+     step_i = (g . v_i) / (lambda_i + sigma)
+     where sigma = max(0, -lambda_min) + shift_epsilon
+     Makes all effective eigenvalues positive.
+     Negative modes get LARGER weights → more aggressive along problematic
+     directions. This was the key breakthrough for v3.
+
+  2. Stagnation-triggered negative-mode perturbation:
+     When n_neg unchanged for stagnation_window steps AND negative eigenvalues
+     are small, apply displacement along negative eigenvectors.
+
+  3. Adaptive LM mu annealing:
+     Reduce mu when close to convergence (few small negative eigenvalues).
+
+  4. Negative-mode line search:
+     Scan along negative eigenvector to find where curvature changes sign.
+
+  5. Trust-region fixes:
+     Higher floor (0.01 A), reset after escape, gradient-norm based minimum
+     step size.
+
+  6. Per-step diagnostic logging:
+     - Gradient-mode overlap for negative modes: |g . v_i| / |g|
+     - Step-mode decomposition: fraction along neg vs pos eigenspace
+     - Stagnation counter
+     - Energy plateau detection
+
+  RESULT: Shifted Newton epsilon=5e-4 achieved 80% convergence (12/15)
+          on a 15-sample test. Best v3 config.
+
+--- v4: Addressing Three Failure Populations ---
+
+  From v3 analysis, three failure populations identified:
+
+  Population 1 — "Blind modes" (samples 000, 010, 007, 003):
+    5 near-zero negative eigenvalues, gradient overlap ≈ 0.001 for all modes.
+    NR step component ∝ (g . v_i) ≈ 0 → optimizer literally blind to these modes.
+
+  Population 2 — "Trust-crushed" (samples 005, 002, 009, 004, 001):
+    n_neg = 1-3, moderate gradient overlap (0.13-0.16), but trust radius at
+    floor (0.01 A) kills the already-small neg-mode step component.
+
+  Population 3 — "True saddle" (sample 012):
+    Large |lambda_min| ≈ 0.148, gradient orthogonal to both negative modes.
+
+  v4 Features (all default OFF for backward compatibility):
+
+  1. SEPARATE NEG-MODE TRUST RADIUS (--neg-trust-floor):
+     Decomposes NR step into neg/pos eigenvalue subspace components.
+     Independent trust radii. Neg-mode floor default 0.05 A.
+     Target: Pop 1+2 (prevents trust collapse from crushing neg-mode steps)
+
+  2. BLIND-MODE CORRECTION (--blind-mode-threshold, --blind-correction-alpha):
+     For neg modes with |g . v_i|/|g| < threshold, adds fixed-magnitude
+     perturbation with alternating sign per step. Zero extra evaluations.
+     Target: Pop 1
+
+  3. AGGRESSIVE TRUST RECOVERY (--aggressive-trust-recovery):
+     Softer trust shrink (x0.5 instead of x0.25) near convergence.
+     Auto-recovery: resets trust to 0.5*max when n_neg decreases.
+     Target: Pop 2
+
+  4. BIDIRECTIONAL STAGNATION ESCAPE (--escape-bidirectional):
+     Probes BOTH +/- v_0 for most negative mode, evaluates Hessian at both,
+     picks direction with less negative eigenvalue. 2-3 extra evals.
+     Target: Pop 1+2
+
+  5. MODE-FOLLOWING (--mode-follow-eval-threshold, --mode-follow-alpha):
+     For large |lambda_min|: bidirectional probe along most negative
+     eigenvector. 2 extra evals per event. Only after --mode-follow-after-steps.
+     Target: Pop 3
+
+  RESULT: All v4 features HURT performance. See Section 4.
+
+--- v5: SPDN (Spectrally-Partitioned DIIS-Newton) ---
+
+  Complete rethink. See Section 8 for full design rationale.
+
+  New features:
+  1. Spectral step builder: bounded weights (max 1/tau_hard = 100x)
+  2. GDIIS (Geometry DIIS): breaks oscillation cycles
+  3. Backtracking line search: replaces trust region for SPDN mode
+  4. Modified convergence: ignores ghost eigenvalues, requires force convergence
+  5. Polyak heavy-ball momentum (optional)
+  6. Comprehensive spectral conditioning diagnostics
+
+
+================================================================================
+4. QUANTITATIVE RESULTS FROM v4 GRID SEARCH (30-sample run)
+================================================================================
+
+SETUP:
+  - 30 samples, noise seed 42, midpoint_rt_noise2.0A
+  - DFTB0 calculator, 10,000 max steps
+  - 9 configurations tested (4 baseline + 5 with v4 features)
+
+TOP CONFIGURATIONS:
+
+  Config                              Conv    Steps    Wall    Errors
+  ─────────────────────────────────────────────────────────────────────
+  SN ε=5e-4 (plain)                  16/30    2401    87.5s      0
+  SN ε=2e-4 (plain)                  16/30    3231    83.8s      0
+  SN ε=7e-4 (plain)                  12/30    2500   104.0s      0
+  SN ε=3e-4 (plain)                  12/30    1875    96.3s      0
+  SN ε=5e-4 + ntf=0.03               3/30     615   101.2s      8
+  SN ε=5e-4 + ntf=0.05               3/30     615   101.7s      8
+  SN ε=3e-4 + ntf=0.1                3/30     747   102.6s      8
+  SN ε=3e-4 + ntf=0.03               3/30     747   102.7s      8
+  SN ε=3e-4 + ntf=0.05               3/30     747   102.8s      8
+
+KEY FINDINGS:
+  1. Best convergence: 16/30 (53%) with plain shifted Newton ε=5e-4 or ε=2e-4
+  2. ALL v4 features hurt performance (3/30 with errors=8)
+  3. ntf (neg-trust-floor) caused 8 errors per run (samples crashing)
+  4. 7 samples NEVER converge across ANY config (0/9 each)
+  5. 16 samples ALWAYS converge with plain SN
+
+MAIN EFFECTS:
+
+  shift_epsilon:
+    ε=2e-4: 53.3% mean convergence
+    ε=5e-4: 24.4% mean convergence (dragged down by ntf configs)
+    ε=7e-4: 40.0%
+    ε=3e-4: 17.5%
+
+  neg_trust_floor:
+    0.0 (off):  46.7% mean convergence
+    0.03-0.1:   10.0% (all equal — the feature itself is the problem)
+
+HARDEST SAMPLES (never converge across 9 configs):
+  sample_000, sample_010, sample_020, sample_023,
+  sample_024, sample_026, sample_027
+
+BORDERLINE SAMPLES (converge with 1/9 configs):
+  sample_002: step=44, best=SN ε=5e-4
+  sample_009: step=7921, best=SN ε=7e-4
+  sample_017: step=3753, best=SN ε=2e-4
+
+CASCADE TABLE (false-rejection analysis):
+
+  Optimizer         eval≥0  eval≥-1e-4  eval≥-5e-4  eval≥-1e-3  eval≥-0.01
+  ──────────────────────────────────────────────────────────────────────────
+  SN ε=2e-4         0.533    0.567       0.633       0.667       0.800
+  SN ε=7e-4         0.400    0.433       0.533       0.533       0.767
+
+  INTERPRETATION:
+  - Gap from eval≥0 to eval≥-0.01 shows many trajectories get CLOSE but
+    have small residual negative eigenvalues
+  - SN ε=7e-4: strict=40%, relaxed@0.01=76.7% → 36.7% are false-rejection
+  - SN ε=2e-4: strict=53.3%, relaxed@0.01=80% → 26.7% false-rejection
+  - These are geometries that are essentially at a minimum but have tiny
+    negative eigenvalues, likely numerical noise or ghost modes
+
+
+================================================================================
+5. FAILURE MODE ANALYSIS (AUTOPSY FINDINGS)
+================================================================================
+
+FAILURE CLASSIFICATION METHODOLOGY:
+  Each failed trajectory is classified by examining:
+  - Final eigenvalue state (n_neg, min_vib_eval, bottom_spectrum)
+  - Eigenvalue trajectory (improving, oscillating, stuck)
+  - Energy trajectory (decreasing, plateau, oscillating)
+  - Gradient-mode overlap (can optimizer address negative modes?)
+  - Stagnation (n_neg unchanged for how long?)
+  - Trust radius history (collapsed to floor?)
+  - Eigenvector continuity (modes rotating?)
+
+FAILURE MODES:
+
+  1. "oscillating" (~70% of failures):
+     Trust radius collapses to floor (0.01 A), then thousands of useless
+     micro-steps dominated by positive-mode components while negative
+     eigenvalues bounce around near zero.
+
+     ROOT CAUSE: Period-8 oscillation cycle.
+     The shifted Newton step with ε=5e-4 amplifies eigenvalues near zero
+     by up to 2000x. When |lambda| ≈ 5e-4, weight = 1/(lambda + 5e-4)
+     ≈ 1/1e-3 = 1000. The resulting large step overshoots, causing the
+     trust region to shrink. At the TR floor (0.01 A), the actual step
+     is dominated by the capped displacement, which is mostly along
+     positive modes. The negative modes see almost no progress.
+
+  2. "almost_converged" (~12% of failures):
+     Very close to minimum: |min_eval| < 2e-3, n_neg ≤ 3.
+     Would converge with eigenvalue tolerance or more steps.
+
+  3. "ghost_modes" (~3% of failures):
+     All negative eigenvalues in [-1e-4, 0) band. No eigenvalues below
+     -1e-4. Gradient overlap ≈ 0 for all ghost modes. Eigenvectors
+     rotate between steps (overlap < 0.5). These are numerically-zero
+     eigenvalues that the optimizer cannot address.
+
+  4. "energy_plateau" (rare):
+     Energy stopped decreasing but negative eigenvalues remain.
+
+  5. "genuinely_stuck" (0% in v4):
+     Never observed. The optimizer always makes SOME progress.
+
+  6. "slow_convergence" (rare):
+     Eigenvalues improving but too slowly to converge within step budget.
+
+THREE FAILURE POPULATIONS (from detailed analysis):
+
+  Population A — "Ghost modes":
+    - Affected samples: 000, 010, 007, 003
+    - Characteristics: n_neg = 5-12 but ALL eigenvalues ≈ -1e-6 to -1e-8
+    - Gradient overlap: ≈ 0.001 for all negative modes
+    - Eigenvector continuity: modes rotate every few steps (overlap < 0.5)
+    - Physical interpretation: these eigenvalues are below numerical noise
+    - DIAGNOSIS: not a real saddle point, just numerical noise
+
+  Population B — "Trust-crushed":
+    - Affected samples: 005, 002, 009, 004, 001
+    - Characteristics: n_neg = 1-3, eigenvalues -0.001 to -0.019
+    - Gradient overlap: moderate (0.13-0.16)
+    - Trust radius: at floor (0.01 A) for >75% of steps
+    - Step decomposition: 95%+ along positive modes, <5% along negative
+    - DIAGNOSIS: optimizer CAN see the negative modes but trust radius
+      kills the step before it can make progress
+
+  Population C — "Border cases":
+    - Small negative eigenvalues that fluctuate around zero
+    - Would converge with patience or slight tolerance
+    - Not a fundamental failure, just insufficient steps/budget
+
+OSCILLATION CYCLE ANATOMY:
+
+  The dominant failure mode (oscillating, 70%) follows a specific pattern:
+
+  Step N:   eigenvalue λ ≈ -0.005, weight = 1/(0.005 + 5e-4) = 182x
+            Step size: 0.15 A (after trust cap)
+            Trust radius: 0.15 A
+
+  Step N+1: Overshoot. Energy increased. Trust shrinks to 0.15 * 0.25 = 0.0375 A
+            λ shifted to -0.003
+
+  Step N+2: Smaller step works. Trust stays or shrinks further.
+            λ oscillates back to -0.006
+
+  Step N+3: Weight now 1/(0.006 + 5e-4) = 154x. Large step again.
+            Overshoot. Trust shrinks to floor (0.01 A).
+
+  Steps N+4 to N+∞: Trust at floor. Max displacement 0.01 A.
+            Step mostly along positive modes (where |g . v_i| is large).
+            Negative-mode component: 0.01 * (small_overlap) ≈ 0.0001 A.
+            Eigenvalue change per step: negligible.
+            STUCK.
+
+  This is a PERIOD-8 oscillation (detected by FFT autocorrelation in
+  the surface forensics analysis). The period varies slightly but 8 is
+  the mode.
+
+
+================================================================================
+6. EIGENVALUE TOLERANCE INVESTIGATION
+================================================================================
+
+The eigenvalue tolerance investigation (analyze_nr_eigenvalue_justification.py)
+was designed as an EXPERIMENT, not a post-hoc justification. It produces
+evidence FOR or AGAINST tolerance filtering.
+
+KEY QUESTION: Can we declare convergence when all eigenvalues are above
+-T (for some threshold T) instead of strictly above 0?
+
+SIX ANALYSIS MODULES:
+
+A1. Band Evolution Statistics
+  - When do ghost eigenvalues first appear?
+  - Do real negative modes shrink into the ghost band, or do ghost modes
+    appear de novo?
+  - Answer: Ghost modes tend to appear in the final 10-20% of the
+    trajectory, after the optimizer has already resolved the large
+    negative eigenvalues.
+
+A2. Tolerance Sweep Experiment
+  - For each tolerance T in [0, 1e-5, 5e-5, 1e-4, ..., 1e-2]:
+    - How many failed trajectories would become "converged"?
+    - How many converged trajectories would have stopped EARLY (danger)?
+  - CRITICAL FINDING: At T = 1e-4, the false convergence rate was 97%.
+    That is, 97% of trajectories that would be declared converged under
+    T = 1e-4 later breach the tolerance. The eigenvalues do NOT stay
+    above -T; they oscillate through it.
+
+A3. Physical Significance Analysis
+  - Estimate Hessian numerical noise floor from stagnant regions
+  - Compare ghost eigenvalue magnitudes to noise floor
+  - Result: ghost eigenvalues (|λ| < 1e-4) are at or below the
+    numerical noise floor of the DFTB0 Hessian
+
+A4. Stability / False Convergence Detection
+  - Simulate: if tolerance T applied at first qualifying step S,
+    do eigenvalues stay within tolerance at steps S+1, S+5, S+50, S+500?
+  - Result: EXTREMELY UNSTABLE. Ghost modes appear and disappear
+    unpredictably. Eigenvectors rotate. The same eigenvalue index can
+    be positive at step N and negative at step N+1.
+  - 97% false convergence rate at T = 1e-4 (most promising threshold)
+
+A5. Cascade Gap Analysis
+  - Per failed sample: required tolerance T = |min_final_eval|
+  - CDF of required tolerances across all failed samples
+  - Finding: NO natural gap in the CDF. The required tolerance
+    distribution is continuous from 1e-8 to 1e-1. There is no clean
+    separation between "ghost modes" and "real saddle points."
+
+A6. Eigenvalue-Force-Energy Consistency Check
+  - For tolerance-qualifying geometries: are forces also small?
+  - Result: INCONSISTENT. Many tolerance-qualifying geometries have
+    force norms >> force_converged threshold. They are NOT at minima
+    even if eigenvalues look OK.
+
+CONCLUSION FROM TOLERANCE INVESTIGATION:
+
+  Eigenvalue tolerance filtering is NOT a viable convergence strategy.
+
+  Evidence AGAINST:
+  - 97% false convergence rate at the most promising threshold
+  - No natural gap in required tolerance distribution
+  - Ghost modes are unstable (rotate, appear/disappear)
+  - Force-eigenvalue inconsistency: tolerance-qualifying != at minimum
+
+  Evidence FOR (limited):
+  - Ghost eigenvalues are below Hessian noise floor (physically meaningless)
+  - Would increase measured convergence rate by 20-30%
+
+  VERDICT: The convergence problem must be solved by fixing the OPTIMIZER
+  (preventing oscillation-collapse), not by relaxing the convergence
+  CRITERION (eigenvalue tolerance).
+
+  However, for SPDN mode specifically, a combined criterion is used:
+    n_neg_reliable == 0 AND force_norm < threshold
+  This is different from pure eigenvalue tolerance because:
+  1. Only ignores eigenvalues below tau_soft (1e-4), which are below noise
+  2. Requires FORCE convergence as a second gate
+  3. This combination prevents the 97% false convergence problem
+
+
+================================================================================
+7. SURFACE FORENSICS FINDINGS
+================================================================================
+
+The surface forensics analysis (analyze_nr_surface_forensics.py) examines
+the potential energy surface behavior and optimizer dynamics.
+
+F1. Trust Radius ↔ Eigenvalue Correlation
+  - Strong negative correlation: as trust radius decreases, n_neg tends
+    to remain constant or increase
+  - Trust collapse events (>50% drop in one step) are followed by
+    eigenvalue oscillations in the subsequent 10-20 steps
+
+F2. Eigenvalue Band Transition Matrices
+  - 8x8 transition matrix (from_band → to_band per step)
+  - High self-transition rates for extreme bands (strongly positive stays
+    positive, strongly negative stays negative)
+  - Ghost band [-1e-4, 0) has LOW self-transition: modes enter and leave
+    frequently. Residence time ≈ 3-5 steps.
+
+F3. Stagnation Anatomy
+  - Stagnation windows (>50 steps, same n_neg):
+    - Energy range: < 1e-6 eV (flat)
+    - Force norm: slowly increasing (optimizer losing progress)
+    - Eigenvalue range: oscillating with constant n_neg
+    - Trust radius: at floor for 100% of stagnant steps
+    - Displacement: < 0.001 A per step (effectively frozen)
+
+F4. Oscillation Cycle Detection (FFT-based)
+  - Dominant period: 8 steps (most common)
+  - Detected in 70% of failed trajectories
+  - Oscillation in: n_neg (alternating 0 and 1-3), trust_radius,
+    and min_vib_eval
+
+F5. Distance Evolution
+  - Converged trajectories: move 0.5-2.0 A from start to minimum
+  - Failed trajectories: move 0.3-1.5 A then STOP (trust-crushed)
+  - Failed trajectories are NOT drifting away — they're stuck near
+    a point that is close to but not exactly at the minimum
+
+F6. Ghost Mode Characterization
+  - Eigenvectors of ghost modes rotate with overlap < 0.5 between steps
+  - The same physical direction is NOT persistently negative
+  - Different modes take turns being in the ghost band
+  - Correlates weakly with molecule size (more atoms → more modes
+    near zero → more ghost modes)
+
+F7. Trust-Crushed Population
+  - When TR at floor (0.01 A):
+    step_along_neg_frac ≈ 2-5% (most of the step is in positive space)
+    Actual neg-mode displacement: ~0.0002-0.0005 A
+    At this rate, moving 0.01 A along negative modes takes 20-50 steps
+    but eigenvalues don't improve because the curvature changes
+
+
+================================================================================
+8. THE SPDN ALGORITHM (v5 DESIGN RATIONALE)
+================================================================================
+
+SPDN = Spectrally-Partitioned DIIS-Newton
+
+Designed to address the three root causes identified in Sections 5-7:
+  1. Oscillation-collapse cycle (70% of failures)
+  2. Trust-radius crushing of negative-mode steps
+  3. Ghost mode false-negatives
+
+--- Component 1: Spectral Step Builder ---
+
+  Instead of uniform 1/(lambda + sigma) weighting (shifted Newton),
+  partition eigenvalues into three reliability regimes:
+
+  HARD regime (|lambda| > tau_hard, default 0.01):
+    weight = 1 / |lambda|
+    Full Newton behavior. These eigenvalues are reliable.
+
+  SOFT regime (tau_soft < |lambda| <= tau_hard):
+    weight = 1 / tau_hard
+    Capped at 1/tau_hard = 100x (vs shifted Newton's 2000x)
+    Provides progress without explosive amplification.
+
+  NULL regime (|lambda| <= tau_soft, default 1e-4):
+    weight = 1 / tau_hard
+    Ghost modes get same bounded weight as soft modes.
+    Not zeroed out (still contributes), but cannot dominate.
+
+  Implementation:
+    abs_lam = torch.abs(lam_all)
+    effective_lam = torch.clamp(abs_lam, min=tau_hard)
+    weights = 1.0 / effective_lam
+    coeffs = V_all.T @ grad
+    nr_step = V_all @ (coeffs * weights)
+    delta_x = -nr_step
+
+  KEY DIFFERENCE FROM SHIFTED NEWTON:
+    Shifted Newton: max weight = 1/shift_epsilon = 1/5e-4 = 2000x
+    SPDN:           max weight = 1/tau_hard = 1/0.01 = 100x
+    This 20x reduction prevents the oscillation-collapse cycle.
+
+--- Component 2: GDIIS (Geometry DIIS) ---
+
+  GDIIS = Geometry Direct Inversion of the Iterative Subspace.
+  Standard technique in computational chemistry for breaking oscillation.
+
+  Stores M recent (geometry, gradient) pairs.
+  Solves: min ||sum_i c_i * e_i||^2 subject to sum_i c_i = 1
+  where e_i is the gradient at geometry i.
+
+  Linear system:
+    [B   1] [c]   [0]
+    [1^T 0] [λ] = [1]
+
+  where B_ij = e_i . e_j (error overlap matrix)
+
+  Extrapolated geometry: x_diis = sum_i c_i * x_i
+  This finds the point where the oscillation is centered — the "average"
+  of the oscillating geometries, which is often close to the minimum.
+
+  Parameters:
+    max_size:  8 (stored geometry-gradient pairs)
+    min_size:  3 (minimum before attempting extrapolation)
+    diis_every: 5 (attempt every 5 steps)
+
+  Acceptance criteria:
+    1. Coefficient validation: max |c_i| <= 10 (reject if ill-conditioned)
+    2. Geometry validation: min interatomic distance satisfied
+    3. Energy validation: E(x_diis) <= E(x_current) (Armijo-like)
+
+  If accepted: jump to DIIS geometry and continue.
+  If rejected: ignore and continue from current geometry.
+
+--- Component 3: Backtracking Line Search ---
+
+  Replaces the trust region for SPDN mode.
+
+  Armijo condition: f(x + alpha*d) <= f(x) + c1 * alpha * grad.dot(d)
+  where c1 = 1e-4 (sufficient decrease constant)
+
+  Algorithm:
+    alpha = 1.0 (start with full step)
+    for i in range(15):
+      trial = x + alpha * direction
+      if min_interatomic_dist violated: alpha *= 0.5; continue
+      trial_energy = predict_fn(trial)
+      if Armijo satisfied: ACCEPT
+      alpha *= 0.5
+
+  WHY BETTER THAN TRUST REGION:
+  - Trust region shrinks based on quadratic model accuracy
+  - When Hessian is inaccurate (near ghost modes), the model is always
+    inaccurate, so TR always shrinks → collapse to floor
+  - Backtracking line search only needs ENERGY decrease, not model accuracy
+  - More robust to Hessian noise
+
+--- Component 4: Modified Convergence ---
+
+  SPDN convergence:
+    n_neg_reliable = count(evals_vib < -tau_soft)
+    converged = (n_neg_reliable == 0) AND (force_norm < force_converged)
+
+  This ignores eigenvalues in [-tau_soft, 0) (ghost modes) BUT requires
+  force convergence as a safety gate. This prevents the 97% false
+  convergence problem identified in the tolerance investigation.
+
+--- Component 5: Polyak Heavy-Ball Momentum (Optional) ---
+
+  delta_x = delta_x + momentum * (x_current - x_previous)
+
+  Dampens high-frequency oscillations. Default momentum = 0.0 (off).
+  Tested values: {0.0, 0.2, 0.4}
+
+--- Spectral Conditioning Diagnostics ---
+
+  Every SPDN step logs detailed spectral information:
+  - Partition counts: n_hard_pos, n_hard_neg, n_soft, n_null
+  - Condition numbers: cond_full, cond_hard_only
+  - Eigenvalue ranges: eval_range, eval_spread_positive, eval_spread_negative
+  - Change rates: eval_change_rate_mean, eval_max_change, eval_change_rate_hard
+  - Extremes: min_pos_eval, max_neg_eval
+
+--- Saddle Point Diagnostic (DIAGNOSTIC ONLY) ---
+
+  At each step, detect saddle-like configurations:
+    is_saddle_like = (force_norm < 0.01) AND (n_neg_reliable > 0)
+
+  This is PURELY diagnostic — it does not affect optimization decisions.
+  Logged for learning about the PES landscape.
+
+
+================================================================================
+9. THE OVERFITTING PROBLEM & v5 EXPERIMENTAL REDESIGN
+================================================================================
+
+PROBLEM IDENTIFIED:
+
+  The v4 grid search used 30 fixed samples with noise_seed=42.
+  Every run produced the EXACT SAME 30 starting geometries.
+
+  Result: the same 16 samples always converged, the same 7 never did,
+  and 7 were borderline. We weren't testing optimizers — we were
+  overfitting to 30 specific starting points.
+
+  The v4 features (ntf, blind correction, etc.) made things worse
+  because:
+  1. The 16 "easy" samples converge with plain SN anyway
+  2. The 7 "impossible" samples have starting geometries too far from
+     any minimum for ANY optimizer to reach
+  3. The 7 "borderline" samples are sensitive to hyperparameters, but
+     with only one noise realization we can't distinguish signal from noise
+
+  Furthermore, 2.0 A per-atom Gaussian noise is ENORMOUS. Typical bond
+  lengths are 1-2 A. Moving each atom by a full bond length from an
+  already-not-minimum geometry (the reactant-TS midpoint) produces
+  starting geometries where atoms may overlap.
+
+v5 EXPERIMENTAL REDESIGN:
+
+  Replace the fixed-seed 30-sample experiment with a properly-controlled
+  statistical experiment:
+
+  Axis 1: Noise magnitude — {0.5, 1.0, 1.5, 2.0} A (4 levels)
+    Maps the difficulty curve. At what noise level does convergence
+    break down?
+
+  Axis 2: Noise seed — {42, 123, 456, 789, 1024} (5 seeds)
+    Independent noise realizations. Gives mean ± std convergence rates.
+    Identifies which failures are seed-dependent vs inherent.
+
+  Axis 3: Optimizer — 4 slim configs (only what works)
+    a) SN ε=5e-4:  Best v4 plain config
+    b) SN ε=2e-4:  Tied best, slower
+    c) SPDN default: tau_hard=0.01, diis_size=8, diis_every=5
+    d) SPDN tuned:  tau_hard=0.02, momentum=0.2, diis_every=3
+
+  Total: 4 × 5 × 4 = 80 combinations
+  Samples: 50 per combo
+  Total trajectories: 4,000
+
+  Directory structure:
+    <OUT_DIR>/
+      noise_0.5A/
+        seed_42/
+          mad1.3_se5e-4_pgtrue_phfalse/
+          mad1.3_se2e-4_pgtrue_phfalse/
+          mad1.3_spdn_pgtrue_phfalse/
+          mad1.3_spdn_tuned_pgtrue_phfalse/
+        seed_123/
+          ...
+      noise_1.0A/
+        ...
+
+  This design answers:
+  1. What is the convergence rate vs noise magnitude curve?
+  2. Does SPDN outperform shifted Newton at any noise level?
+  3. Are there samples that are universally hard, or does it depend on
+     the noise realization?
+  4. How robust is each optimizer (low std across seeds = robust)?
+  5. Is the 53% ceiling at 2.0A inherent to the problem or specific
+     to seed 42?
+
+
+================================================================================
+10. PER-STEP LOGGING FIELDS (COMPLETE REFERENCE)
+================================================================================
+
+Every step in the trajectory records the following fields:
+
+CORE STATE:
+  step                    int     Step number (0-indexed)
+  energy                  float   Total energy (eV)
+  force_norm              float   L2 norm of forces (eV/A)
+  n_neg_evals             int     Number of negative vibrational eigenvalues
+  n_neg_total_hessian     int     Number of negative eigenvalues in full Hessian
+  min_vib_eval            float   Most negative vibrational eigenvalue
+  max_vib_eval            float   Most positive vibrational eigenvalue
+  cond_num                float   Condition number of vibrational Hessian
+  eff_step_size           float   Actual displacement norm (A)
+  min_dist                float   Minimum interatomic distance (A)
+  trust_radius            float   Current trust radius (A)
+
+DISTANCE TRACKING:
+  disp_from_start_max     float   Max per-atom displacement from start (A)
+  disp_from_start_rmsd    float   RMSD displacement from start (A)
+  dist_to_ts_max          float   Max per-atom distance to known TS (A)
+  dist_to_reactant_max    float   Max per-atom distance to known reactant (A)
+  dist_to_reactant_rmsd   float   RMSD distance to known reactant (A)
+  dist_to_product_max     float   Max per-atom distance to known product (A)
+  dist_to_product_rmsd    float   RMSD distance to known product (A)
+
+PHASE & STAGNATION:
+  phase                   str     "bulk" or "cleanup"
+  stagnation_counter      int     Steps with unchanged n_neg
+  energy_plateau          bool    Energy change < 1e-8 over 10 steps
+  effective_lm_mu         float   Current LM mu (if LM active, else None)
+  neg_trust_radius        float   Separate neg-mode trust radius (if active)
+
+CASCADE EVALUATION (8 fields):
+  n_neg_at_0.0            int     n_neg at threshold 0.0
+  n_neg_at_0.0001         int     n_neg at threshold 1e-4
+  n_neg_at_0.0005         int     n_neg at threshold 5e-4
+  n_neg_at_0.001          int     n_neg at threshold 1e-3
+  n_neg_at_0.002          int     n_neg at threshold 2e-3
+  n_neg_at_0.005          int     n_neg at threshold 5e-3
+  n_neg_at_0.008          int     n_neg at threshold 8e-3
+  n_neg_at_0.01           int     n_neg at threshold 1e-2
+
+EIGENVALUE BAND POPULATIONS (8 fields):
+  n_eval_below_neg1e-1    int     Eigenvalues < -0.1
+  n_eval_neg1e-1_to_neg1e-2  int  Eigenvalues in [-0.1, -0.01)
+  n_eval_neg1e-2_to_neg1e-3  int  Eigenvalues in [-0.01, -0.001)
+  n_eval_neg1e-3_to_neg1e-4  int  Eigenvalues in [-0.001, -1e-4)
+  n_eval_neg1e-4_to_0     int     Eigenvalues in [-1e-4, 0) ← GHOST BAND
+  n_eval_0_to_pos1e-4     int     Eigenvalues in [0, 1e-4)
+  n_eval_pos1e-4_to_pos1e-3  int  Eigenvalues in [1e-4, 0.001)
+  n_eval_above_pos1e-3    int     Eigenvalues >= 0.001
+
+SPECTRAL DIAGNOSTICS:
+  bottom_spectrum          list    Bottom K eigenvalues (default K=10)
+  spectral_gap_ratio       float   |λ_min| / |λ_2nd_min|
+  dominant_neg_mode        bool    Exactly 1 neg or gap_ratio > 10
+
+EIGENVECTOR CONTINUITY:
+  eigenvec_continuity      dict    Contains:
+    mode_continuity_min      float  Worst overlap with previous step
+    mode_continuity_mean     float  Mean overlap with previous step
+    n_mode_rotation_events   int    Modes with overlap < 0.5
+    n_neg_current            int    Current n_neg
+    n_neg_previous           int    Previous n_neg
+
+NEGATIVE MODE DIAGNOSTICS:
+  neg_mode_diag            dict    Contains:
+    neg_mode_grad_overlaps   list   |g . v_i| / |g| per neg mode
+    neg_mode_eigenvalues     list   Eigenvalue per neg mode
+    min_neg_grad_overlap     float  Minimum overlap
+    step_along_neg_frac      float  Fraction of step in neg subspace
+
+STEP MODE:
+  step_mode                str     "spdn", "shifted_newton", "lm_damping",
+                                   "hard_filter"
+
+SPDN-SPECIFIC (when optimizer_mode="spdn"):
+  spectral_conditioning    dict    Full spectral conditioning diagnostics
+    n_hard_pos               int
+    n_hard_neg               int
+    n_soft                   int
+    n_null                   int
+    n_total                  int
+    cond_full                float
+    cond_hard_only           float
+    eval_range               float
+    eval_spread_positive     float
+    eval_spread_negative     float
+    eval_change_rate_mean    float   (None if first step)
+    eval_max_change          float   (None if first step)
+    eval_change_rate_hard    float   (None if first step)
+    min_pos_eval             float
+    max_neg_eval             float
+
+  n_neg_reliable           int     n_neg ignoring ghost modes (|λ| <= tau_soft)
+
+  saddle_diagnostic        dict    (DIAGNOSTIC ONLY)
+    is_saddle_like           bool
+    n_neg_reliable           int
+    force_norm               float
+
+  spdn_step_info           dict    Step builder diagnostics
+    n_hard                   int
+    n_soft                   int
+    n_null                   int
+    max_weight               float
+    cond_effective           float
+
+  spdn_linesearch          dict    Line search results
+    alpha                    float   Final step size multiplier
+    n_backtracks             int     Number of halvings
+    accepted                 bool    Armijo condition satisfied
+    directional_deriv        float   grad . direction
+    energy_change            float   E_after - E_before
+
+  gdiis_info               dict    (when DIIS attempted)
+    status                   str     "success" / "failed" / "too_few"
+    n_stored                 int
+    B_cond                   float   Condition of overlap matrix
+    residual_ratio           float   DIIS residual / current residual
+    coefficients             list    DIIS coefficients
+
+  gdiis_accepted           bool    Whether DIIS step was accepted
+  gdiis_energy_change      float   Energy change from DIIS step
+  spdn_momentum_applied    bool    Whether momentum was used this step
+
+V4 DIAGNOSTICS:
+  blind_correction         dict    Blind mode correction info
+  mode_follow_info         dict    Mode-following probe results
+  mode_follow_triggered    bool    Whether mode-following activated
+  escape_triggered         bool    Whether escape perturbation fired
+  escape_accepted          bool    Whether escape was accepted
+  trust_radius_reset       str     Reason for TR reset (if any)
+
+
+================================================================================
+11. ANALYSIS PIPELINE CATALOG
+================================================================================
+
+All analysis scripts, their purpose, inputs, and outputs:
+
+─────────────────────────────────────────────────────────────────────────────
+
+SCRIPT: analyze_minimization_nr_grid.py
+PURPOSE: Grid search ranking, main effects, cascade table
+INPUT:   */minimization_newton_raphson_*_results.json
+CLI:     --grid-dir, --result-glob, --top-k, --output-dir
+OUTPUT:  nr_grid_summary.json, nr_grid_ranked.csv,
+         nr_grid_sample_hardness.csv, nr_grid_cascade_table.csv
+MODULES:
+  - rank_records: Sort by convergence rate → steps → wall time
+  - summarize_main_effect: Per-hyperparameter effect analysis
+  - summarize_sample_hardness: Per-sample convergence across configs
+  - build_cascade_cross_table: 2D optimizer × eval_threshold table
+COMBO TAG PARSING: Supports hard_filter (nrt), LM (lmmu), shifted (se),
+  v4 shifted (se+ntf+bmt+bca+atr+ebd+mft), SPDN (spdn[_tuned])
+
+─────────────────────────────────────────────────────────────────────────────
+
+SCRIPT: analyze_nr_failure_autopsy.py
+PURPOSE: Classify failed trajectories into failure modes
+INPUT:   */diagnostics/*_trajectory.json
+CLI:     --grid-dir, --output-dir, --traj-glob
+OUTPUT:  failure_autopsy.csv, failure_autopsy.json
+MODULES:
+  - classify_trajectory: Returns classification, diagnostics dict
+CLASSIFICATIONS:
+  converged, ghost_modes, almost_converged, oscillating,
+  energy_plateau, genuinely_stuck, slow_convergence, drifting
+
+─────────────────────────────────────────────────────────────────────────────
+
+SCRIPT: analyze_nr_eigenvalue_justification.py
+PURPOSE: Evidence FOR/AGAINST eigenvalue tolerance filtering
+INPUT:   */diagnostics/*_trajectory.json
+CLI:     --grid-dir, --output-dir, --traj-glob, --combo-tag, --top-k-heatmaps
+OUTPUT:  eigenvalue_tolerance_sweep.csv, per_sample_required_tolerance.csv,
+         band_evolution_summary.csv, ghost_mode_analysis.csv,
+         false_convergence_analysis.csv, force_eigenvalue_consistency.csv,
+         eigenvalue_justification.json, 9 PNG plots
+MODULES:
+  A1. Band Evolution Statistics
+  A2. Tolerance Sweep Experiment
+  A3. Physical Significance Analysis
+  A4. Stability / False Convergence Detection
+  A5. Cascade Gap Analysis
+  A6. Eigenvalue-Force-Energy Consistency Check
+
+─────────────────────────────────────────────────────────────────────────────
+
+SCRIPT: analyze_nr_surface_forensics.py
+PURPOSE: Deep PES behavior and optimizer dynamics analysis
+INPUT:   */diagnostics/*_trajectory.json
+CLI:     --grid-dir, --output-dir, --traj-glob, --combo-tag
+OUTPUT:  trust_vs_eigenvalue_correlation.csv, band_transition_matrices.csv,
+         stagnation_anatomy.csv, oscillation_cycles.csv,
+         distance_evolution_comparison.csv, ghost_mode_analysis.csv,
+         trust_crushed_population.csv, surface_forensics.json, 6+ PNGs
+MODULES:
+  F1. Trust Radius ↔ Eigenvalue Correlation
+  F2. Eigenvalue Band Transition Matrices
+  F3. Stagnation Anatomy
+  F4. Oscillation Cycle Detection (FFT-based)
+  F5. Distance Evolution Comparison
+  F6. Ghost Mode Characterization
+  F7. Trust-Crushed Population Analysis
+
+─────────────────────────────────────────────────────────────────────────────
+
+SCRIPT: analyze_nr_spdn_diagnostics.py
+PURPOSE: SPDN-specific deep diagnostics (7 modules)
+INPUT:   */diagnostics/*_trajectory.json (SPDN and legacy)
+CLI:     --grid-dir, --output-dir, --traj-glob, --combo-tag, --top-k
+OUTPUT:  spectral_conditioning_milestones.csv, gdiis_performance.csv,
+         linesearch_stats.csv, saddle_diagnostics.csv,
+         walking_out_of_minima.csv, eigenvalue_stability.csv, 5 PNGs
+MODULES:
+  D1. SPDN vs Legacy Comparison
+  D2. Spectral Conditioning Deep Dive
+      - Condition numbers, eigenvalue change rates, regime populations
+  D3. GDIIS Performance Analysis
+      - Accept rates, B_cond distributions, energy impact
+  D4. Backtracking Line Search Analysis
+      - n_backtracks, alpha distributions, correlation with spectrum
+  D5. Saddle Point Detection Diagnostics (DIAGNOSTIC ONLY)
+      - Saddle-like step detection, persistence, geometry context
+  D6. Walking Out of Minima Analysis
+      - Backward from converged → start: eigenvalue profile, forces,
+        bands, condition number vs distance from minimum
+  D7. Eigenvalue Stability & Change Rate Analysis
+      - Step-to-step changes, autocorrelation, band transitions,
+        eigenvalue magnitude ratios
+
+─────────────────────────────────────────────────────────────────────────────
+
+SCRIPT: analyze_nr_cross_seed.py
+PURPOSE: Multi-seed aggregation for v5 experiments
+INPUT:   noise_*/seed_*/combo_tag/minimization_*_results.json
+CLI:     --grid-dir, --output-dir
+OUTPUT:  convergence_by_noise_optimizer.csv, sample_consistency.csv,
+         cross_seed_summary.json
+MODULES:
+  1. Convergence by noise × optimizer (mean ± std across seeds)
+  2. Difficulty curve (convergence rate vs noise magnitude)
+  3. Sample consistency (universally-hard vs seed-dependent)
+  4. Seed variance (optimizer robustness: low std = robust)
+  5. Cascade table (aggregated across seeds)
+
+─────────────────────────────────────────────────────────────────────────────
+
+SCRIPT: analyze_nr_trajectory_stats.py
+PURPOSE: Per-trajectory and per-combo aggregate statistics
+INPUT:   */diagnostics/*_trajectory.json
+CLI:     --grid-dir, --output-dir, --traj-glob, --top-k
+OUTPUT:  nr_traj_stats_per_trajectory.csv, nr_traj_stats_per_combo.csv,
+         nr_traj_stats_summary.json
+MODULES:
+  - Trust radius evolution statistics
+  - Actual step displacement statistics
+  - Hit-trust-radius rate
+  - Step retries
+  - Hessian condition number evolution
+  - Force norm decay
+  - Negative vibrational modes evolution
+
+─────────────────────────────────────────────────────────────────────────────
+
+SCRIPT: plot_nr_grid_trajectories.py
+PURPOSE: Six-panel trajectory visualization
+INPUT:   */diagnostics/*_trajectory.json
+CLI:     --grid-dir, --output-dir, --n-plots
+OUTPUT:  {sample_id}_{combo_tag}.png (6 subplots each)
+PANELS:
+  1. Trust radius vs actual displacement
+  2. Force norm and retries
+  3. Hessian condition number
+  4. Largest |eigenvalue|
+  5. Smallest |eigenvalue|
+  6. Cascading n_neg counts over time
+
+
+================================================================================
+12. FILE INVENTORY
+================================================================================
+
+CORE ALGORITHM:
+  src/noisy/v2_tests/baselines/minimization.py
+    - run_newton_raphson (main optimizer, ~2100 lines total)
+    - run_fixed_step_gd (gradient descent baseline)
+    - _nr_step_spectral_partitioned (SPDN step builder)
+    - _GDIISExtrapolator (GDIIS class)
+    - _spectral_conditioning_diagnostics
+    - _eigenvector_continuity
+    - _eigenvalue_band_populations
+    - _cascade_n_neg
+    - _neg_mode_diagnostics
+    - _blind_correction
+    - _cap_displacement, _min_interatomic_distance, _bottom_k_spectrum
+
+RUNNER:
+  src/noisy/v2_tests/runners/run_minimization_parallel.py
+    - Argparse CLI (50+ arguments)
+    - scine_worker_sample (parallel worker)
+    - run_single_sample (orchestrates one sample)
+    - run_batch / run_batch_parallel
+    - Result JSON construction
+    - Trajectory JSON construction
+
+DATASET & UTILITIES:
+  src/dependencies/common_utils.py
+    - Transition1xDataset (HDF5 loader)
+    - parse_starting_geometry (geometry + noise)
+    - add_gaussian_noise_to_coords
+
+ANALYSIS SCRIPTS:
+  src/noisy/v2_tests/scripts/analyze_minimization_nr_grid.py
+  src/noisy/v2_tests/scripts/analyze_nr_failure_autopsy.py
+  src/noisy/v2_tests/scripts/analyze_nr_eigenvalue_justification.py
+  src/noisy/v2_tests/scripts/analyze_nr_surface_forensics.py
+  src/noisy/v2_tests/scripts/analyze_nr_spdn_diagnostics.py
+  src/noisy/v2_tests/scripts/analyze_nr_cross_seed.py
+  src/noisy/v2_tests/scripts/analyze_nr_trajectory_stats.py
+  src/noisy/v2_tests/scripts/plot_nr_grid_trajectories.py
+
+SLURM TEMPLATES:
+  src/noisy/v2_tests/scripts/slurm_templates/minimization_nr_grid_v4_run.slurm
+    - v4 grid: 25 legacy combos + 16 SPDN combos = 41 total
+    - Fixed: 30 samples, seed 42, noise 2.0A
+  src/noisy/v2_tests/scripts/slurm_templates/minimization_nr_grid_v5_run.slurm
+    - v5 multi-seed: 4 noise × 5 seeds × 4 optimizers = 80 combos
+    - 50 samples per combo → 4,000 trajectories
+
+
+================================================================================
+13. OPEN QUESTIONS & NEXT STEPS
+================================================================================
+
+IMMEDIATE NEXT STEP:
+  Run the v5 SLURM script. This will produce:
+  - Difficulty curve: convergence vs noise magnitude
+  - SPDN vs shifted Newton comparison with proper statistics
+  - Sample consistency analysis across seeds
+  - All diagnostic reports for every noise/seed combination
+
+OPEN QUESTIONS:
+
+  Q1. Does SPDN actually outperform shifted Newton?
+      The theoretical arguments are sound (bounded weights, GDIIS for
+      oscillation, backtracking for robustness) but we have NO empirical
+      evidence yet. The v5 experiment will answer this.
+
+  Q2. What is the natural difficulty curve?
+      At 0.5A noise, convergence should be nearly 100%. At 2.0A, it's 53%.
+      Where does the transition happen? Is it gradual or a sharp cliff?
+
+  Q3. Are the 7 "impossible" samples (at 2.0A, seed 42) universally hard?
+      With 5 seeds, we'll know if they're always hard or just unlucky.
+      If they converge with different seeds → noise-dependent.
+      If they never converge → inherently hard molecules (or PES problem).
+
+  Q4. Does GDIIS actually fire and help?
+      The D3 analysis module will show DIIS attempt/accept rates.
+      If accept rate is 0%, the feature is useless. If >10%, it's helping.
+
+  Q5. Is the backtracking line search better than trust region?
+      The D4 analysis will show how many backtracks are needed.
+      If most steps need 0-1 backtracks, the step quality is good.
+      If most need 5+, the step builder needs tuning.
+
+  Q6. What does the PES look like "walking out" from a minimum?
+      The D6 analysis traces backward from converged geometries.
+      This tells us the basin of attraction radius: how close do you
+      need to be for the optimizer to find the minimum?
+
+  Q7. Is the 97% false convergence rate specific to shifted Newton?
+      SPDN's modified convergence (n_neg_reliable + force gate) might
+      have a much lower false convergence rate. The v5 analysis will
+      show.
+
+LONGER-TERM DIRECTIONS:
+
+  - If SPDN works: tune tau_hard and DIIS parameters with the v5 data
+  - If SPDN doesn't work: consider switching to L-BFGS or conjugate
+    gradient methods that don't need the Hessian
+  - Investigate whether DFTB0 is the bottleneck (try DFTB2 or PM6)
+  - Consider adaptive noise: start with 0.5A, verify convergence, then
+    increase noise to map the basin boundary
+  - Multi-start optimization: for hard samples, try 3-5 different noise
+    seeds and take the best result
+
+================================================================================
+END OF DOCUMENT
+================================================================================
