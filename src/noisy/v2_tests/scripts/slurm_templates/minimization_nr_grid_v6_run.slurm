@@ -4,7 +4,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=192
 #SBATCH --gpus-per-node=0
-#SBATCH --time=06:00:00
+#SBATCH --time=24:00:00
 #SBATCH --output=/scratch/memoozd/ts-tools-scratch/logs/min_nr_v6_%j.out
 #SBATCH --error=/scratch/memoozd/ts-tools-scratch/logs/min_nr_v6_%j.err
 #SBATCH --account=rrg-aspuru
@@ -21,16 +21,14 @@
 # SETUP:
 #   - Noise: 0.5 Å only (easy regime — baseline algorithm quality)
 #   - Seed: derived from SLURM_JOB_ID → different starting geometries every run
-#   - Samples: 50
-#   - Steps: 10000 (matching v3 — some samples converge at step 7000+)
+#   - Samples: 300 (full test set — diagnose why convergence degrades)
+#   - Steps: 10000
 #
-# CONFIGS (4 clean, meaningfully different setups):
-#   1. Hard Filter (nr_thresh=8e-3)      — v1 baseline: skip near-zero modes
-#   2. Shifted Newton ε=2e-4             — conservative shift, tied-best from v4
-#   3. Shifted Newton ε=5e-4             — moderate shift, tied-best from v4
-#   4. Shifted Newton ε=1e-3             — aggressive shift, v3's best at 1.0Å
+# CONFIGS (2 — focus on best performer + baseline):
+#   1. Shifted Newton ε=1e-3             — best from v3 and v6-15sample
+#   2. Shifted Newton ε=5e-4             — best from v4/v5 for comparison
 #
-# GRID SIZE: 4 configs × 50 samples = 200 trajectories
+# GRID SIZE: 2 configs × 300 samples = 600 trajectories
 #
 # =============================================================================
 
@@ -80,7 +78,7 @@ mkdir -p "$OUT_DIR"
 # Fixed configuration
 # =============================================================================
 N_STEPS=10000
-MAX_SAMPLES=50
+MAX_SAMPLES=300
 NOISE_LEVEL="0.5"
 SCINE_FUNCTIONAL="DFTB0"
 FORCE_CONVERGED="1e-4"
@@ -113,7 +111,7 @@ echo "  MAX_SAMPLES:        $MAX_SAMPLES"
 echo "  FORCE_CONVERGED:    $FORCE_CONVERGED"
 echo "  TRUST_RADIUS_FLOOR: $TRUST_RADIUS_FLOOR"
 echo "  LOG_SPECTRUM_K:     $LOG_SPECTRUM_K"
-echo "Configs:  nrt8e-3, SN_2e-4, SN_5e-4, SN_1e-3"
+echo "Configs:  SN_5e-4, SN_1e-3"
 echo "=============================================="
 
 export PYTHONPATH="$PROJECT_DIR:$PYTHONPATH"
@@ -165,19 +163,11 @@ run_combo() {
 # Grid: 4 clean configs
 # =============================================================================
 
-# (1) Hard Filter — v1 baseline: skip modes with |λ| < 8e-3
-run_combo "mad1.3_nrt8e-3_pgtrue_phfalse" \
-    --nr-threshold "8e-3"
-
-# (2) Shifted Newton ε=2e-4 — conservative shift, tied-best from v4
-run_combo "mad1.3_se2e-4_pgtrue_phfalse" \
-    --shift-epsilon "2e-4"
-
-# (3) Shifted Newton ε=5e-4 — moderate shift, tied-best from v4
+# (1) Shifted Newton ε=5e-4 — best from v4/v5 at 50 samples
 run_combo "mad1.3_se5e-4_pgtrue_phfalse" \
     --shift-epsilon "5e-4"
 
-# (4) Shifted Newton ε=1e-3 — aggressive shift, v3's best at 1.0Å
+# (2) Shifted Newton ε=1e-3 — best from v3, fastest convergence
 run_combo "mad1.3_se1e-3_pgtrue_phfalse" \
     --shift-epsilon "1e-3"
 
