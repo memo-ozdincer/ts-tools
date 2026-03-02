@@ -71,6 +71,14 @@ COMBO_RE_LEGACY = re.compile(
     r"mad(?P<mad>[^_]+)_tr(?P<tr>[^_]+)_pg(?P<pg>true|false)_ph(?P<ph>true|false)$"
 )
 # v5 SPDN: mad<v>_spdn[_tuned][_th<v>][_ts<v>][_ds<v>][_de<v>][_mom<v>]_pg<bool>_ph<bool>
+# v6 plain naming (no mad/pg/ph prefix/suffix)
+COMBO_RE_PLAIN_NRT = re.compile(
+    r"hard_filter_nrt(?P<nrt>[^_]+)$"
+)
+COMBO_RE_PLAIN_SHIFTED = re.compile(
+    r"shifted_newton_se(?P<se>[^_]+)$"
+)
+# v5 SPDN: mad<v>_spdn[_tuned][_th<v>][_ts<v>][_ds<v>][_de<v>][_mom<v>]_pg<bool>_ph<bool>
 COMBO_RE_SPDN = re.compile(
     r"mad(?P<mad>[^_]+)_spdn"
     r"(?:_(?P<tuned>tuned))?"
@@ -305,6 +313,37 @@ def _parse_combo_tag(combo_tag: str) -> Optional[Dict[str, Any]]:
             "project_gradient_and_v": m.group("pg") == "true",
             "purify_hessian": m.group("ph") == "true",
             **_v3_defaults,
+            **_v4_defaults,
+        }
+
+    # v6 plain naming — no mad/pg/ph prefix/suffix
+    m = COMBO_RE_PLAIN_NRT.fullmatch(combo_tag)
+    if m:
+        return {
+            "mad": 1.3,
+            "nr_threshold": _safe_float(m.group("nrt")),
+            "lm_mu": 0.0,
+            "anneal_force_threshold": 0.0,
+            "project_gradient_and_v": True,
+            "purify_hessian": False,
+            **_v3_defaults,
+            **_v4_defaults,
+        }
+
+    m = COMBO_RE_PLAIN_SHIFTED.fullmatch(combo_tag)
+    if m:
+        return {
+            "mad": 1.3,
+            "nr_threshold": 0.0,
+            "lm_mu": 0.0,
+            "shift_epsilon": _safe_float(m.group("se")),
+            "anneal_force_threshold": 0.0,
+            "stagnation_window": 0,
+            "escape_alpha": 0.0,
+            "lm_mu_anneal_factor": 0.0,
+            "neg_mode_line_search": False,
+            "project_gradient_and_v": True,
+            "purify_hessian": False,
             **_v4_defaults,
         }
 
