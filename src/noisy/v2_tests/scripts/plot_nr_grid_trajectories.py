@@ -14,6 +14,7 @@ and creates six plots per trajectory:
 import argparse
 import json
 from pathlib import Path
+import re
 import numpy as np
 
 import matplotlib
@@ -21,6 +22,11 @@ import matplotlib
 # Set matplotlib backend to Agg for HPC usage
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+
+
+_FINAL_NEG_RE = re.compile(r'"final_neg_vib"\s*:\s*(null|-?\d+)')
+_STRICT_NEG_RE = re.compile(r'"n_neg_at_0\.0"\s*:\s*(-?\d+)')
+_HEADER_SCAN_BYTES = 256 * 1024
 
 
 def _get_threshold_keys(trajectory):
@@ -75,9 +81,47 @@ def _is_converged_payload(data):
 
 
 def _classify_trajectory_file(traj_path):
-    """Return True if converged, False otherwise."""
+    """Return True if converged, False otherwise.
+
+    Uses a fast header scan first (avoids loading huge trajectory arrays).
+    Falls back to full JSON parse only for smaller files when header keys
+    are missing.
+    """
     try:
-        with open(traj_path) as f:
+        with open(traj_path, "rb") as f:
+            header = f.read(_HEADER_SCAN_BYTES).decode("utf-8", errors="ignore")
+    except Exception:
+        return False
+
+    # Fast path: final_neg_vib is written near the top of the JSON payload.
+    m = _FINAL_NEG_RE.search(header)
+    if m:
+        tok = m.group(1)
+        if tok != "null":
+            try:
+                return int(tok) == 0
+            except ValueError:
+                pass
+
+    # Secondary fast path: strict count in final_cascade/cascade sections.
+    m = _STRICT_NEG_RE.search(header)
+    if m:
+        try:
+            return int(m.group(1)) == 0
+        except ValueError:
+            pass
+
+    # Fallback (size-limited): parse full JSON only if reasonably small.
+    try:
+        size_bytes = traj_path.stat().st_size
+    except Exception:
+        size_bytes = 0
+
+    if size_bytes > 5 * 1024 * 1024:
+        return False
+
+    try:
+        with open(traj_path, "r", encoding="utf-8") as f:
             data = json.load(f)
     except Exception:
         return False
@@ -105,11 +149,15 @@ def _select_balanced_trajectories(traj_files, n_select):
 
     converged = []
     non_converged = []
-    for path in traj_files:
+    total = len(traj_files)
+    print(f"Classifying convergence status for {total} trajectory files...")
+    for idx, path in enumerate(traj_files, start=1):
         if _classify_trajectory_file(path):
             converged.append(path)
         else:
             non_converged.append(path)
+        if idx % 250 == 0 or idx == total:
+            print(f"  classified {idx}/{total}")
 
     # Equal split when possible; otherwise include all of smaller class.
     target_conv = min(len(converged), n_select // 2)
