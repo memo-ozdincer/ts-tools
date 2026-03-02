@@ -70,6 +70,17 @@ COMBO_RE_SHIFTED = re.compile(
 COMBO_RE_LEGACY = re.compile(
     r"mad(?P<mad>[^_]+)_tr(?P<tr>[^_]+)_pg(?P<pg>true|false)_ph(?P<ph>true|false)$"
 )
+# v5 SPDN: mad<v>_spdn[_tuned][_th<v>][_ts<v>][_ds<v>][_de<v>][_mom<v>]_pg<bool>_ph<bool>
+COMBO_RE_SPDN = re.compile(
+    r"mad(?P<mad>[^_]+)_spdn"
+    r"(?:_(?P<tuned>tuned))?"
+    r"(?:_th(?P<th>[^_]+))?"
+    r"(?:_ts(?P<ts>[^_]+))?"
+    r"(?:_ds(?P<ds>[^_]+))?"
+    r"(?:_de(?P<de>[^_]+))?"
+    r"(?:_mom(?P<mom>[^_]+))?"
+    r"_pg(?P<pg>true|false)_ph(?P<ph>true|false)$"
+)
 
 # Cascade thresholds must match CASCADE_THRESHOLDS in minimization.py
 CASCADE_THRESHOLDS: List[float] = [0.0, 1e-4, 5e-4, 1e-3, 2e-3, 5e-3, 8e-3, 1e-2]
@@ -107,6 +118,15 @@ class ComboRecord:
     escape_bidirectional: bool = False
     mode_follow_eval_threshold: float = 0.0
     total_mode_follows: int = 0
+    # v5 SPDN fields
+    optimizer_mode: str = ""
+    spdn_tau_hard: float = 0.01
+    spdn_tau_soft: float = 1e-4
+    spdn_diis_size: int = 8
+    spdn_diis_every: int = 5
+    spdn_momentum: float = 0.0
+    total_diis_attempts: int = 0
+    total_diis_accepts: int = 0
     # cascade_table from the results JSON (may be empty for old runs)
     cascade_table: Dict[str, Any] = field(default_factory=dict)
     results: List[Dict[str, Any]] = field(default_factory=list)
@@ -206,6 +226,31 @@ def _parse_combo_tag(combo_tag: str) -> Optional[Dict[str, Any]]:
             "project_gradient_and_v": m.group("pg") == "true",
             "purify_hessian": m.group("ph") == "true",
             **_v4_defaults,
+        }
+
+    # Try SPDN first (most specific)
+    m = COMBO_RE_SPDN.fullmatch(combo_tag)
+    if m:
+        return {
+            "mad": _safe_float(m.group("mad")),
+            "nr_threshold": 0.0,
+            "lm_mu": 0.0,
+            "shift_epsilon": 0.0,
+            "anneal_force_threshold": 0.0,
+            "stagnation_window": 0,
+            "escape_alpha": 0.0,
+            "lm_mu_anneal_factor": 0.0,
+            "neg_mode_line_search": False,
+            "project_gradient_and_v": m.group("pg") == "true",
+            "purify_hessian": m.group("ph") == "true",
+            **_v4_defaults,
+            "optimizer_mode": "spdn",
+            "spdn_tuned": m.group("tuned") is not None,
+            "spdn_tau_hard": _safe_float(m.group("th") or "0.01", 0.01),
+            "spdn_tau_soft": _safe_float(m.group("ts") or "1e-4", 1e-4),
+            "spdn_diis_size": int(_safe_float(m.group("ds") or "8", 8)),
+            "spdn_diis_every": int(_safe_float(m.group("de") or "5", 5)),
+            "spdn_momentum": _safe_float(m.group("mom") or "0.0", 0.0),
         }
 
     # Try v4 shifted newton first (more specific regex)
@@ -326,6 +371,15 @@ def load_records(grid_dir: Path, result_glob: str) -> List[ComboRecord]:
                 escape_bidirectional=bool(parsed.get("escape_bidirectional", False)),
                 mode_follow_eval_threshold=parsed.get("mode_follow_eval_threshold", 0.0),
                 total_mode_follows=total_mode_follows,
+                # v5 SPDN fields
+                optimizer_mode=parsed.get("optimizer_mode", ""),
+                spdn_tau_hard=parsed.get("spdn_tau_hard", 0.01),
+                spdn_tau_soft=parsed.get("spdn_tau_soft", 1e-4),
+                spdn_diis_size=int(parsed.get("spdn_diis_size", 8)),
+                spdn_diis_every=int(parsed.get("spdn_diis_every", 5)),
+                spdn_momentum=parsed.get("spdn_momentum", 0.0),
+                total_diis_attempts=sum(r.get("total_diis_attempts", 0) for r in per_sample_results),
+                total_diis_accepts=sum(r.get("total_diis_accepts", 0) for r in per_sample_results),
                 cascade_table=metrics.get("cascade_table", {}),
                 results=per_sample_results,
             )
@@ -479,7 +533,21 @@ def build_cascade_cross_table(records: List[ComboRecord]) -> Dict[str, Any]:
         _fill_eval_columns(bucket, row)
         rows_se.append(row)
 
-    all_rows = rows_nrt + rows_lm + rows_se
+    # ---- SPDN runs ----
+    rows_spdn: List[Dict[str, Any]] = []
+    spdn_records = [r for r in records if r.optimizer_mode == "spdn" and r.cascade_table]
+    if spdn_records:
+        # Group by tau_hard
+        tau_hard_vals = sorted({r.spdn_tau_hard for r in spdn_records})
+        for th in tau_hard_vals:
+            bucket = [r for r in spdn_records if math.isclose(r.spdn_tau_hard, th, rel_tol=1e-6)]
+            if not bucket:
+                continue
+            row = {"optimizer_mode": "spdn", "nr_threshold": 0.0, "lm_mu": 0.0, "shift_epsilon": 0.0, "spdn_tau_hard": th}
+            _fill_eval_columns(bucket, row)
+            rows_spdn.append(row)
+
+    all_rows = rows_nrt + rows_lm + rows_se + rows_spdn
 
     return {
         "eval_thresholds": CASCADE_THRESHOLDS,
@@ -512,7 +580,10 @@ def print_cascade_table(cross: Dict[str, Any]) -> None:
         nrt = row.get("nr_threshold", 0.0)
         mu = row.get("lm_mu", 0.0)
         se = row.get("shift_epsilon", 0.0)
-        if mode == "shifted_newton":
+        if mode == "spdn":
+            th = row.get("spdn_tau_hard", 0.01)
+            label = f"SPDN τ_h={th:g}"
+        elif mode == "shifted_newton":
             label = f"SN  ε={se:g}"
         elif mode == "lm_damping":
             label = f"LM  μ={mu:g}"
@@ -589,6 +660,12 @@ def print_report(
             extras.append(f"mft={row.mode_follow_eval_threshold:g}")
         if row.total_mode_follows > 0:
             extras.append(f"mode_follows={row.total_mode_follows}")
+        if row.optimizer_mode == "spdn":
+            extras.append(f"spdn τ_h={row.spdn_tau_hard:g}")
+            if row.spdn_momentum > 0:
+                extras.append(f"mom={row.spdn_momentum:g}")
+            if row.total_diis_accepts > 0:
+                extras.append(f"diis={row.total_diis_accepts}/{row.total_diis_attempts}")
         extra_str = " " + " ".join(extras) if extras else ""
         print(
             f"  {row.tag}: conv={row.n_converged}/{row.n_samples} "
@@ -724,6 +801,7 @@ def main() -> None:
         "aggressive_trust_recovery": summarize_main_effect(records, "aggressive_trust_recovery"),
         "escape_bidirectional": summarize_main_effect(records, "escape_bidirectional"),
         "mode_follow_eval_threshold": summarize_main_effect(records, "mode_follow_eval_threshold"),
+        "optimizer_mode": summarize_main_effect(records, "optimizer_mode"),
         "project_gradient_and_v": summarize_main_effect(records, "project_gradient_and_v"),
         "purify_hessian": summarize_main_effect(records, "purify_hessian"),
     }
