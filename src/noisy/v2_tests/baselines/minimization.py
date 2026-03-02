@@ -82,6 +82,37 @@ def _cascade_n_neg(evals_vib: torch.Tensor) -> Dict[str, int]:
     return result
 
 
+def _eigenvalue_band_populations(evals_vib: torch.Tensor) -> Dict[str, int]:
+    """Count eigenvalues in 8 magnitude bands for detailed spectral analysis.
+
+    Bands span from strongly negative through near-zero to positive,
+    enabling ghost-mode detection (eigenvalues in [-1e-4, 0) with none
+    below -1e-4).
+    """
+    result: Dict[str, int] = {}
+    result["n_eval_below_neg1e-1"] = int((evals_vib < -0.1).sum().item())
+    result["n_eval_neg1e-1_to_neg1e-2"] = int(
+        ((evals_vib >= -0.1) & (evals_vib < -0.01)).sum().item()
+    )
+    result["n_eval_neg1e-2_to_neg1e-3"] = int(
+        ((evals_vib >= -0.01) & (evals_vib < -0.001)).sum().item()
+    )
+    result["n_eval_neg1e-3_to_neg1e-4"] = int(
+        ((evals_vib >= -0.001) & (evals_vib < -1e-4)).sum().item()
+    )
+    result["n_eval_neg1e-4_to_0"] = int(
+        ((evals_vib >= -1e-4) & (evals_vib < 0.0)).sum().item()
+    )
+    result["n_eval_0_to_pos1e-4"] = int(
+        ((evals_vib >= 0.0) & (evals_vib < 1e-4)).sum().item()
+    )
+    result["n_eval_pos1e-4_to_pos1e-3"] = int(
+        ((evals_vib >= 1e-4) & (evals_vib < 0.001)).sum().item()
+    )
+    result["n_eval_above_pos1e-3"] = int((evals_vib >= 0.001).sum().item())
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Utility helpers
 # ---------------------------------------------------------------------------
@@ -304,6 +335,73 @@ def _neg_mode_diagnostics(
         "step_along_pos_frac": pos_frac,
         "max_neg_grad_overlap": max(overlaps),
         "min_neg_grad_overlap": min(overlaps),
+    }
+
+
+# ---------------------------------------------------------------------------
+# v5 diagnostic: eigenvector continuity between consecutive steps
+# ---------------------------------------------------------------------------
+
+def _eigenvector_continuity(
+    evals_vib: torch.Tensor,
+    evecs_vib_3N: torch.Tensor,
+    prev_neg_evecs: Optional[torch.Tensor],
+    prev_neg_evals: Optional[torch.Tensor],
+) -> Dict[str, Any]:
+    """Compute overlap matrix between consecutive steps' negative eigenvectors.
+
+    For each current negative mode v_i^k, finds best match in previous step
+    via overlap = |<v_i^k | v_j^{k-1}>|. Low overlap indicates mode rotation
+    (different modes entering/leaving the negative subspace).
+
+    Returns:
+        mode_continuity_min: worst overlap across current neg modes
+        mode_continuity_mean: average overlap
+        n_mode_rotation_events: modes with best overlap < 0.5
+        n_neg_current, n_neg_previous: neg mode counts
+    """
+    neg_mask = evals_vib < 0.0
+    n_neg_current = int(neg_mask.sum().item())
+
+    if n_neg_current == 0 or prev_neg_evecs is None:
+        return {
+            "mode_continuity_min": float("nan"),
+            "mode_continuity_mean": float("nan"),
+            "n_mode_rotation_events": 0,
+            "n_neg_current": n_neg_current,
+            "n_neg_previous": 0 if prev_neg_evecs is None else int(prev_neg_evecs.shape[1]),
+        }
+
+    n_neg_prev = prev_neg_evecs.shape[1]
+    if n_neg_prev == 0:
+        return {
+            "mode_continuity_min": float("nan"),
+            "mode_continuity_mean": float("nan"),
+            "n_mode_rotation_events": 0,
+            "n_neg_current": n_neg_current,
+            "n_neg_previous": 0,
+        }
+
+    # Current negative eigenvectors: (3N, n_neg_current)
+    cur_neg_evecs = evecs_vib_3N[:, neg_mask]
+
+    # Overlap matrix: (n_neg_current, n_neg_prev) = |cur^T @ prev|
+    overlap_matrix = torch.abs(cur_neg_evecs.T @ prev_neg_evecs)
+
+    # For each current mode, find best overlap with any previous mode
+    best_overlaps = overlap_matrix.max(dim=1).values  # (n_neg_current,)
+    best_overlaps_list = best_overlaps.tolist()
+
+    continuity_min = min(best_overlaps_list)
+    continuity_mean = sum(best_overlaps_list) / len(best_overlaps_list)
+    n_rotation = sum(1 for o in best_overlaps_list if o < 0.5)
+
+    return {
+        "mode_continuity_min": continuity_min,
+        "mode_continuity_mean": continuity_mean,
+        "n_mode_rotation_events": n_rotation,
+        "n_neg_current": n_neg_current,
+        "n_neg_previous": n_neg_prev,
     }
 
 
@@ -967,6 +1065,8 @@ def run_newton_raphson(
     project_gradient_and_v: bool = True,
     purify_hessian: bool = False,
     known_ts_coords: Optional[torch.Tensor] = None,
+    known_reactant_coords: Optional[torch.Tensor] = None,
+    known_product_coords: Optional[torch.Tensor] = None,
     # --- v2 options ---
     lm_mu: float = 0.0,
     anneal_force_threshold: float = 0.0,
@@ -1049,6 +1149,22 @@ def run_newton_raphson(
             known_ts_coords = known_ts_coords[0]
         known_ts_coords = known_ts_coords.reshape(-1, 3)
 
+    if known_reactant_coords is not None:
+        known_reactant_coords = known_reactant_coords.detach().clone().to(torch.float32).to(coords.device)
+        if known_reactant_coords.dim() == 3 and known_reactant_coords.shape[0] == 1:
+            known_reactant_coords = known_reactant_coords[0]
+        known_reactant_coords = known_reactant_coords.reshape(-1, 3)
+
+    if known_product_coords is not None:
+        known_product_coords = known_product_coords.detach().clone().to(torch.float32).to(coords.device)
+        if known_product_coords.dim() == 3 and known_product_coords.shape[0] == 1:
+            known_product_coords = known_product_coords[0]
+        known_product_coords = known_product_coords.reshape(-1, 3)
+
+    # Eigenvector continuity tracking state
+    prev_neg_evecs: Optional[torch.Tensor] = None
+    prev_neg_evals: Optional[torch.Tensor] = None
+
     # --- Mode selection (priority: shifted > LM > anneal > hard filter) ---
     use_shifted = shift_epsilon > 0.0
     use_lm = (not use_shifted) and lm_mu > 0.0
@@ -1123,10 +1239,47 @@ def run_newton_raphson(
         eff_step = float(1.0 / vib_pos.min().item()) if vib_pos.numel() > 0 else float("nan")
 
         disp_from_start_max = float((coords - coords0_reshaped).norm(dim=1).max().item())
+        disp_from_start_rmsd = float(
+            (coords - coords0_reshaped).norm(dim=1).pow(2).mean().sqrt().item()
+        )
         dist_to_ts_max = (
             float((coords - known_ts_coords).norm(dim=1).max().item())
             if known_ts_coords is not None else None
         )
+
+        # Distance to reactant
+        if known_reactant_coords is not None:
+            _r_diffs = (coords - known_reactant_coords).norm(dim=1)
+            dist_to_reactant_max = float(_r_diffs.max().item())
+            dist_to_reactant_rmsd = float(_r_diffs.pow(2).mean().sqrt().item())
+        else:
+            dist_to_reactant_max = None
+            dist_to_reactant_rmsd = None
+
+        # Distance to product
+        if known_product_coords is not None:
+            _p_diffs = (coords - known_product_coords).norm(dim=1)
+            dist_to_product_max = float(_p_diffs.max().item())
+            dist_to_product_rmsd = float(_p_diffs.pow(2).mean().sqrt().item())
+        else:
+            dist_to_product_max = None
+            dist_to_product_rmsd = None
+
+        # Eigenvalue band populations
+        band_pops = _eigenvalue_band_populations(evals_vib)
+
+        # Eigenvector continuity
+        evec_cont = _eigenvector_continuity(
+            evals_vib, evecs_vib_3N, prev_neg_evecs, prev_neg_evals,
+        )
+        # Update state for next step
+        neg_mask_for_state = evals_vib < 0.0
+        if neg_mask_for_state.any():
+            prev_neg_evecs = evecs_vib_3N[:, neg_mask_for_state].clone()
+            prev_neg_evals = evals_vib[neg_mask_for_state].clone()
+        else:
+            prev_neg_evecs = None
+            prev_neg_evals = None
 
         # ---------------------------------------------------------------
         # Stagnation tracking
@@ -1156,7 +1309,12 @@ def run_newton_raphson(
             "min_dist": _min_interatomic_distance(coords),
             "trust_radius": current_trust_radius,
             "disp_from_start_max": disp_from_start_max,
+            "disp_from_start_rmsd": disp_from_start_rmsd,
             "dist_to_ts_max": dist_to_ts_max,
+            "dist_to_reactant_max": dist_to_reactant_max,
+            "dist_to_reactant_rmsd": dist_to_reactant_rmsd,
+            "dist_to_product_max": dist_to_product_max,
+            "dist_to_product_rmsd": dist_to_product_rmsd,
             "phase": "cleanup" if in_cleanup_phase else "bulk",
             "stagnation_counter": stagnation_counter,
             "energy_plateau": energy_plateau,
@@ -1164,9 +1322,12 @@ def run_newton_raphson(
             "neg_trust_radius": current_neg_trust_radius if use_split_trust else None,
             **gap_info,
             **cascade,
+            **band_pops,
         }
         if log_spectrum_k > 0:
             step_record["bottom_spectrum"] = _bottom_k_spectrum(evals_vib, log_spectrum_k)
+
+        step_record["eigenvec_continuity"] = evec_cont
 
         trajectory.append(step_record)
 

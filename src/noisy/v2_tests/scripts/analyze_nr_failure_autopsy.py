@@ -143,8 +143,48 @@ def classify_trajectory(traj_data: Dict[str, Any]) -> Dict[str, Any]:
     mode_follow_steps = [s.get("step", i) for i, s in enumerate(trajectory)
                          if s.get("mode_follow_triggered")]
 
+    # --- v5: Eigenvalue band data at final step ---
+    final_band_data = {}
+    band_keys = [
+        "n_eval_below_neg1e-1", "n_eval_neg1e-1_to_neg1e-2",
+        "n_eval_neg1e-2_to_neg1e-3", "n_eval_neg1e-3_to_neg1e-4",
+        "n_eval_neg1e-4_to_0", "n_eval_0_to_pos1e-4",
+        "n_eval_pos1e-4_to_pos1e-3", "n_eval_above_pos1e-3",
+    ]
+    for bk in band_keys:
+        final_band_data[bk] = last.get(bk, 0)
+
+    # Ghost mode detection: all negative eigenvalues are in [-1e-4, 0) band
+    has_ghost_modes = (
+        final_band_data.get("n_eval_neg1e-4_to_0", 0) > 0
+        and final_band_data.get("n_eval_below_neg1e-1", 0) == 0
+        and final_band_data.get("n_eval_neg1e-1_to_neg1e-2", 0) == 0
+        and final_band_data.get("n_eval_neg1e-2_to_neg1e-3", 0) == 0
+        and final_band_data.get("n_eval_neg1e-3_to_neg1e-4", 0) == 0
+    )
+
+    # --- v5: Distance metrics ---
+    final_dist_reactant_rmsd = last.get("dist_to_reactant_rmsd")
+    final_dist_product_rmsd = last.get("dist_to_product_rmsd")
+
+    # --- v5: Eigenvector continuity summary (last 100 steps) ---
+    tail_steps = trajectory[-100:]
+    continuity_mins = []
+    total_rotation_events = 0
+    for s in tail_steps:
+        ec = s.get("eigenvec_continuity", {})
+        cm = ec.get("mode_continuity_min")
+        if cm is not None and math.isfinite(cm):
+            continuity_mins.append(cm)
+        total_rotation_events += ec.get("n_mode_rotation_events", 0)
+    avg_continuity_min = (
+        sum(continuity_mins) / len(continuity_mins) if continuity_mins else float("nan")
+    )
+
     # --- Classification ---
-    if final_n_neg >= 0 and abs(final_min_eval) < 2e-3 and final_n_neg <= 3:
+    if has_ghost_modes and final_n_neg > 0:
+        classification = "ghost_modes"
+    elif final_n_neg >= 0 and abs(final_min_eval) < 2e-3 and final_n_neg <= 3:
         classification = "almost_converged"
     elif eval_oscillating:
         classification = "oscillating"
@@ -189,6 +229,13 @@ def classify_trajectory(traj_data: Dict[str, Any]) -> Dict[str, Any]:
         "escape_accepted_count": escape_accepted_count,
         "escape_rejected_count": escape_rejected_count,
         "n_mode_follow_events": len(mode_follow_steps),
+        # v5 diagnostics
+        "has_ghost_modes": has_ghost_modes,
+        **final_band_data,
+        "final_dist_reactant_rmsd": final_dist_reactant_rmsd,
+        "final_dist_product_rmsd": final_dist_product_rmsd,
+        "avg_continuity_min": avg_continuity_min,
+        "total_rotation_events": total_rotation_events,
     }
 
 
@@ -326,6 +373,14 @@ def main() -> None:
         # v4
         "total_mode_follows", "n_blind_corrections", "final_neg_trust_radius",
         "escape_accepted_count", "escape_rejected_count", "n_mode_follow_events",
+        # v5
+        "has_ghost_modes",
+        "n_eval_below_neg1e-1", "n_eval_neg1e-1_to_neg1e-2",
+        "n_eval_neg1e-2_to_neg1e-3", "n_eval_neg1e-3_to_neg1e-4",
+        "n_eval_neg1e-4_to_0", "n_eval_0_to_pos1e-4",
+        "n_eval_pos1e-4_to_pos1e-3", "n_eval_above_pos1e-3",
+        "final_dist_reactant_rmsd", "final_dist_product_rmsd",
+        "avg_continuity_min", "total_rotation_events",
     ]
     with open(csv_path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")

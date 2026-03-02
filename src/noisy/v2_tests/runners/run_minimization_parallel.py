@@ -81,6 +81,8 @@ def run_single_sample(
     sample_id: str,
     formula: str,
     known_ts_coords: Optional[torch.Tensor] = None,
+    known_reactant_coords: Optional[torch.Tensor] = None,
+    known_product_coords: Optional[torch.Tensor] = None,
 ) -> Dict[str, Any]:
     method = params["method"]
     project_gradient_and_v = params.get("project_gradient_and_v", False)
@@ -141,6 +143,8 @@ def run_single_sample(
                 project_gradient_and_v=project_gradient_and_v,
                 purify_hessian=params.get("purify_hessian", False),
                 known_ts_coords=known_ts_coords,
+                known_reactant_coords=known_reactant_coords,
+                known_product_coords=known_product_coords,
                 # v2
                 lm_mu=params.get("lm_mu", 0.0),
                 anneal_force_threshold=params.get("anneal_force_threshold", 0.0),
@@ -258,6 +262,17 @@ def scine_worker_sample(predict_fn, payload) -> Dict[str, Any]:
     if known_ts_coords is not None:
         known_ts_coords = known_ts_coords.detach().to("cpu")
 
+    known_reactant_coords = getattr(batch, "pos_reactant", None)
+    if known_reactant_coords is not None:
+        known_reactant_coords = known_reactant_coords.detach().to("cpu")
+
+    known_product_coords = None
+    has_product = getattr(batch, "has_product", None)
+    if has_product is not None and bool(has_product.item()):
+        known_product_coords = getattr(batch, "pos_product", None)
+        if known_product_coords is not None:
+            known_product_coords = known_product_coords.detach().to("cpu")
+
     formula = getattr(batch, "formula", "")
     result = run_single_sample(
         predict_fn,
@@ -268,6 +283,8 @@ def scine_worker_sample(predict_fn, payload) -> Dict[str, Any]:
         sample_id=f"sample_{sample_idx:03d}",
         formula=str(formula),
         known_ts_coords=known_ts_coords,
+        known_reactant_coords=known_reactant_coords,
+        known_product_coords=known_product_coords,
     )
     result["sample_idx"] = sample_idx
     result["formula"] = getattr(batch, "formula", "")

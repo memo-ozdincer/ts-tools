@@ -405,6 +405,28 @@ python "$PROJECT_DIR/src/noisy/v2_tests/scripts/plot_nr_grid_trajectories.py" \
     --output-dir "$PLOTS_OUT"
 echo "Plots saved to: $PLOTS_OUT"
 
+# =============================================================================
+# Eigenvalue tolerance justification
+# =============================================================================
+EIGVAL_OUT="${OUT_DIR}/eigenvalue_justification"
+mkdir -p "$EIGVAL_OUT"
+echo "Running eigenvalue tolerance justification analysis ..."
+python "$PROJECT_DIR/src/noisy/v2_tests/scripts/analyze_nr_eigenvalue_justification.py" \
+    --grid-dir "$OUT_DIR" --output-dir "$EIGVAL_OUT" \
+    > "${EIGVAL_OUT}/report.txt" 2>&1
+echo "Eigenvalue justification report: ${EIGVAL_OUT}/report.txt"
+
+# =============================================================================
+# Surface forensics
+# =============================================================================
+FORENSICS_OUT="${OUT_DIR}/surface_forensics"
+mkdir -p "$FORENSICS_OUT"
+echo "Running surface forensics analysis ..."
+python "$PROJECT_DIR/src/noisy/v2_tests/scripts/analyze_nr_surface_forensics.py" \
+    --grid-dir "$OUT_DIR" --output-dir "$FORENSICS_OUT" \
+    > "${FORENSICS_OUT}/report.txt" 2>&1
+echo "Surface forensics report: ${FORENSICS_OUT}/report.txt"
+
 echo "=============================================="
 echo "All done.  Results in: $OUT_DIR"
 echo "=============================================="

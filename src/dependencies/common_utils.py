@@ -51,19 +51,34 @@ class Transition1xDataset(Dataset):
                 break
             try:
                 ts = mol["transition_state"]
-                # --- NEW: Extract reactant data ---
+                # --- Extract reactant data ---
                 reactant = mol["reactant"]
 
                 # Ensure reactant and TS have the same atom ordering/count
                 if len(ts["atomic_numbers"]) != len(reactant["atomic_numbers"]):
                     print(f"[WARN] Skipping idx={idx} due to atom count mismatch between reactant and TS.")
                     continue
-                
+
+                # --- Extract product data (optional) ---
+                product = mol.get("product")
+                has_product = (
+                    product is not None
+                    and len(product.get("atomic_numbers", [])) == len(ts["atomic_numbers"])
+                )
+                if has_product:
+                    pos_product = torch.tensor(product["positions"], dtype=torch.float)
+                else:
+                    # Zero-tensor fallback when product unavailable
+                    pos_product = torch.zeros_like(
+                        torch.tensor(ts["positions"], dtype=torch.float)
+                    )
+
                 data = TGDData(
                     z=torch.tensor(ts["atomic_numbers"], dtype=torch.long),
                     pos_transition=torch.tensor(ts["positions"], dtype=torch.float),
-                    # --- NEW: Store reactant positions in the data object ---
                     pos_reactant=torch.tensor(reactant["positions"], dtype=torch.float),
+                    pos_product=pos_product,
+                    has_product=torch.tensor([has_product], dtype=torch.bool),
                     energy=torch.tensor(ts["wB97x_6-31G(d).energy"], dtype=torch.float),
                     forces=torch.tensor(ts["wB97x_6-31G(d).forces"], dtype=torch.float),
                     rxn=ts["rxn"],

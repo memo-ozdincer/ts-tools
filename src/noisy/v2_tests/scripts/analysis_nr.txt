@@ -1,0 +1,108 @@
+
+Loaded 25 configurations.
+Ranking metric: Convergence Rate (desc) → Total Converged (desc) → Mean Steps (asc) → Wall Time (asc)
+
+🏆 Best overall configuration by convergence, then speed:
+  mad1.3_se5e-4_pgtrue_phfalse | converged 16/30 (0.53), mean steps 2401.4, mean wall 85.99s
+
+=================================================================
+🥇 Top 25 Configurations (Best First):
+=================================================================
+  mad1.3_se5e-4_pgtrue_phfalse: conv=16/30 (0.53), steps=2401.4, wall=85.99s, errors=0 se=0.0005
+  mad1.3_se2e-4_pgtrue_phfalse: conv=16/30 (0.53), steps=3230.5, wall=82.53s, errors=0 se=0.0002
+  mad1.3_se3e-4_pgtrue_phfalse: conv=12/30 (0.40), steps=1875.2, wall=96.06s, errors=0 se=0.0003
+  mad1.3_se7e-4_pgtrue_phfalse: conv=12/30 (0.40), steps=2500.2, wall=103.03s, errors=0 se=0.0007
+  mad1.3_se5e-4_ntf0.05_bmt0.05_bca0.02_atr_sw100_ea0.05_ebd_mft0.01_pgtrue_phfalse: conv=5/30 (0.17), steps=1911.2, wall=57.29s, errors=10 se=0.0005 sw=100 ntf=0.05 bmt=0.05 atr ebd mft=0.01 mode_follows=82737
+  mad1.3_se5e-4_ntf0.05_bmt0.05_bca0.02_atr_sw100_ea0.05_ebd_mft0.01_mfa0.15_pgtrue_phfalse: conv=5/30 (0.17), steps=1911.2, wall=57.48s, errors=10 se=0.0005 sw=100 ntf=0.05 bmt=0.05 atr ebd mft=0.01 mode_follows=82737
+  mad1.3_se5e-4_ntf0.05_bmt0.05_bca0.02_atr_sw100_ea0.05_ebd_mft0.05_pgtrue_phfalse: conv=4/30 (0.13), steps=2171.5, wall=58.54s, errors=9 se=0.0005 sw=100 ntf=0.05 bmt=0.05 atr ebd mft=0.05 mode_follows=94813
+  mad1.3_se3e-4_ntf0.05_bmt0.05_bca0.05_pgtrue_phfalse: conv=4/30 (0.13), steps=3173.0, wall=101.59s, errors=8 se=0.0003 ntf=0.05 bmt=0.05
+  mad1.3_se5e-4_ntf0.1_pgtrue_phfalse: conv=3/30 (0.10), steps=614.7, wall=100.12s, errors=8 se=0.0005 ntf=0.1
+  mad1.3_se5e-4_ntf0.03_pgtrue_phfalse: conv=3/30 (0.10), steps=614.7, wall=100.20s, errors=8 se=0.0005 ntf=0.03
+  mad1.3_se5e-4_ntf0.05_pgtrue_phfalse: conv=3/30 (0.10), steps=614.7, wall=100.50s, errors=8 se=0.0005 ntf=0.05
+  mad1.3_se3e-4_ntf0.03_pgtrue_phfalse: conv=3/30 (0.10), steps=747.3, wall=101.41s, errors=8 se=0.0003 ntf=0.03
+  mad1.3_se3e-4_ntf0.1_pgtrue_phfalse: conv=3/30 (0.10), steps=747.3, wall=101.42s, errors=8 se=0.0003 ntf=0.1
+  mad1.3_se3e-4_ntf0.05_pgtrue_phfalse: conv=3/30 (0.10), steps=747.3, wall=101.98s, errors=8 se=0.0003 ntf=0.05
+  mad1.3_se3e-4_ntf0.05_bmt0.05_bca0.02_pgtrue_phfalse: conv=2/30 (0.07), steps=35.5, wall=104.07s, errors=8 se=0.0003 ntf=0.05 bmt=0.05
+  mad1.3_se3e-4_ntf0.05_bmt0.05_bca0.02_atr_pgtrue_phfalse: conv=2/30 (0.07), steps=35.5, wall=106.05s, errors=8 se=0.0003 ntf=0.05 bmt=0.05 atr
+  mad1.3_se5e-4_ntf0.05_bmt0.05_bca0.02_atr_sw100_ea0.03_ebd_pgtrue_phfalse: conv=2/30 (0.07), steps=1199.5, wall=105.72s, errors=8 se=0.0005 sw=100 ntf=0.05 bmt=0.05 atr ebd
+  mad1.3_se5e-4_ntf0.05_bmt0.05_bca0.02_atr_sw100_ea0.05_ebd_pgtrue_phfalse: conv=2/30 (0.07), steps=1199.5, wall=105.93s, errors=8 se=0.0005 sw=100 ntf=0.05 bmt=0.05 atr ebd
+  mad1.3_se5e-4_ntf0.05_bmt0.05_bca0.02_atr_sw100_ea0.05_pgtrue_phfalse: conv=2/30 (0.07), steps=1199.5, wall=106.67s, errors=8 se=0.0005 sw=100 ntf=0.05 bmt=0.05 atr
+  mad1.3_se5e-4_ntf0.05_bmt0.05_bca0.02_atr_sw100_ea0.03_pgtrue_phfalse: conv=2/30 (0.07), steps=1199.5, wall=106.95s, errors=8 se=0.0005 sw=100 ntf=0.05 bmt=0.05 atr
+  mad1.3_se5e-4_ntf0.05_bmt0.05_bca0.02_atr_pgtrue_phfalse: conv=2/30 (0.07), steps=1199.5, wall=107.31s, errors=8 se=0.0005 ntf=0.05 bmt=0.05 atr
+  mad1.3_se5e-4_ntf0.05_bmt0.05_bca0.02_pgtrue_phfalse: conv=2/30 (0.07), steps=2139.0, wall=107.55s, errors=8 se=0.0005 ntf=0.05 bmt=0.05
+  mad1.3_se5e-4_ntf0.05_bmt0.05_bca0.01_pgtrue_phfalse: conv=2/30 (0.07), steps=4262.0, wall=109.79s, errors=8 se=0.0005 ntf=0.05 bmt=0.05
+  mad1.3_se5e-4_ntf0.05_bmt0.05_bca0.05_pgtrue_phfalse: conv=1/30 (0.03), steps=25.0, wall=110.93s, errors=8 se=0.0005 ntf=0.05 bmt=0.05
+  mad1.3_se3e-4_ntf0.05_bmt0.05_bca0.01_pgtrue_phfalse: conv=1/30 (0.03), steps=35.0, wall=109.80s, errors=8 se=0.0003 ntf=0.05 bmt=0.05
+
+--- Main effect: shift_epsilon ---
+  0.0002: mean_conv_rate=0.533, mean_n_converged=16.00, mean_steps=3230.5, mean_wall=82.53s
+  0.0003: mean_conv_rate=0.125, mean_n_converged=3.75, mean_steps=924.5, mean_wall=102.80s
+  0.0005: mean_conv_rate=0.120, mean_n_converged=3.60, mean_steps=1510.9, mean_wall=94.73s
+  0.0007: mean_conv_rate=0.400, mean_n_converged=12.00, mean_steps=2500.2, mean_wall=103.03s
+
+--- Main effect: stagnation_window ---
+  0: mean_conv_rate=0.167, mean_n_converged=5.00, mean_steps=1388.8, mean_wall=101.68s
+  100: mean_conv_rate=0.105, mean_n_converged=3.14, mean_steps=1541.7, mean_wall=85.51s
+
+--- Main effect: neg_trust_floor ---
+  0.0: mean_conv_rate=0.467, mean_n_converged=14.00, mean_steps=2501.8, mean_wall=91.90s
+  0.03: mean_conv_rate=0.100, mean_n_converged=3.00, mean_steps=681.0, mean_wall=100.81s
+  0.05: mean_conv_rate=0.086, mean_n_converged=2.59, mean_steps=1356.4, mean_wall=97.54s
+  0.1: mean_conv_rate=0.100, mean_n_converged=3.00, mean_steps=681.0, mean_wall=100.77s
+
+--- Main effect: blind_mode_threshold ---
+  0.0: mean_conv_rate=0.247, mean_n_converged=7.40, mean_steps=1409.3, mean_wall=97.32s
+  0.05: mean_conv_rate=0.084, mean_n_converged=2.53, mean_steps=1446.4, mean_wall=97.04s
+
+--- Main effect: aggressive_trust_recovery ---
+  False: mean_conv_rate=0.179, mean_n_converged=5.38, mean_steps=1485.2, mean_wall=101.06s
+  True: mean_conv_rate=0.096, mean_n_converged=2.89, mean_steps=1336.3, mean_wall=90.21s
+
+--- Main effect: escape_bidirectional ---
+  False: mean_conv_rate=0.157, mean_n_converged=4.70, mean_steps=1369.8, mean_wall=102.20s
+  True: mean_conv_rate=0.120, mean_n_converged=3.60, mean_steps=1678.6, mean_wall=76.99s
+
+--- Main effect: mode_follow_eval_threshold ---
+  0.0: mean_conv_rate=0.148, mean_n_converged=4.45, mean_steps=1354.4, mean_wall=102.53s
+  0.01: mean_conv_rate=0.167, mean_n_converged=5.00, mean_steps=1911.2, mean_wall=57.38s
+  0.05: mean_conv_rate=0.133, mean_n_converged=4.00, mean_steps=2171.5, mean_wall=58.54s
+
+=================================================================
+Hardest samples (lowest convergence across configs):
+=================================================================
+  sample_000: 0/25 (0.00), best_step=None, best_combo=None
+  sample_010: 0/25 (0.00), best_step=None, best_combo=None
+  sample_020: 0/25 (0.00), best_step=None, best_combo=None
+  sample_023: 0/25 (0.00), best_step=None, best_combo=None
+  sample_024: 0/25 (0.00), best_step=None, best_combo=None
+  sample_026: 0/25 (0.00), best_step=None, best_combo=None
+  sample_027: 0/25 (0.00), best_step=None, best_combo=None
+  sample_002: 1/25 (0.04), best_step=44, best_combo=mad1.3_se5e-4_pgtrue_phfalse
+  sample_009: 1/25 (0.04), best_step=7921, best_combo=mad1.3_se7e-4_pgtrue_phfalse
+  sample_017: 1/25 (0.04), best_step=3753, best_combo=mad1.3_se2e-4_pgtrue_phfalse
+
+=================================================================
+📊 Cascade Evaluation Table (optimizer filter × eval threshold)
+=================================================================
+optimizer                        eval≥-0.0eval≥-0.0001eval≥-0.0005eval≥-0.001eval≥-0.002eval≥-0.005eval≥-0.008eval≥-0.01    strict
+----------------------------------------------------------------------------------------------------------------------------------
+SN  ε=0.0002                         0.533     0.567     0.633     0.667     0.700     0.700     0.767     0.800     0.533
+SN  ε=0.0003                         0.125     0.125     0.146     0.162     0.179     0.183     0.183     0.188     0.125
+SN  ε=0.0005                         0.120     0.151     0.156     0.164     0.164     0.169     0.169     0.169     0.120
+SN  ε=0.0007                         0.400     0.433     0.533     0.533     0.633     0.767     0.767     0.767     0.400
+
+Columns = eval threshold (how strict we count n_neg at final geometry).
+'strict' = optimizer's own convergence flag (n_neg==0).
+Gap between eval_0.0 and eval_2e-3 → false-rejection problem.
+Flat across all eval thresholds → optimizer genuinely failing.
+
+Wrote analysis artifacts to: /scratch/memoozd/ts-tools-scratch/runs/min_nr_v4_1073909/analysis
+  nr_grid_summary.json         — full summary (JSON)
+  nr_grid_ranked.csv           — ranked configurations
+  nr_grid_sample_hardness.csv  — per-sample convergence rates
+  nr_grid_cascade_table.csv    — 2D cascade diagnostic table
+~
+~
+~
+
+
