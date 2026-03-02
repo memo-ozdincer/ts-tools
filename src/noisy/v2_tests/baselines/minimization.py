@@ -627,6 +627,7 @@ def _nr_step_shifted_newton(
     V_all: torch.Tensor,
     lam_all: torch.Tensor,
     shift_epsilon: float,
+    max_nr_weight: float = 0.0,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Shifted Newton step (Levenberg shift).
 
@@ -653,6 +654,8 @@ def _nr_step_shifted_newton(
     # This caps the maximum weight at 1/shift_epsilon and prevents explosive
     # steps when near-zero modes remain after the shift is applied.
     shifted_lam = torch.clamp(shifted_lam, min=shift_epsilon)
+    if max_nr_weight > 0.0:
+        shifted_lam = torch.clamp(shifted_lam, min=1.0 / max_nr_weight)
     coeffs = V_all.T @ grad
     nr_step = V_all @ (coeffs / shifted_lam)
     delta_x = -nr_step
@@ -1366,6 +1369,9 @@ def run_newton_raphson(
     spdn_diis_size: int = 8,
     spdn_diis_every: int = 5,
     spdn_momentum: float = 0.0,
+    # --- v7 options ---
+    step_control: str = "trust_region",   # "trust_region" or "line_search"
+    max_nr_weight: float = 0.0,           # 0 = no cap; >0 = cap shifted Newton weight at this value
 ) -> Tuple[Dict[str, Any], list]:
     """Newton-Raphson optimization to find energy minimum.
 
@@ -1458,6 +1464,7 @@ def run_newton_raphson(
 
     # --- Mode selection (priority: SPDN > shifted > LM > anneal > hard filter) ---
     use_spdn = optimizer_mode.lower() == "spdn"
+    use_line_search = step_control.lower() == "line_search"
     use_shifted = (not use_spdn) and shift_epsilon > 0.0
     use_lm = (not use_spdn) and (not use_shifted) and lm_mu > 0.0
     use_anneal = (not use_spdn) and (not use_shifted) and (not use_lm) and anneal_force_threshold > 0.0
@@ -1909,7 +1916,7 @@ def run_newton_raphson(
                 delta_x = delta_x + momentum_vec.to(dtype=delta_x.dtype)
                 step_record["spdn_momentum_applied"] = True
         elif use_shifted:
-            delta_x, V, lam = _nr_step_shifted_newton(grad, V_all, lam_all, shift_epsilon)
+            delta_x, V, lam = _nr_step_shifted_newton(grad, V_all, lam_all, shift_epsilon, max_nr_weight)
             step_record["step_mode"] = "shifted_newton"
         elif use_lm:
             delta_x, V, lam = _nr_step_lm_damping(grad, V_all, lam_all, effective_lm_mu)
@@ -1941,9 +1948,10 @@ def run_newton_raphson(
 
         step_disp = delta_x.reshape(-1, 3)
 
-        if use_spdn:
+        if use_spdn or use_line_search:
             # ---------------------------------------------------------------
-            # v5 SPDN: Backtracking line search (Armijo condition)
+            # Backtracking line search (Armijo condition)
+            # Used by v5 SPDN and v7 line_search step control.
             # ---------------------------------------------------------------
             # Cap initial step to max_atom_disp
             capped_disp = _cap_displacement(step_disp, max_atom_disp)
@@ -1987,7 +1995,8 @@ def run_newton_raphson(
                 out = trial_out
                 capped_disp = trial_disp
 
-            step_record["spdn_linesearch"] = {
+            ls_key = "spdn_linesearch" if use_spdn else "linesearch"
+            step_record[ls_key] = {
                 "alpha": alpha,
                 "n_backtracks": n_backtracks,
                 "accepted": ls_accepted,
@@ -2072,7 +2081,7 @@ def run_newton_raphson(
         # v4: Aggressive trust recovery — reset on n_neg decrease,
         # grow on 50-step eigenvalue improvement
         # ---------------------------------------------------------------
-        if aggressive_trust_recovery:
+        if aggressive_trust_recovery and not use_line_search:
             # Reset trust radius when n_neg decreased
             if n_neg >= 0 and prev_n_neg > 0 and n_neg < prev_n_neg:
                 current_trust_radius = 0.5 * max_atom_disp
@@ -2090,7 +2099,7 @@ def run_newton_raphson(
         # ---------------------------------------------------------------
         # v4: Neg-mode trust radius update (eigenvalue-driven)
         # ---------------------------------------------------------------
-        if use_split_trust:
+        if use_split_trust and not use_line_search:
             if n_neg > 0 and prev_min_vib_eval_for_trust is not None:
                 if min_vib_eval > prev_min_vib_eval_for_trust:
                     # Eigenvalue improved (less negative) → expand

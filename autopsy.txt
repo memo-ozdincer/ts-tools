@@ -1,192 +1,187 @@
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         191,1         Bot
-Found 189 trajectory files
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         1,1           Top
+Found 556 trajectory files
 
 ======================================================================
 FAILURE AUTOPSY SUMMARY
 ======================================================================
 
 Overall classification distribution:
-  converged                :  119 ( 63.0%)
-  oscillating              :   40 ( 21.2%)
-  almost_converged         :   28 ( 14.8%)
-  ghost_modes              :    2 (  1.1%)
+  converged                :  427 ( 76.8%)
+  almost_converged         :   64 ( 11.5%)
+  oscillating              :   57 ( 10.3%)
+  ghost_modes              :    7 (  1.3%)
+  drifting                 :    1 (  0.2%)
 
 ======================================================================
 PER-COMBO FAILURE MODES
 ======================================================================
 
---- mad1.3_nrt8e-3_pgtrue_phfalse (19/48 converged) ---
-  oscillating: 23
-  almost_converged: 6
+--- mad1.3_se1e-3_pgtrue_phfalse (219/278 converged) ---
+  almost_converged: 29
+  oscillating: 27
+  ghost_modes: 2
+  drifting: 1
 
---- mad1.3_se1e-3_pgtrue_phfalse (37/47 converged) ---
-  almost_converged: 6
-  oscillating: 3
-  ghost_modes: 1
-
---- mad1.3_se2e-4_pgtrue_phfalse (30/47 converged) ---
-  oscillating: 10
-  almost_converged: 7
-
---- mad1.3_se5e-4_pgtrue_phfalse (33/47 converged) ---
-  almost_converged: 9
-  oscillating: 4
-  ghost_modes: 1
+--- mad1.3_se5e-4_pgtrue_phfalse (208/278 converged) ---
+  almost_converged: 35
+  oscillating: 30
+  ghost_modes: 5
 
 ======================================================================
 DETAILED FAILURE REPORTS (failed trajectories)
 ======================================================================
 
-  sample_016: 4 failures across combos
-    Failure modes: oscillating
-    Best attempt: mad1.3_se1e-3_pgtrue_phfalse
-      final_n_neg=2, min_eval=-0.002698, force_norm=0.134625
-      bottom_spectrum: [-0.00270, -0.00237, 0.00249, 0.00371, 0.01016]
-      neg_mode_eigenvalues: [-0.00270, -0.00237]
-      grad_overlaps:        [0.0681, 0.1654]
-      stagnation: 9369 steps (93.7%), eval_improving=False, energy_plateau=False
-      trust_radius: final=0.0100, min=0.0100
-
-  sample_021: 4 failures across combos
+  sample_002: 2 failures across combos
     Failure modes: almost_converged, oscillating
-    Best attempt: mad1.3_se2e-4_pgtrue_phfalse
-      final_n_neg=3, min_eval=-0.000167, force_norm=0.084679
-      bottom_spectrum: [-0.00017, -0.00003, -0.00000, 0.00000, 0.00012]
-      neg_mode_eigenvalues: [-0.00017, -0.00003, -0.00000]
-      grad_overlaps:        [0.0072, 0.0247, 0.0087]
-      stagnation: 4 steps (0.0%), eval_improving=False, energy_plateau=False
-      trust_radius: final=0.0100, min=0.0100
-
-  sample_027: 4 failures across combos
-    Failure modes: almost_converged, oscillating
-    Best attempt: mad1.3_se1e-3_pgtrue_phfalse
-      final_n_neg=1, min_eval=-0.000569, force_norm=0.081337
-      bottom_spectrum: [-0.00057, 0.00002, 0.00283, 0.00451, 0.00858]
-      neg_mode_eigenvalues: [-0.00057]
-      grad_overlaps:        [0.1164]
+    Best attempt: mad1.3_se5e-4_pgtrue_phfalse
+      final_n_neg=3, min_eval=-0.000220, force_norm=0.069083
+      bottom_spectrum: [-0.00022, -0.00017, -0.00000, 0.00003, 0.00080]
+      neg_mode_eigenvalues: [-0.00022, -0.00017, -0.00000]
+      grad_overlaps:        [0.1836, 0.1631, 0.0573]
       stagnation: 0 steps (0.0%), eval_improving=False, energy_plateau=False
       trust_radius: final=0.0100, min=0.0100
 
-  sample_028: 4 failures across combos
+  sample_016: 2 failures across combos
+    Failure modes: almost_converged, oscillating
+    Best attempt: mad1.3_se5e-4_pgtrue_phfalse
+      final_n_neg=1, min_eval=-0.001348, force_norm=0.040600
+      bottom_spectrum: [-0.00135, 0.00094, 0.00101, 0.00273, 0.00565]
+      neg_mode_eigenvalues: [-0.00135]
+      grad_overlaps:        [0.0154]
+      stagnation: 8089 steps (80.9%), eval_improving=False, energy_plateau=False
+      trust_radius: final=0.0100, min=0.0100
+
+  sample_024: 2 failures across combos
     Failure modes: almost_converged
-    Best attempt: mad1.3_se2e-4_pgtrue_phfalse
-      final_n_neg=2, min_eval=-0.000110, force_norm=0.358737
-      bottom_spectrum: [-0.00011, -0.00002, 0.00001, 0.00039, 0.00416]
-      neg_mode_eigenvalues: [-0.00011, -0.00002]
-      grad_overlaps:        [0.0041, 0.0133]
-      stagnation: 1910 steps (19.1%), eval_improving=False, energy_plateau=False
-      trust_radius: final=0.0100, min=0.0100
-
-  sample_048: 4 failures across combos
-    Failure modes: almost_converged, ghost_modes
     Best attempt: mad1.3_se5e-4_pgtrue_phfalse
-      final_n_neg=1, min_eval=-0.000063, force_norm=0.066714
-      bottom_spectrum: [-0.00006, 0.00000, 0.00133, 0.00481, 0.01008]
-      neg_mode_eigenvalues: [-0.00006]
-      grad_overlaps:        [0.0165]
-      stagnation: 0 steps (0.0%), eval_improving=False, energy_plateau=False
+      final_n_neg=1, min_eval=-0.000479, force_norm=0.067956
+      bottom_spectrum: [-0.00048, 0.00256, 0.00482, 0.00552, 0.00692]
+      neg_mode_eigenvalues: [-0.00048]
+      grad_overlaps:        [0.0896]
+      stagnation: 73 steps (0.7%), eval_improving=False, energy_plateau=False
       trust_radius: final=0.0100, min=0.0100
 
-  sample_018: 3 failures across combos
+  sample_025: 2 failures across combos
+    Failure modes: ghost_modes, oscillating
+    Best attempt: mad1.3_se1e-3_pgtrue_phfalse
+      final_n_neg=1, min_eval=-0.000049, force_norm=0.089893
+      bottom_spectrum: [-0.00005, 0.00019, 0.00355, 0.00550, 0.06355]
+      neg_mode_eigenvalues: [-0.00005]
+      grad_overlaps:        [0.0454]
+      stagnation: 8 steps (0.1%), eval_improving=False, energy_plateau=False
+      trust_radius: final=0.0100, min=0.0100
+
+  sample_028: 2 failures across combos
+    Failure modes: almost_converged
+    Best attempt: mad1.3_se1e-3_pgtrue_phfalse
+      final_n_neg=1, min_eval=-0.000438, force_norm=0.002006
+      bottom_spectrum: [-0.00044, 0.00019, 0.00048, 0.00569, 0.10214]
+      neg_mode_eigenvalues: [-0.00044]
+      grad_overlaps:        [0.0331]
+      stagnation: 2222 steps (22.2%), eval_improving=False, energy_plateau=False
+      trust_radius: final=0.0100, min=0.0100
+
+  sample_034: 2 failures across combos
+    Failure modes: oscillating
+    Best attempt: mad1.3_se1e-3_pgtrue_phfalse
+      final_n_neg=4, min_eval=-0.009967, force_norm=0.180250
+      bottom_spectrum: [-0.00997, -0.00086, -0.00006, -0.00002, 0.00151]
+      neg_mode_eigenvalues: [-0.00997, -0.00086, -0.00006, -0.00002]
+      grad_overlaps:        [0.0182, 0.0015, 0.0059, 0.0019]
+      stagnation: 40 steps (0.4%), eval_improving=False, energy_plateau=False
+      trust_radius: final=0.0100, min=0.0100
+
+  sample_038: 2 failures across combos
+    Failure modes: almost_converged
+    Best attempt: mad1.3_se5e-4_pgtrue_phfalse
+      final_n_neg=2, min_eval=-0.000218, force_norm=0.063806
+      bottom_spectrum: [-0.00022, -0.00000, 0.00025, 0.00064, 0.00339]
+      neg_mode_eigenvalues: [-0.00022, -0.00000]
+      grad_overlaps:        [0.0194, 0.0053]
+      stagnation: 1 steps (0.0%), eval_improving=False, energy_plateau=False
+      trust_radius: final=0.0100, min=0.0100
+
+  sample_040: 2 failures across combos
+    Failure modes: almost_converged, oscillating
+    Best attempt: mad1.3_se5e-4_pgtrue_phfalse
+      final_n_neg=2, min_eval=-0.000229, force_norm=0.082697
+      bottom_spectrum: [-0.00023, -0.00006, 0.00055, 0.00125, 0.00403]
+      neg_mode_eigenvalues: [-0.00023, -0.00006]
+      grad_overlaps:        [0.0499, 0.0054]
+      stagnation: 93 steps (0.9%), eval_improving=False, energy_plateau=False
+      trust_radius: final=0.0100, min=0.0100
+
+  sample_041: 2 failures across combos
+    Failure modes: oscillating
+    Best attempt: mad1.3_se1e-3_pgtrue_phfalse
+      final_n_neg=1, min_eval=-0.007020, force_norm=0.259892
+      bottom_spectrum: [-0.00702, 0.00425, 0.00678, 0.01459, 0.04189]
+      neg_mode_eigenvalues: [-0.00702]
+      grad_overlaps:        [0.0981]
+      stagnation: 4709 steps (47.1%), eval_improving=False, energy_plateau=False
+      trust_radius: final=0.0100, min=0.0100
+
+  sample_050: 2 failures across combos
+    Failure modes: oscillating
+    Best attempt: mad1.3_se1e-3_pgtrue_phfalse
+      final_n_neg=4, min_eval=-0.001165, force_norm=0.105586
+      bottom_spectrum: [-0.00117, -0.00017, -0.00006, -0.00000, 0.00048]
+      neg_mode_eigenvalues: [-0.00117, -0.00017, -0.00006, -0.00000]
+      grad_overlaps:        [0.0514, 0.1198, 0.0624, 0.0034]
+      stagnation: 1 steps (0.0%), eval_improving=False, energy_plateau=False
+      trust_radius: final=0.0100, min=0.0100
+
+  sample_071: 2 failures across combos
     Failure modes: almost_converged, oscillating
     Best attempt: mad1.3_se1e-3_pgtrue_phfalse
-      final_n_neg=3, min_eval=-0.001676, force_norm=0.075301
-      bottom_spectrum: [-0.00168, -0.00018, -0.00010, 0.00000, 0.00444]
-      neg_mode_eigenvalues: [-0.00168, -0.00018, -0.00010]
-      grad_overlaps:        [0.0465, 0.0741, 0.0283]
-      stagnation: 0 steps (0.0%), eval_improving=False, energy_plateau=False
+      final_n_neg=1, min_eval=-0.000397, force_norm=0.068156
+      bottom_spectrum: [-0.00040, 0.00279, 0.00669, 0.00809, 0.02202]
+      neg_mode_eigenvalues: [-0.00040]
+      grad_overlaps:        [0.0827]
+      stagnation: 191 steps (1.9%), eval_improving=False, energy_plateau=False
       trust_radius: final=0.0100, min=0.0100
 
-  sample_041: 3 failures across combos
-    Failure modes: almost_converged, oscillating
+  sample_098: 2 failures across combos
+    Failure modes: almost_converged
     Best attempt: mad1.3_se5e-4_pgtrue_phfalse
-      final_n_neg=1, min_eval=-0.000646, force_norm=0.123149
-      bottom_spectrum: [-0.00065, 0.00034, 0.00718, 0.01126, 0.02111]
-      neg_mode_eigenvalues: [-0.00065]
-      grad_overlaps:        [0.1625]
-      stagnation: 19 steps (0.2%), eval_improving=False, energy_plateau=False
+      final_n_neg=1, min_eval=-0.000744, force_norm=0.091991
+      bottom_spectrum: [-0.00074, 0.00305, 0.00885, 0.01179, 0.02049]
+      neg_mode_eigenvalues: [-0.00074]
+      grad_overlaps:        [0.0513]
+      stagnation: 9963 steps (99.6%), eval_improving=False, energy_plateau=False
       trust_radius: final=0.0100, min=0.0100
 
-  sample_049: 3 failures across combos
-    Failure modes: oscillating
-    Best attempt: mad1.3_se2e-4_pgtrue_phfalse
-      final_n_neg=2, min_eval=-0.002629, force_norm=0.043224
-      bottom_spectrum: [-0.00263, -0.00065, 0.00113, 0.00171, 0.00193]
-      neg_mode_eigenvalues: [-0.00263, -0.00065]
-      grad_overlaps:        [0.0117, 0.0012]
-      stagnation: 15 steps (0.1%), eval_improving=False, energy_plateau=False
-      trust_radius: final=0.0100, min=0.0100
-
-  sample_007: 3 failures across combos
+  sample_103: 2 failures across combos
     Failure modes: almost_converged, oscillating
     Best attempt: mad1.3_se1e-3_pgtrue_phfalse
-      final_n_neg=1, min_eval=-0.000144, force_norm=0.016596
-      bottom_spectrum: [-0.00014, 0.00044, 0.00694, 0.17018, 0.55165]
-      neg_mode_eigenvalues: [-0.00014]
-      grad_overlaps:        [0.0416]
-      stagnation: 1906 steps (19.1%), eval_improving=False, energy_plateau=False
+      final_n_neg=1, min_eval=-0.000497, force_norm=0.140645
+      bottom_spectrum: [-0.00050, 0.00255, 0.00845, 0.01975, 0.02201]
+      neg_mode_eigenvalues: [-0.00050]
+      grad_overlaps:        [0.0603]
+      stagnation: 7995 steps (80.0%), eval_improving=False, energy_plateau=False
       trust_radius: final=0.0100, min=0.0100
 
-  sample_006: 2 failures across combos
-    Failure modes: oscillating
-    Best attempt: mad1.3_nrt8e-3_pgtrue_phfalse
-      final_n_neg=5, min_eval=-0.001282, force_norm=0.053672
-      bottom_spectrum: [-0.00128, -0.00049, -0.00022, -0.00013, -0.00002]
-      neg_mode_eigenvalues: [-0.00128, -0.00049, -0.00022, -0.00013, -0.00002]
-      grad_overlaps:        [0.0167, 0.0114, 0.0352, 0.0056, 0.0040]
-      stagnation: 906 steps (9.1%), eval_improving=False, energy_plateau=False
-      trust_radius: final=0.0100, min=0.0100
-
-  sample_020: 2 failures across combos
-    Failure modes: oscillating
-    Best attempt: mad1.3_se2e-4_pgtrue_phfalse
-      final_n_neg=1, min_eval=-0.014574, force_norm=0.876923
-      bottom_spectrum: [-0.01457, 0.01364, 0.03566, 0.09141, 0.18384]
-      neg_mode_eigenvalues: [-0.01457]
-      grad_overlaps:        [0.0101]
-      stagnation: 2150 steps (21.5%), eval_improving=False, energy_plateau=False
-      trust_radius: final=0.0100, min=0.0100
-
-  sample_029: 2 failures across combos
-    Failure modes: oscillating
-    Best attempt: mad1.3_se2e-4_pgtrue_phfalse
-      final_n_neg=1, min_eval=-0.002621, force_norm=0.006745
-      bottom_spectrum: [-0.00262, 0.00444, 0.05381, 0.08959, 0.17273]
-      neg_mode_eigenvalues: [-0.00262]
-      grad_overlaps:        [0.1080]
-      stagnation: 8115 steps (81.2%), eval_improving=False, energy_plateau=True
-      trust_radius: final=0.0100, min=0.0100
-
-  sample_030: 2 failures across combos
-    Failure modes: almost_converged, oscillating
-    Best attempt: mad1.3_nrt8e-3_pgtrue_phfalse
-      final_n_neg=3, min_eval=-0.001687, force_norm=0.055974
-      bottom_spectrum: [-0.00169, -0.00038, -0.00007, 0.00018, 0.00109]
-      neg_mode_eigenvalues: [-0.00169, -0.00038, -0.00007]
-      grad_overlaps:        [0.0290, 0.0427, 0.0754]
-      stagnation: 3 steps (0.0%), eval_improving=False, energy_plateau=False
-      trust_radius: final=0.0150, min=0.0100
-
-  sample_033: 2 failures across combos
-    Failure modes: almost_converged, oscillating
-    Best attempt: mad1.3_se2e-4_pgtrue_phfalse
-      final_n_neg=2, min_eval=-0.001388, force_norm=0.581949
-      bottom_spectrum: [-0.00139, -0.00017, 0.12174, 0.21186, 0.59347]
-      neg_mode_eigenvalues: [-0.00139, -0.00017]
-      grad_overlaps:        [0.0019, 0.0030]
-      stagnation: 0 steps (0.0%), eval_improving=False, energy_plateau=False
-      trust_radius: final=0.0100, min=0.0100
-
-  sample_036: 2 failures across combos
+  sample_104: 2 failures across combos
     Failure modes: almost_converged, oscillating
     Best attempt: mad1.3_se5e-4_pgtrue_phfalse
-      final_n_neg=2, min_eval=-0.000235, force_norm=0.011989
-      bottom_spectrum: [-0.00023, -0.00012, 0.00528, 0.08794, 0.09010]
-      neg_mode_eigenvalues: [-0.00023, -0.00012]
-      grad_overlaps:        [0.0240, 0.0346]
-      stagnation: 1032 steps (10.3%), eval_improving=False, energy_plateau=False
+      final_n_neg=2, min_eval=-0.000520, force_norm=0.034083
+      bottom_spectrum: [-0.00052, -0.00036, 0.00107, 0.00322, 0.00624]
+      neg_mode_eigenvalues: [-0.00052, -0.00036]
+      grad_overlaps:        [0.0276, 0.0043]
+      stagnation: 179 steps (1.8%), eval_improving=False, energy_plateau=False
       trust_radius: final=0.0100, min=0.0100
 
-Wrote autopsy artifacts to: /scratch/memoozd/ts-tools-scratch/runs/min_nr_v6_1090794/autopsy
+  sample_109: 2 failures across combos
+    Failure modes: oscillating
+    Best attempt: mad1.3_se1e-3_pgtrue_phfalse
+      final_n_neg=3, min_eval=-0.004112, force_norm=0.373883
+      bottom_spectrum: [-0.00411, -0.00055, -0.00003, 0.00755, 0.00992]
+      neg_mode_eigenvalues: [-0.00411, -0.00055, -0.00003]
+      grad_overlaps:        [0.0750, 0.0466, 0.0260]
+      stagnation: 971 steps (9.7%), eval_improving=False, energy_plateau=False
+      trust_radius: final=0.0100, min=0.0100
+
+Wrote autopsy artifacts to: /scratch/memoozd/ts-tools-scratch/runs/min_nr_v6_1090871/autopsy
   failure_autopsy.csv  — one row per trajectory
   failure_autopsy.json — structured summary
+~

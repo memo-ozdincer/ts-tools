@@ -28,6 +28,10 @@ v3 flags:
 - --trust-radius-floor
                   Minimum trust radius (default 0.01)
 
+v7 flags:
+- --step-control   Step control: 'trust_region' (default) or 'line_search' (Armijo backtracking)
+- --max-nr-weight  Cap shifted Newton weight (0 = no cap)
+
 Cascade evaluation:
   Every trajectory step now contains "n_neg_at_<threshold>" fields for
   thresholds [0.0, 1e-4, 5e-4, 1e-3, 2e-3, 5e-3, 8e-3, 1e-2].
@@ -176,6 +180,9 @@ def run_single_sample(
                 spdn_diis_size=params.get("spdn_diis_size", 8),
                 spdn_diis_every=params.get("spdn_diis_every", 5),
                 spdn_momentum=params.get("spdn_momentum", 0.0),
+                # v7
+                step_control=params.get("step_control", "trust_region"),
+                max_nr_weight=params.get("max_nr_weight", 0.0),
             )
         else:
             raise ValueError(f"Unknown method: {method}")
@@ -550,6 +557,19 @@ def main() -> None:
              "Typical: 0.2-0.5.",
     )
 
+    # v7 options
+    parser.add_argument(
+        "--step-control", type=str, default="trust_region",
+        choices=["trust_region", "line_search"],
+        help="Step control strategy: 'trust_region' (adaptive trust radius, v1-v6 default) "
+             "or 'line_search' (Armijo backtracking, stateless). Default: trust_region.",
+    )
+    parser.add_argument(
+        "--max-nr-weight", type=float, default=0.0,
+        help="Cap shifted Newton weight at this value. 0 = no cap (default). "
+             "E.g. 200 caps mode amplification at 200x instead of 1/epsilon.",
+    )
+
     # Gradient descent parameters
     parser.add_argument("--step-size", type=float, default=0.01,
                         help="Fixed step size for gradient descent")
@@ -615,6 +635,9 @@ def main() -> None:
         "spdn_diis_size": args.spdn_diis_size,
         "spdn_diis_every": args.spdn_diis_every,
         "spdn_momentum": args.spdn_momentum,
+        # v7 additions
+        "step_control": args.step_control,
+        "max_nr_weight": args.max_nr_weight,
     }
 
     processor = ParallelSCINEProcessor(

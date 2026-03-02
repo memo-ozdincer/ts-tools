@@ -79,6 +79,13 @@ COMBO_RE_PLAIN_SHIFTED = re.compile(
     r"shifted_newton_se(?P<se>[^_]+)$"
 )
 # v5 SPDN: mad<v>_spdn[_tuned][_th<v>][_ts<v>][_ds<v>][_de<v>][_mom<v>]_pg<bool>_ph<bool>
+# v7: n<noise>_mad<v>_se<v>_sc<tr|ls>[_mw<v>]_pg<bool>_ph<bool>
+COMBO_RE_SHIFTED_V7 = re.compile(
+    r"n(?P<noise>[^_]+)_mad(?P<mad>[^_]+)_se(?P<se>[^_]+)"
+    r"_sc(?P<sc>tr|ls)"
+    r"(?:_mw(?P<mw>[^_]+))?"
+    r"_pg(?P<pg>true|false)_ph(?P<ph>true|false)$"
+)
 COMBO_RE_SPDN = re.compile(
     r"mad(?P<mad>[^_]+)_spdn"
     r"(?:_(?P<tuned>tuned))?"
@@ -135,6 +142,10 @@ class ComboRecord:
     spdn_momentum: float = 0.0
     total_diis_attempts: int = 0
     total_diis_accepts: int = 0
+    # v7 fields
+    step_control: str = "trust_region"
+    max_nr_weight: float = 0.0
+    noise_level: float = 0.0
     # cascade_table from the results JSON (may be empty for old runs)
     cascade_table: Dict[str, Any] = field(default_factory=dict)
     results: List[Dict[str, Any]] = field(default_factory=list)
@@ -205,6 +216,28 @@ def _parse_combo_tag(combo_tag: str) -> Optional[Dict[str, Any]]:
         "escape_bidirectional": False,
         "mode_follow_eval_threshold": 0.0,
     }
+
+    # v7 shifted Newton with step control + noise level
+    m = COMBO_RE_SHIFTED_V7.fullmatch(combo_tag)
+    if m:
+        sc = "line_search" if m.group("sc") == "ls" else "trust_region"
+        return {
+            "mad": _safe_float(m.group("mad")),
+            "nr_threshold": 0.0,
+            "lm_mu": 0.0,
+            "shift_epsilon": _safe_float(m.group("se")),
+            "anneal_force_threshold": 0.0,
+            "stagnation_window": 0,
+            "escape_alpha": 0.0,
+            "lm_mu_anneal_factor": 0.0,
+            "neg_mode_line_search": False,
+            "project_gradient_and_v": m.group("pg") == "true",
+            "purify_hessian": m.group("ph") == "true",
+            "step_control": sc,
+            "max_nr_weight": _safe_float(m.group("mw") or "0.0", 0.0),
+            "noise_level": _safe_float(m.group("noise")),
+            **_v4_defaults,
+        }
 
     m = COMBO_RE_NRT.fullmatch(combo_tag)
     if m:
@@ -417,6 +450,10 @@ def load_records(grid_dir: Path, result_glob: str) -> List[ComboRecord]:
                 spdn_diis_size=int(parsed.get("spdn_diis_size", 8)),
                 spdn_diis_every=int(parsed.get("spdn_diis_every", 5)),
                 spdn_momentum=parsed.get("spdn_momentum", 0.0),
+                # v7 fields
+                step_control=parsed.get("step_control", "trust_region"),
+                max_nr_weight=parsed.get("max_nr_weight", 0.0),
+                noise_level=parsed.get("noise_level", 0.0),
                 total_diis_attempts=sum(r.get("total_diis_attempts", 0) for r in per_sample_results),
                 total_diis_accepts=sum(r.get("total_diis_accepts", 0) for r in per_sample_results),
                 cascade_table=metrics.get("cascade_table", {}),
@@ -561,14 +598,26 @@ def build_cascade_cross_table(records: List[ComboRecord]) -> Dict[str, Any]:
         _fill_eval_columns(bucket, row)
         rows_lm.append(row)
 
-    # ---- Shifted Newton runs (grouped by shift_epsilon) ----
+    # ---- Shifted Newton runs (grouped by shift_epsilon, step_control, max_nr_weight, noise_level) ----
     rows_se: List[Dict[str, Any]] = []
-    for se in se_values:
-        bucket = [r for r in records if math.isclose(r.shift_epsilon, se, rel_tol=1e-6)
+    se_keys = sorted({
+        (r.shift_epsilon, r.step_control, r.max_nr_weight, r.noise_level)
+        for r in records if r.shift_epsilon > 0
+    })
+    for se, sc, mw, nl in se_keys:
+        bucket = [r for r in records
+                  if math.isclose(r.shift_epsilon, se, rel_tol=1e-6)
+                  and r.step_control == sc
+                  and math.isclose(r.max_nr_weight, mw, rel_tol=1e-6)
+                  and math.isclose(r.noise_level, nl, rel_tol=1e-6)
                   and r.cascade_table]
         if not bucket:
             continue
-        row = {"optimizer_mode": "shifted_newton", "nr_threshold": 0.0, "lm_mu": 0.0, "shift_epsilon": se}
+        row = {
+            "optimizer_mode": "shifted_newton", "nr_threshold": 0.0,
+            "lm_mu": 0.0, "shift_epsilon": se,
+            "step_control": sc, "max_nr_weight": mw, "noise_level": nl,
+        }
         _fill_eval_columns(bucket, row)
         rows_se.append(row)
 
@@ -623,7 +672,13 @@ def print_cascade_table(cross: Dict[str, Any]) -> None:
             th = row.get("spdn_tau_hard", 0.01)
             label = f"SPDN τ_h={th:g}"
         elif mode == "shifted_newton":
-            label = f"SN  ε={se:g}"
+            sc = row.get("step_control", "trust_region")
+            mw = row.get("max_nr_weight", 0.0)
+            nl = row.get("noise_level", 0.0)
+            sc_tag = " LS" if sc == "line_search" else ""
+            mw_tag = f" mw={mw:g}" if mw > 0 else ""
+            nl_tag = f" n={nl:g}" if nl > 0 else ""
+            label = f"SN  ε={se:g}{sc_tag}{mw_tag}{nl_tag}"
         elif mode == "lm_damping":
             label = f"LM  μ={mu:g}"
         else:
@@ -705,6 +760,12 @@ def print_report(
                 extras.append(f"mom={row.spdn_momentum:g}")
             if row.total_diis_accepts > 0:
                 extras.append(f"diis={row.total_diis_accepts}/{row.total_diis_attempts}")
+        if row.step_control == "line_search":
+            extras.append("LS")
+        if row.max_nr_weight > 0:
+            extras.append(f"mw={row.max_nr_weight:g}")
+        if row.noise_level > 0:
+            extras.append(f"noise={row.noise_level:g}")
         extra_str = " " + " ".join(extras) if extras else ""
         print(
             f"  {row.tag}: conv={row.n_converged}/{row.n_samples} "
@@ -843,6 +904,9 @@ def main() -> None:
         "optimizer_mode": summarize_main_effect(records, "optimizer_mode"),
         "project_gradient_and_v": summarize_main_effect(records, "project_gradient_and_v"),
         "purify_hessian": summarize_main_effect(records, "purify_hessian"),
+        "step_control": summarize_main_effect(records, "step_control"),
+        "max_nr_weight": summarize_main_effect(records, "max_nr_weight"),
+        "noise_level": summarize_main_effect(records, "noise_level"),
     }
     # Drop main effects that are constant (only one unique value) to reduce noise
     main_effects = {k: v for k, v in main_effects.items() if len(v) > 1}
