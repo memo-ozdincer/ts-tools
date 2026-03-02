@@ -127,7 +127,7 @@ mkdir -p "$OUT_DIR"
 # =============================================================================
 N_STEPS="${N_STEPS:-10000}"
 MAX_SAMPLES="${MAX_SAMPLES:-15}"
-START_FROM="${START_FROM:-midpoint_rt_noise2.0A}"
+START_FROM="${START_FROM:-midpoint_rt_noise1.0A}"
 NOISE_SEED="${NOISE_SEED:-42}"
 SCINE_FUNCTIONAL="${SCINE_FUNCTIONAL:-DFTB0}"
 FORCE_CONVERGED="${FORCE_CONVERGED:-1e-4}"
