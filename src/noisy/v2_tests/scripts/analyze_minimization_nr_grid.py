@@ -92,6 +92,13 @@ COMBO_RE_CROSSOVER_V8 = re.compile(
     r"(?:_mw(?P<mw>[^_]+))?"
     r"_pg(?P<pg>true|false)_ph(?P<ph>true|false)$"
 )
+# v9: n<noise>_mad<v>_se<v>_sc<tr|ls>_re<threshold>_ar<0|1>_pg<bool>_ph<bool>
+COMBO_RE_RELAXED_V9 = re.compile(
+    r"n(?P<noise>[^_]+)_mad(?P<mad>[^_]+)_se(?P<se>[^_]+)"
+    r"_sc(?P<sc>tr|ls)"
+    r"_re(?P<re>[^_]+)_ar(?P<ar>[01])"
+    r"_pg(?P<pg>true|false)_ph(?P<ph>true|false)$"
+)
 # v7: n<noise>_mad<v>_se<v>_sc<tr|ls>[_mw<v>]_pg<bool>_ph<bool>
 COMBO_RE_SHIFTED_V7 = re.compile(
     r"n(?P<noise>[^_]+)_mad(?P<mad>[^_]+)_se(?P<se>[^_]+)"
@@ -163,10 +170,12 @@ class ComboRecord:
     crossover_mu_max: float = 0.0
     crossover_n_neg_ref: float = 3.0
     crossover_force_ref: float = 0.1
+    # v9 relaxed convergence
+    relaxed_eval_threshold: float = 0.0
+    accept_relaxed: bool = False
     # PIC-ARC fields
     sigma_init: float = 1.0
     kappa_threshold: float = 1e6
-    accept_relaxed: bool = False
     metric_refresh_every: int = 0
     # cascade_table from the results JSON (may be empty for old runs)
     cascade_table: Dict[str, Any] = field(default_factory=dict)
@@ -264,6 +273,31 @@ def _parse_combo_tag(combo_tag: str) -> Optional[Dict[str, Any]]:
             "kappa_threshold": _safe_float(m.group("kt")),
             "accept_relaxed": m.group("ar") not in ("0", "false"),
             "metric_refresh_every": int(_safe_float(m.group("mr"), 0)),
+        }
+
+    # v9 relaxed convergence (has _re/_ar fields, try before v8/v7)
+    m = COMBO_RE_RELAXED_V9.fullmatch(combo_tag)
+    if m:
+        sc = "line_search" if m.group("sc") == "ls" else "trust_region"
+        return {
+            "mad": _safe_float(m.group("mad")),
+            "nr_threshold": 0.0,
+            "lm_mu": 0.0,
+            "shift_epsilon": _safe_float(m.group("se")),
+            "anneal_force_threshold": 0.0,
+            "stagnation_window": 0,
+            "escape_alpha": 0.0,
+            "lm_mu_anneal_factor": 0.0,
+            "neg_mode_line_search": False,
+            "project_gradient_and_v": m.group("pg") == "true",
+            "purify_hessian": m.group("ph") == "true",
+            "step_control": sc,
+            "max_nr_weight": 0.0,
+            "noise_level": _safe_float(m.group("noise")),
+            "relaxed_eval_threshold": _safe_float(m.group("re")),
+            "accept_relaxed": m.group("ar") == "1",
+            **_v3_defaults,
+            **_v4_defaults,
         }
 
     # v8 crossover (most specific — has _cm field, so try before v7)
@@ -533,10 +567,12 @@ def load_records(grid_dir: Path, result_glob: str) -> List[ComboRecord]:
                 crossover_force_ref=parsed.get("crossover_force_ref", 0.1),
                 total_diis_attempts=sum(r.get("total_diis_attempts", 0) for r in per_sample_results),
                 total_diis_accepts=sum(r.get("total_diis_accepts", 0) for r in per_sample_results),
+                # v9 relaxed convergence
+                relaxed_eval_threshold=parsed.get("relaxed_eval_threshold", 0.0),
+                accept_relaxed=bool(parsed.get("accept_relaxed", False)),
                 # PIC-ARC fields
                 sigma_init=parsed.get("sigma_init", 1.0),
                 kappa_threshold=parsed.get("kappa_threshold", 1e6),
-                accept_relaxed=bool(parsed.get("accept_relaxed", False)),
                 metric_refresh_every=int(parsed.get("metric_refresh_every", 0)),
                 cascade_table=metrics.get("cascade_table", {}),
                 results=per_sample_results,

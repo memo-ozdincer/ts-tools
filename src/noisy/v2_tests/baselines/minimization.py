@@ -1449,6 +1449,9 @@ def run_newton_raphson(
     crossover_mu_max: float = 0.0,        # 0 = off; >0 = iHiSD crossover damping strength
     crossover_n_neg_ref: float = 3.0,     # Morse index reference for alpha computation
     crossover_force_ref: float = 0.1,     # Force reference for alpha computation (eV/A)
+    # --- v9 relaxed convergence ---
+    relaxed_eval_threshold: float = 0.0,  # 0 = strict only; >0 = accept if min_eval >= -threshold
+    accept_relaxed: bool = False,         # if True, treat RELAXED as converged
 ) -> Tuple[Dict[str, Any], list]:
     """Newton-Raphson optimization to find energy minimum.
 
@@ -1739,17 +1742,35 @@ def run_newton_raphson(
         # ---------------------------------------------------------------
         # Convergence check
         # ---------------------------------------------------------------
+        # Classify convergence: STRICT (n_neg==0), RELAXED (min_eval >= -threshold), NONE
         if use_spdn:
-            # SPDN: ignore ghost eigenvalues (|λ| ≤ tau_soft) but require
-            # force convergence to prevent false positives.
             n_neg_reliable = int((evals_vib < -spdn_tau_soft).sum().item())
-            converged_now = (n_neg_reliable == 0) and (force_norm < force_converged)
+            strict_converged = (n_neg_reliable == 0) and (force_norm < force_converged)
         else:
-            converged_now = n_neg == 0
+            strict_converged = n_neg == 0
+
+        relaxed_converged = False
+        if relaxed_eval_threshold > 0 and not strict_converged:
+            relaxed_converged = (
+                force_norm < force_converged
+                and min_vib_eval >= -relaxed_eval_threshold
+            )
+
+        if strict_converged:
+            convergence_class = "STRICT"
+        elif relaxed_converged:
+            convergence_class = "RELAXED"
+        else:
+            convergence_class = "NONE"
+
+        step_record["convergence_class"] = convergence_class
+
+        converged_now = strict_converged or (accept_relaxed and relaxed_converged)
         anneal_gate_passed = (not use_anneal) or in_cleanup_phase
         if converged_now and anneal_gate_passed:
             result_dict: Dict[str, Any] = {
                 "converged": True,
+                "convergence_class": convergence_class,
                 "converged_step": step,
                 "final_energy": energy,
                 "final_force_norm": force_norm,
@@ -2223,6 +2244,7 @@ def run_newton_raphson(
     last = trajectory[-1] if trajectory else {}
     timeout_result: Dict[str, Any] = {
         "converged": False,
+        "convergence_class": "STALLED",
         "converged_step": None,
         "final_energy": last.get("energy", float("nan")),
         "final_force_norm": last.get("force_norm", float("nan")),

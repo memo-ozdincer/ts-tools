@@ -188,6 +188,9 @@ def run_single_sample(
                 crossover_mu_max=params.get("crossover_mu_max", 0.0),
                 crossover_n_neg_ref=params.get("crossover_n_neg_ref", 3.0),
                 crossover_force_ref=params.get("crossover_force_ref", 0.1),
+                # v9 relaxed convergence
+                relaxed_eval_threshold=params.get("relaxed_eval_threshold", 0.0),
+                accept_relaxed=params.get("accept_relaxed", False),
             )
         elif method == "pic_arc":
             result, trajectory = run_pic_arc(
@@ -670,12 +673,13 @@ def main() -> None:
         help="PIC-ARC: rejected ARC steps before fallback to FLOW (default 3).",
     )
     parser.add_argument(
-        "--relaxed-eval-threshold", type=float, default=0.01,
-        help="PIC-ARC: eigenvalue threshold for RELAXED convergence (default 0.01).",
+        "--relaxed-eval-threshold", type=float, default=0.0,
+        help="Relaxed convergence: accept if min_vib_eval >= -threshold AND "
+             "force < converged. 0 = strict only (n_neg==0). Typical: 0.001-0.01.",
     )
     parser.add_argument(
         "--accept-relaxed", action="store_true", default=False,
-        help="PIC-ARC: accept RELAXED convergence as success.",
+        help="Accept RELAXED convergence (min_eval >= -threshold) as success.",
     )
     parser.add_argument(
         "--k-bond", type=float, default=0.45,
