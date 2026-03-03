@@ -79,6 +79,15 @@ COMBO_RE_PLAIN_SHIFTED = re.compile(
     r"shifted_newton_se(?P<se>[^_]+)$"
 )
 # v5 SPDN: mad<v>_spdn[_tuned][_th<v>][_ts<v>][_ds<v>][_de<v>][_mom<v>]_pg<bool>_ph<bool>
+# v8: n<noise>_mad<v>_se<v>_scls_cm<v>[_cnr<v>][_cfr<v>][_mw<v>]_pg<bool>_ph<bool>
+COMBO_RE_CROSSOVER_V8 = re.compile(
+    r"n(?P<noise>[^_]+)_mad(?P<mad>[^_]+)_se(?P<se>[^_]+)"
+    r"_scls_cm(?P<cm>[^_]+)"
+    r"(?:_cnr(?P<cnr>[^_]+))?"
+    r"(?:_cfr(?P<cfr>[^_]+))?"
+    r"(?:_mw(?P<mw>[^_]+))?"
+    r"_pg(?P<pg>true|false)_ph(?P<ph>true|false)$"
+)
 # v7: n<noise>_mad<v>_se<v>_sc<tr|ls>[_mw<v>]_pg<bool>_ph<bool>
 COMBO_RE_SHIFTED_V7 = re.compile(
     r"n(?P<noise>[^_]+)_mad(?P<mad>[^_]+)_se(?P<se>[^_]+)"
@@ -146,6 +155,10 @@ class ComboRecord:
     step_control: str = "trust_region"
     max_nr_weight: float = 0.0
     noise_level: float = 0.0
+    # v8 crossover fields
+    crossover_mu_max: float = 0.0
+    crossover_n_neg_ref: float = 3.0
+    crossover_force_ref: float = 0.1
     # cascade_table from the results JSON (may be empty for old runs)
     cascade_table: Dict[str, Any] = field(default_factory=dict)
     results: List[Dict[str, Any]] = field(default_factory=list)
@@ -216,6 +229,30 @@ def _parse_combo_tag(combo_tag: str) -> Optional[Dict[str, Any]]:
         "escape_bidirectional": False,
         "mode_follow_eval_threshold": 0.0,
     }
+
+    # v8 crossover (most specific — has _cm field, so try before v7)
+    m = COMBO_RE_CROSSOVER_V8.fullmatch(combo_tag)
+    if m:
+        return {
+            "mad": _safe_float(m.group("mad")),
+            "nr_threshold": 0.0,
+            "lm_mu": 0.0,
+            "shift_epsilon": _safe_float(m.group("se")),
+            "anneal_force_threshold": 0.0,
+            "stagnation_window": 0,
+            "escape_alpha": 0.0,
+            "lm_mu_anneal_factor": 0.0,
+            "neg_mode_line_search": False,
+            "project_gradient_and_v": m.group("pg") == "true",
+            "purify_hessian": m.group("ph") == "true",
+            "step_control": "line_search",
+            "max_nr_weight": _safe_float(m.group("mw") or "0.0", 0.0),
+            "noise_level": _safe_float(m.group("noise")),
+            "crossover_mu_max": _safe_float(m.group("cm")),
+            "crossover_n_neg_ref": _safe_float(m.group("cnr") or "3.0", 3.0),
+            "crossover_force_ref": _safe_float(m.group("cfr") or "0.1", 0.1),
+            **_v4_defaults,
+        }
 
     # v7 shifted Newton with step control + noise level
     m = COMBO_RE_SHIFTED_V7.fullmatch(combo_tag)
@@ -454,6 +491,10 @@ def load_records(grid_dir: Path, result_glob: str) -> List[ComboRecord]:
                 step_control=parsed.get("step_control", "trust_region"),
                 max_nr_weight=parsed.get("max_nr_weight", 0.0),
                 noise_level=parsed.get("noise_level", 0.0),
+                # v8 crossover fields
+                crossover_mu_max=parsed.get("crossover_mu_max", 0.0),
+                crossover_n_neg_ref=parsed.get("crossover_n_neg_ref", 3.0),
+                crossover_force_ref=parsed.get("crossover_force_ref", 0.1),
                 total_diis_attempts=sum(r.get("total_diis_attempts", 0) for r in per_sample_results),
                 total_diis_accepts=sum(r.get("total_diis_accepts", 0) for r in per_sample_results),
                 cascade_table=metrics.get("cascade_table", {}),
@@ -598,18 +639,19 @@ def build_cascade_cross_table(records: List[ComboRecord]) -> Dict[str, Any]:
         _fill_eval_columns(bucket, row)
         rows_lm.append(row)
 
-    # ---- Shifted Newton runs (grouped by shift_epsilon, step_control, max_nr_weight, noise_level) ----
+    # ---- Shifted Newton / Crossover runs (grouped by se, sc, mw, nl, cm) ----
     rows_se: List[Dict[str, Any]] = []
     se_keys = sorted({
-        (r.shift_epsilon, r.step_control, r.max_nr_weight, r.noise_level)
+        (r.shift_epsilon, r.step_control, r.max_nr_weight, r.noise_level, r.crossover_mu_max)
         for r in records if r.shift_epsilon > 0
     })
-    for se, sc, mw, nl in se_keys:
+    for se, sc, mw, nl, cm in se_keys:
         bucket = [r for r in records
                   if math.isclose(r.shift_epsilon, se, rel_tol=1e-6)
                   and r.step_control == sc
                   and math.isclose(r.max_nr_weight, mw, rel_tol=1e-6)
                   and math.isclose(r.noise_level, nl, rel_tol=1e-6)
+                  and math.isclose(r.crossover_mu_max, cm, rel_tol=1e-6)
                   and r.cascade_table]
         if not bucket:
             continue
@@ -617,6 +659,7 @@ def build_cascade_cross_table(records: List[ComboRecord]) -> Dict[str, Any]:
             "optimizer_mode": "shifted_newton", "nr_threshold": 0.0,
             "lm_mu": 0.0, "shift_epsilon": se,
             "step_control": sc, "max_nr_weight": mw, "noise_level": nl,
+            "crossover_mu_max": cm,
         }
         _fill_eval_columns(bucket, row)
         rows_se.append(row)
@@ -675,10 +718,12 @@ def print_cascade_table(cross: Dict[str, Any]) -> None:
             sc = row.get("step_control", "trust_region")
             mw = row.get("max_nr_weight", 0.0)
             nl = row.get("noise_level", 0.0)
+            cm = row.get("crossover_mu_max", 0.0)
             sc_tag = " LS" if sc == "line_search" else ""
             mw_tag = f" mw={mw:g}" if mw > 0 else ""
             nl_tag = f" n={nl:g}" if nl > 0 else ""
-            label = f"SN  ε={se:g}{sc_tag}{mw_tag}{nl_tag}"
+            cm_tag = f" cm={cm:g}" if cm > 0 else ""
+            label = f"SN  ε={se:g}{sc_tag}{mw_tag}{cm_tag}{nl_tag}"
         elif mode == "lm_damping":
             label = f"LM  μ={mu:g}"
         else:
@@ -766,6 +811,12 @@ def print_report(
             extras.append(f"mw={row.max_nr_weight:g}")
         if row.noise_level > 0:
             extras.append(f"noise={row.noise_level:g}")
+        if row.crossover_mu_max > 0:
+            extras.append(f"cm={row.crossover_mu_max:g}")
+        if row.crossover_n_neg_ref != 3.0:
+            extras.append(f"cnr={row.crossover_n_neg_ref:g}")
+        if row.crossover_force_ref != 0.1:
+            extras.append(f"cfr={row.crossover_force_ref:g}")
         extra_str = " " + " ".join(extras) if extras else ""
         print(
             f"  {row.tag}: conv={row.n_converged}/{row.n_samples} "
@@ -907,6 +958,7 @@ def main() -> None:
         "step_control": summarize_main_effect(records, "step_control"),
         "max_nr_weight": summarize_main_effect(records, "max_nr_weight"),
         "noise_level": summarize_main_effect(records, "noise_level"),
+        "crossover_mu_max": summarize_main_effect(records, "crossover_mu_max"),
     }
     # Drop main effects that are constant (only one unique value) to reduce noise
     main_effects = {k: v for k, v in main_effects.items() if len(v) > 1}
@@ -972,6 +1024,12 @@ def main() -> None:
                 "total_escapes": r.total_escapes,
                 "total_line_searches": r.total_line_searches,
                 "total_mode_follows": r.total_mode_follows,
+                "step_control": r.step_control,
+                "max_nr_weight": r.max_nr_weight,
+                "noise_level": r.noise_level,
+                "crossover_mu_max": r.crossover_mu_max,
+                "crossover_n_neg_ref": r.crossover_n_neg_ref,
+                "crossover_force_ref": r.crossover_force_ref,
                 "path": r.path,
             }
             for idx, r in enumerate(ranked)
@@ -991,7 +1049,10 @@ def main() -> None:
                 "n_samples", "n_converged", "n_errors", "convergence_rate",
                 "mean_steps_when_converged", "mean_wall_time", "total_wall_time",
                 "total_escapes", "total_line_searches",
-                "total_mode_follows", "path",
+                "total_mode_follows",
+                "step_control", "max_nr_weight", "noise_level",
+                "crossover_mu_max", "crossover_n_neg_ref", "crossover_force_ref",
+                "path",
             ],
         )
         write_csv(

@@ -721,6 +721,79 @@ def _nr_step_spectral_partitioned(
 
 
 # ---------------------------------------------------------------------------
+# v8: iHiSD-inspired crossover (gradient descent ↔ Newton)
+# ---------------------------------------------------------------------------
+
+def _compute_crossover_alpha(
+    n_neg: int,
+    force_norm: float,
+    n_neg_ref: float = 3.0,
+    force_ref: float = 0.1,
+) -> float:
+    """Adaptive crossover parameter α ∈ [0, 1].
+
+    α = 0 (far from minimum): full damping → gradient-descent-like step
+    α = 1 (at minimum): no damping → pure shifted Newton
+
+    α = morse_factor × force_factor
+      morse_factor = max(0, 1 - n_neg / n_neg_ref)   → 1 when n_neg=0, 0 when n_neg ≥ ref
+      force_factor = 1 / (1 + force_norm / force_ref) → 1 when small, decays for large
+    """
+    morse_factor = max(0.0, 1.0 - n_neg / n_neg_ref)
+    force_factor = 1.0 / (1.0 + force_norm / force_ref)
+    return morse_factor * force_factor
+
+
+def _nr_step_crossover(
+    grad: torch.Tensor,
+    V_all: torch.Tensor,
+    lam_all: torch.Tensor,
+    shift_epsilon: float,
+    mu_max: float,
+    alpha: float,
+    max_nr_weight: float = 0.0,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, Any]]:
+    """Crossover step: shifted Newton with adaptive additive damping.
+
+    effective_lam_i = shifted_lam_i + mu
+    where mu = mu_max × (1 - alpha)
+
+    When alpha=0: mu=mu_max → all modes get weight ≈ 1/mu_max (gradient descent)
+    When alpha=1: mu=0 → pure shifted Newton (curvature-scaled)
+    """
+    lam_min = float(lam_all.min().item())
+    sigma = max(0.0, -lam_min) + shift_epsilon
+    shifted_lam = lam_all + sigma
+    shifted_lam = torch.clamp(shifted_lam, min=shift_epsilon)
+    if max_nr_weight > 0.0:
+        shifted_lam = torch.clamp(shifted_lam, min=1.0 / max_nr_weight)
+
+    # Additive crossover damping
+    mu = mu_max * (1.0 - alpha)
+    effective_lam = shifted_lam + mu
+
+    coeffs = V_all.T @ grad
+    weights = 1.0 / effective_lam
+    nr_step = V_all @ (coeffs * weights)
+    delta_x = -nr_step
+
+    info = {
+        "alpha": alpha,
+        "mu": mu,
+        "mu_max": mu_max,
+        "sigma": sigma,
+        "weight_max": float(weights.max().item()),
+        "weight_min": float(weights.min().item()),
+        "weight_mean": float(weights.mean().item()),
+        "cond_effective": float(
+            weights.max().item() / max(weights.min().item(), 1e-30)
+        ),
+    }
+
+    return delta_x, V_all, lam_all, info
+
+
+# ---------------------------------------------------------------------------
 # v5: GDIIS (Geometry Direct Inversion of the Iterative Subspace)
 # ---------------------------------------------------------------------------
 
@@ -1372,6 +1445,10 @@ def run_newton_raphson(
     # --- v7 options ---
     step_control: str = "trust_region",   # "trust_region" or "line_search"
     max_nr_weight: float = 0.0,           # 0 = no cap; >0 = cap shifted Newton weight at this value
+    # --- v8 crossover options ---
+    crossover_mu_max: float = 0.0,        # 0 = off; >0 = iHiSD crossover damping strength
+    crossover_n_neg_ref: float = 3.0,     # Morse index reference for alpha computation
+    crossover_force_ref: float = 0.1,     # Force reference for alpha computation (eV/A)
 ) -> Tuple[Dict[str, Any], list]:
     """Newton-Raphson optimization to find energy minimum.
 
@@ -1462,12 +1539,13 @@ def run_newton_raphson(
     prev_neg_evecs: Optional[torch.Tensor] = None
     prev_neg_evals: Optional[torch.Tensor] = None
 
-    # --- Mode selection (priority: SPDN > shifted > LM > anneal > hard filter) ---
+    # --- Mode selection (priority: SPDN > crossover > shifted > LM > anneal > hard filter) ---
     use_spdn = optimizer_mode.lower() == "spdn"
-    use_line_search = step_control.lower() == "line_search"
-    use_shifted = (not use_spdn) and shift_epsilon > 0.0
-    use_lm = (not use_spdn) and (not use_shifted) and lm_mu > 0.0
-    use_anneal = (not use_spdn) and (not use_shifted) and (not use_lm) and anneal_force_threshold > 0.0
+    use_crossover = (not use_spdn) and crossover_mu_max > 0.0
+    use_line_search = step_control.lower() == "line_search" or use_crossover  # crossover forces line search
+    use_shifted = (not use_spdn) and (not use_crossover) and shift_epsilon > 0.0
+    use_lm = (not use_spdn) and (not use_crossover) and (not use_shifted) and lm_mu > 0.0
+    use_anneal = (not use_spdn) and (not use_crossover) and (not use_shifted) and (not use_lm) and anneal_force_threshold > 0.0
     in_cleanup_phase = False
 
     # Effective LM mu (may be annealed)
@@ -1901,7 +1979,7 @@ def run_newton_raphson(
         lam_all = evals_vib.to(device=grad.device, dtype=work_dtype)
 
         # ---------------------------------------------------------------
-        # Compute NR step (five modes, priority: SPDN > shifted > LM > anneal > HF)
+        # Compute NR step (priority: SPDN > crossover > shifted > LM > anneal > HF)
         # ---------------------------------------------------------------
         if use_spdn:
             delta_x, V, lam, spdn_step_info = _nr_step_spectral_partitioned(
@@ -1915,6 +1993,16 @@ def run_newton_raphson(
                 momentum_vec = spdn_momentum * (coords.reshape(-1) - prev_coords_flat)
                 delta_x = delta_x + momentum_vec.to(dtype=delta_x.dtype)
                 step_record["spdn_momentum_applied"] = True
+        elif use_crossover:
+            crossover_alpha = _compute_crossover_alpha(
+                n_neg, force_norm, crossover_n_neg_ref, crossover_force_ref,
+            )
+            delta_x, V, lam, crossover_info = _nr_step_crossover(
+                grad, V_all, lam_all, shift_epsilon,
+                crossover_mu_max, crossover_alpha, max_nr_weight,
+            )
+            step_record["step_mode"] = "crossover"
+            step_record["crossover_info"] = crossover_info
         elif use_shifted:
             delta_x, V, lam = _nr_step_shifted_newton(grad, V_all, lam_all, shift_epsilon, max_nr_weight)
             step_record["step_mode"] = "shifted_newton"

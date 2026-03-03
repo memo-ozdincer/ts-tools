@@ -183,6 +183,10 @@ def run_single_sample(
                 # v7
                 step_control=params.get("step_control", "trust_region"),
                 max_nr_weight=params.get("max_nr_weight", 0.0),
+                # v8 crossover
+                crossover_mu_max=params.get("crossover_mu_max", 0.0),
+                crossover_n_neg_ref=params.get("crossover_n_neg_ref", 3.0),
+                crossover_force_ref=params.get("crossover_force_ref", 0.1),
             )
         else:
             raise ValueError(f"Unknown method: {method}")
@@ -570,6 +574,23 @@ def main() -> None:
              "E.g. 200 caps mode amplification at 200x instead of 1/epsilon.",
     )
 
+    # v8 crossover options
+    parser.add_argument(
+        "--crossover-mu-max", type=float, default=0.0,
+        help="iHiSD crossover: max additive damping mu. 0 = off (default). "
+             "When active, forces Armijo line search. Typical: 0.1-2.0.",
+    )
+    parser.add_argument(
+        "--crossover-n-neg-ref", type=float, default=3.0,
+        help="iHiSD crossover: Morse index reference for alpha. "
+             "alpha_morse = max(0, 1 - n_neg/ref). Default: 3.0.",
+    )
+    parser.add_argument(
+        "--crossover-force-ref", type=float, default=0.1,
+        help="iHiSD crossover: force norm reference for alpha. "
+             "alpha_force = 1/(1 + force_norm/ref). Default: 0.1 eV/A.",
+    )
+
     # Gradient descent parameters
     parser.add_argument("--step-size", type=float, default=0.01,
                         help="Fixed step size for gradient descent")
@@ -638,6 +659,10 @@ def main() -> None:
         # v7 additions
         "step_control": args.step_control,
         "max_nr_weight": args.max_nr_weight,
+        # v8 crossover additions
+        "crossover_mu_max": args.crossover_mu_max,
+        "crossover_n_neg_ref": args.crossover_n_neg_ref,
+        "crossover_force_ref": args.crossover_force_ref,
     }
 
     processor = ParallelSCINEProcessor(
