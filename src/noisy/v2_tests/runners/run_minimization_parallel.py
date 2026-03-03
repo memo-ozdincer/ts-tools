@@ -59,6 +59,7 @@ from src.noisy.v2_tests.baselines.minimization import (
     run_fixed_step_gd,
     run_newton_raphson,
 )
+from src.noisy.v2_tests.baselines.pic_arc import run_pic_arc
 from src.parallel.scine_parallel import ParallelSCINEProcessor
 from src.parallel.utils import run_batch_parallel
 
@@ -187,6 +188,46 @@ def run_single_sample(
                 crossover_mu_max=params.get("crossover_mu_max", 0.0),
                 crossover_n_neg_ref=params.get("crossover_n_neg_ref", 3.0),
                 crossover_force_ref=params.get("crossover_force_ref", 0.1),
+            )
+        elif method == "pic_arc":
+            result, trajectory = run_pic_arc(
+                predict_fn,
+                coords,
+                atomic_nums,
+                all_atomsymbols,
+                n_steps=n_steps,
+                max_atom_disp=params["max_atom_disp"],
+                force_converged=params["force_converged"],
+                min_interatomic_dist=params["min_interatomic_dist"],
+                project_gradient_and_v=project_gradient_and_v,
+                purify_hessian=params.get("purify_hessian", False),
+                log_spectrum_k=params.get("log_spectrum_k", 10),
+                # Trust region
+                trust_radius_init=params.get("trust_radius_init", 0.5),
+                trust_radius_floor=params.get("trust_radius_floor", 0.01),
+                # Metric
+                k_bond=params.get("k_bond", 0.45),
+                bond_threshold_factor=params.get("bond_threshold_factor", 1.3),
+                metric_regularization=params.get("metric_regularization", 1e-3),
+                metric_refresh_every=params.get("metric_refresh_every", 0),
+                # ARC
+                sigma_init=params.get("sigma_init", 1.0),
+                sigma_min=params.get("sigma_min", 0.01),
+                sigma_max=params.get("sigma_max", 100.0),
+                max_neg_modes_in_subspace=params.get("max_neg_modes_in_subspace", 5),
+                # State machine
+                kappa_threshold=params.get("kappa_threshold", 1e6),
+                n_neg_max_for_arc=params.get("n_neg_max_for_arc", 5),
+                force_max_for_arc=params.get("force_max_for_arc", 1.0),
+                stability_window=params.get("stability_window", 3),
+                max_consecutive_arc_rejects=params.get("max_consecutive_arc_rejects", 3),
+                # Termination
+                relaxed_eval_threshold=params.get("relaxed_eval_threshold", 0.01),
+                accept_relaxed=params.get("accept_relaxed", False),
+                # Reference geometries
+                known_ts_coords=known_ts_coords,
+                known_reactant_coords=known_reactant_coords,
+                known_product_coords=known_product_coords,
             )
         else:
             raise ValueError(f"Unknown method: {method}")
@@ -409,7 +450,7 @@ def main() -> None:
         "--method",
         type=str,
         required=True,
-        choices=["fixed_step_gd", "newton_raphson"],
+        choices=["fixed_step_gd", "newton_raphson", "pic_arc"],
         help="Minimization method: 'fixed_step_gd' or 'newton_raphson'",
     )
 
@@ -591,6 +632,72 @@ def main() -> None:
              "alpha_force = 1/(1 + force_norm/ref). Default: 0.1 eV/A.",
     )
 
+    # --- PIC-ARC flags ---
+    parser.add_argument(
+        "--trust-radius-init", type=float, default=0.5,
+        help="PIC-ARC: initial trust radius (default 0.5 A).",
+    )
+    parser.add_argument(
+        "--sigma-init", type=float, default=1.0,
+        help="PIC-ARC: initial cubic regularization parameter (default 1.0).",
+    )
+    parser.add_argument(
+        "--sigma-min", type=float, default=0.01,
+        help="PIC-ARC: minimum sigma (default 0.01).",
+    )
+    parser.add_argument(
+        "--sigma-max", type=float, default=100.0,
+        help="PIC-ARC: maximum sigma (default 100.0).",
+    )
+    parser.add_argument(
+        "--kappa-threshold", type=float, default=1e6,
+        help="PIC-ARC: condition number threshold for FLOW/ARC switch (default 1e6).",
+    )
+    parser.add_argument(
+        "--n-neg-max-for-arc", type=int, default=5,
+        help="PIC-ARC: max negative modes to allow ARC phase (default 5).",
+    )
+    parser.add_argument(
+        "--force-max-for-arc", type=float, default=1.0,
+        help="PIC-ARC: max force norm to allow ARC phase (default 1.0 eV/A).",
+    )
+    parser.add_argument(
+        "--stability-window", type=int, default=3,
+        help="PIC-ARC: stable steps required before entering ARC (default 3).",
+    )
+    parser.add_argument(
+        "--max-consecutive-arc-rejects", type=int, default=3,
+        help="PIC-ARC: rejected ARC steps before fallback to FLOW (default 3).",
+    )
+    parser.add_argument(
+        "--relaxed-eval-threshold", type=float, default=0.01,
+        help="PIC-ARC: eigenvalue threshold for RELAXED convergence (default 0.01).",
+    )
+    parser.add_argument(
+        "--accept-relaxed", action="store_true", default=False,
+        help="PIC-ARC: accept RELAXED convergence as success.",
+    )
+    parser.add_argument(
+        "--k-bond", type=float, default=0.45,
+        help="PIC-ARC: Lindh stretch force constant for metric (default 0.45).",
+    )
+    parser.add_argument(
+        "--bond-threshold-factor", type=float, default=1.3,
+        help="PIC-ARC: bond detection factor on covalent radii (default 1.3).",
+    )
+    parser.add_argument(
+        "--metric-regularization", type=float, default=1e-3,
+        help="PIC-ARC: diagonal regularization for metric (default 1e-3).",
+    )
+    parser.add_argument(
+        "--metric-refresh-every", type=int, default=0,
+        help="PIC-ARC: refresh metric every N steps (0 = never, default 0).",
+    )
+    parser.add_argument(
+        "--max-neg-modes-in-subspace", type=int, default=5,
+        help="PIC-ARC: max negative modes in ARC subspace (default 5).",
+    )
+
     # Gradient descent parameters
     parser.add_argument("--step-size", type=float, default=0.01,
                         help="Fixed step size for gradient descent")
@@ -663,6 +770,23 @@ def main() -> None:
         "crossover_mu_max": args.crossover_mu_max,
         "crossover_n_neg_ref": args.crossover_n_neg_ref,
         "crossover_force_ref": args.crossover_force_ref,
+        # PIC-ARC additions
+        "trust_radius_init": args.trust_radius_init,
+        "sigma_init": args.sigma_init,
+        "sigma_min": args.sigma_min,
+        "sigma_max": args.sigma_max,
+        "kappa_threshold": args.kappa_threshold,
+        "n_neg_max_for_arc": args.n_neg_max_for_arc,
+        "force_max_for_arc": args.force_max_for_arc,
+        "stability_window": args.stability_window,
+        "max_consecutive_arc_rejects": args.max_consecutive_arc_rejects,
+        "relaxed_eval_threshold": args.relaxed_eval_threshold,
+        "accept_relaxed": args.accept_relaxed,
+        "k_bond": args.k_bond,
+        "bond_threshold_factor": args.bond_threshold_factor,
+        "metric_regularization": args.metric_regularization,
+        "metric_refresh_every": args.metric_refresh_every,
+        "max_neg_modes_in_subspace": args.max_neg_modes_in_subspace,
     }
 
     processor = ParallelSCINEProcessor(

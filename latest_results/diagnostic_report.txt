@@ -1,0 +1,133 @@
+======================================================================
+Diagnostic from Labelled Minima
+======================================================================
+  Samples:              287
+  Noise levels:         [0.5, 1.0, 1.5, 2.0]
+  Noise seed:           1093157
+  Interpolation points: 20
+  Shift epsilon:        0.001
+  Workers:              48
+  Threads/worker:       4
+======================================================================
+
+Samples: 287  (errors: 0)
+
+======================================================================
+Q1: n_neg at ground-truth minima (DFTB0 Hessian)
+======================================================================
+
+  reactant (287 samples, expected n_neg=0):
+    n_neg==0: 29/287 (10.1%)
+    n_neg distribution: min=0, max=3, mean=1.61, median=2
+    condition_number: min=3.25e+01, max=1.37e+04, median=1.55e+03
+    log10(cond): min=1.5, max=4.1, median=3.2
+    force_norm: min=4.5158e-01, max=3.0120e+00, median=1.3944e+00
+    eigenvalue band populations (mean across samples):
+      n_eval_0_to_pos1e-4: 0.00
+      n_eval_above_pos1e-3: 26.08
+      n_eval_below_neg1e-1: 0.90
+      n_eval_neg1e-1_to_neg1e-2: 0.63
+      n_eval_neg1e-2_to_neg1e-3: 0.08
+      n_eval_neg1e-3_to_neg1e-4: 0.00
+      n_eval_neg1e-4_to_0: 0.00
+      n_eval_pos1e-4_to_pos1e-3: 0.00
+
+  product (287 samples, expected n_neg=0):
+    n_neg==0: 30/287 (10.5%)
+    n_neg distribution: min=0, max=7, mean=2.12, median=2
+    condition_number: min=6.96e+01, max=3.20e+05, median=2.43e+03
+    log10(cond): min=1.8, max=5.5, median=3.4
+    force_norm: min=3.6338e-01, max=3.1476e+00, median=1.1621e+00
+    eigenvalue band populations (mean across samples):
+      n_eval_0_to_pos1e-4: 0.00
+      n_eval_above_pos1e-3: 25.55
+      n_eval_below_neg1e-1: 1.00
+      n_eval_neg1e-1_to_neg1e-2: 0.89
+      n_eval_neg1e-2_to_neg1e-3: 0.20
+      n_eval_neg1e-3_to_neg1e-4: 0.03
+      n_eval_neg1e-4_to_0: 0.00
+      n_eval_pos1e-4_to_pos1e-3: 0.02
+
+  transition_state (287 samples, expected n_neg=1):
+    n_neg==1: 31/287 (10.8%)
+    n_neg distribution: min=0, max=7, mean=2.83, median=3
+    condition_number: min=6.87e+01, max=9.28e+06, median=1.25e+03
+    log10(cond): min=1.8, max=7.0, median=3.1
+    force_norm: min=5.8613e-01, max=3.4616e+00, median=1.6950e+00
+    eigenvalue band populations (mean across samples):
+      n_eval_0_to_pos1e-4: 0.00
+      n_eval_above_pos1e-3: 24.85
+      n_eval_below_neg1e-1: 2.07
+      n_eval_neg1e-1_to_neg1e-2: 0.66
+      n_eval_neg1e-2_to_neg1e-3: 0.08
+      n_eval_neg1e-3_to_neg1e-4: 0.01
+      n_eval_neg1e-4_to_0: 0.00
+      n_eval_pos1e-4_to_pos1e-3: 0.01
+
+======================================================================
+Q2: Direction quality at noisy starting points
+    (dot product: 1.0 = perfect alignment, 0.0 = orthogonal, -1.0 = opposite)
+======================================================================
+
+  Noise 0.5 A (287 samples):
+    SD · true:     mean=0.0285, median=0.0387, std=0.1783
+    Newton · true: mean=0.0548, median=0.0651, std=0.1735
+    SD better than Newton: 132/287 (46.0%)
+    condition_number at start: median=1.14e+04, log10 median=4.1
+    n_neg at start: mean=12.1, median=12, max=20
+
+  Noise 1.0 A (287 samples):
+    SD · true:     mean=0.0380, median=0.0362, std=0.1671
+    Newton · true: mean=0.0247, median=0.0268, std=0.1495
+    SD better than Newton: 155/287 (54.0%)
+    condition_number at start: median=2.79e+04, log10 median=4.4
+    n_neg at start: mean=12.4, median=12, max=17
+
+  Noise 1.5 A (287 samples):
+    SD · true:     mean=0.0929, median=0.0958, std=0.1533
+    Newton · true: mean=0.0427, median=0.0375, std=0.1277
+    SD better than Newton: 179/287 (62.4%)
+    condition_number at start: median=2.00e+05, log10 median=5.3
+    n_neg at start: mean=12.1, median=12, max=18
+
+  Noise 2.0 A (287 samples):
+    SD · true:     mean=0.1103, median=0.1149, std=0.1268
+    Newton · true: mean=0.0268, median=0.0260, std=0.1281
+    SD better than Newton: 201/287 (70.0%)
+    condition_number at start: median=2.30e+06, log10 median=6.4
+    n_neg at start: mean=12.0, median=12, max=18
+
+======================================================================
+Q3: Along interpolation path (noisy start -> closest minimum)
+    Where does n_neg first reach 0? Where does quadratic model become valid?
+======================================================================
+
+  Noise 0.5 A (287 samples):
+    t where n_neg first = 0: mean=0.961, median=0.950, min=0.850, max=1.000
+    n_neg never reaches 0 along path: 256/287 (89.2%)
+    condition at path midpoint: median=4.42e+03, log10 median=3.6
+    condition at true minimum:  median=1.55e+03, log10 median=3.2
+
+  Noise 1.0 A (287 samples):
+    t where n_neg first = 0: mean=0.981, median=1.000, min=0.900, max=1.000
+    n_neg never reaches 0 along path: 253/287 (88.2%)
+    condition at path midpoint: median=1.10e+04, log10 median=4.0
+    condition at true minimum:  median=1.55e+03, log10 median=3.2
+
+  Noise 1.5 A (287 samples):
+    t where n_neg first = 0: mean=0.993, median=1.000, min=0.950, max=1.000
+    n_neg never reaches 0 along path: 257/287 (89.5%)
+    condition at path midpoint: median=1.70e+04, log10 median=4.2
+    condition at true minimum:  median=1.55e+03, log10 median=3.2
+
+  Noise 2.0 A (287 samples):
+    t where n_neg first = 0: mean=0.998, median=1.000, min=0.950, max=1.000
+    n_neg never reaches 0 along path: 258/287 (89.9%)
+    condition at path midpoint: median=3.56e+04, log10 median=4.6
+    condition at true minimum:  median=1.61e+03, log10 median=3.2
+
+Full results saved to: /scratch/memoozd/ts-tools-scratch/runs/diag_minima_1093157/diagnostic_from_minima_results.json
+CSV saved: /scratch/memoozd/ts-tools-scratch/runs/diag_minima_1093157/diagnostic_noise0.5A.csv
+CSV saved: /scratch/memoozd/ts-tools-scratch/runs/diag_minima_1093157/diagnostic_noise1.0A.csv
+CSV saved: /scratch/memoozd/ts-tools-scratch/runs/diag_minima_1093157/diagnostic_noise1.5A.csv
+CSV saved: /scratch/memoozd/ts-tools-scratch/runs/diag_minima_1093157/diagnostic_noise2.0A.csv

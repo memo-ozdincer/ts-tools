@@ -1,0 +1,1399 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{geometry}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{float}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{array}
+\usepackage{multirow}
+\usepackage{makecell}
+
+\geometry{margin=1in}
+\hypersetup{colorlinks=true,linkcolor=blue,citecolor=blue,urlcolor=blue}
+
+\newcommand{\vect}[1]{\mathbf{#1}}
+\newcommand{\mat}[1]{\mathbf{#1}}
+\newcommand{\Real}{\mathbb{R}}
+\newcommand{\pes}{\mathcal{V}}
+\newcommand{\grad}{\nabla}
+\newcommand{\hess}{\mat{H}}
+\newcommand{\evec}{\vect{v}}
+\newcommand{\eval}{\lambda}
+\newcommand{\angstrom}{\text{\r{A}}}
+
+\title{Newton--Raphson Minimization on Semi-Empirical Potential Energy Surfaces:\\
+A Comprehensive Record of Algorithm Development, Failure Analysis, and Experimental Results (v1--v8)}
+
+\author{Compiled from multi-session development \& analysis\\
+\texttt{ts-tools / src/noisy/v2\_tests/}}
+
+\date{March 2026}
+
+\begin{document}
+\maketitle
+
+%=============================================================================
+% EXECUTIVE SUMMARY — one-page overview for quick reading
+%=============================================================================
+\section*{Executive Summary}
+\addcontentsline{toc}{section}{Executive Summary}
+
+\subsection*{Problem}
+
+We seek to minimize molecular energy on a semi-empirical (DFTB0) potential energy surface (PES), starting from noisy geometries near transition states in the Transition1x dataset. The optimizer must drive the Morse index (number of negative Hessian eigenvalues) to zero while reducing forces below $10^{-4}$~eV/$\angstrom$. This is a prerequisite for constructing reaction paths: given a transition state, we need the flanking minima.
+
+The difficulty is controlled by the noise level $\sigma$ added to the starting geometry. At $\sigma = 0.5\;\angstrom$ the starting point is mildly displaced; at $\sigma = 2.0\;\angstrom$ it can be chemically unreasonable (condition numbers $> 10^6$, 12+ negative eigenvalues).
+
+\subsection*{Algorithm development (v1--v8)}
+
+Over eight algorithm versions we tested: hard-filter Newton (v1), Levenberg--Marquardt damping (v2), shifted Newton with stagnation escape (v3), five targeted failure-mode fixes (v4), spectrally-partitioned DIIS-Newton (v5), back-to-basics shifted Newton + trust region (v6), Armijo backtracking line search replacing trust region (v7), and an iHiSD-inspired gradient-descent$\to$Newton crossover (v8).
+
+\textbf{The consistent winner across all versions is the simplest configuration: shifted Newton step ($\varepsilon = 10^{-3}$) with adaptive trust region and Eckart projection.} Every elaboration---GDIIS, spectral partitioning, LM damping, line search, mode following, blind-mode correction, bidirectional escape, weight capping---either matched or \emph{hurt} performance. The shifted Newton step (v3) remains the single most important algorithmic contribution.
+
+\subsection*{Best convergence rates (300 samples, 10k steps)}
+
+\begin{center}
+\begin{tabular}{rcccc}
+\toprule
+Noise & $0.5\;\angstrom$ & $1.0\;\angstrom$ & $1.5\;\angstrom$ & $2.0\;\angstrom$ \\
+\midrule
+Best rate & \textbf{79\%} & \textbf{59\%} & \textbf{41\%} & \textbf{30\%} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The performance cliff is between 1.0 and 1.5\,$\angstrom$. Above 1.5\,$\angstrom$, median condition numbers exceed $10^5$ and Newton's step \emph{direction} becomes unreliable---no step-size control can fix a wrong direction.
+
+\subsection*{Failure modes}
+
+At low noise (0.5--1.0\,$\angstrom$), the dominant failure is \textbf{trust radius collapse}: the trust radius shrinks to its floor ($0.01\;\angstrom$) and the optimizer makes negligible progress along negative-curvature directions, creating period-$\sim$8 oscillation cycles. 100\% of v6 failures end at the trust floor. Line search (v7) was worse, not better---the trust region's damage-limiting floor is actually beneficial when the step direction is bad.
+
+At high noise ($\geq 1.5\;\angstrom$), trajectories are \textbf{genuinely stuck}: forces remain at 10--1000~eV/$\angstrom$ for all 10,000 steps, $n_\text{neg}$ stays at 6--15, and the Hessian condition number reaches $10^{8}$--$10^{26}$. The quadratic model is completely invalid.
+
+Cascade analysis reveals a large \textbf{false-rejection gap}: at 1.5\,$\angstrom$, 90\% of trajectories reach geometries with all eigenvalues $\geq -0.01$, but only 31--41\% achieve strict $n_\text{neg} = 0$. The optimizer \emph{gets close} but cannot eliminate residual small negative eigenvalues.
+
+\subsection*{DFTB0 Hessian diagnostics at ground-truth geometries}
+
+A diagnostic script evaluated the DFTB0 Hessian at DFT-computed ground-truth reactant and product geometries (287 molecules):
+
+\begin{itemize}[nosep]
+  \item \textbf{Only 10\% of DFT reactant minima have $n_\text{neg} = 0$ under DFTB0.} Median $n_\text{neg} = 2$; forces $\sim$1.4~eV/$\angstrom$ (not stationary points on the DFTB0 PES).
+  \item The negative eigenvalues are \emph{strongly negative} ($< -0.01$), not numerical ghosts---DFTB0 genuinely predicts different curvature at these geometries.
+  \item Condition numbers at the labelled minima are well-behaved ($\kappa \sim 10^{3.2}$); the extreme conditioning arises from displacement, not the PES itself.
+\end{itemize}
+
+\subsection*{Direction quality and basin of attraction}
+
+At noisy starting points, both the steepest-descent and Newton directions are \textbf{nearly orthogonal to the true direction} toward the nearest minimum (best dot product: 0.11 for SD at 2.0\,$\angstrom$). SD is better than Newton in 70\% of cases at high noise, validating the iHiSD crossover motivation, but both are too poor in absolute terms for a single step to be meaningful. The optimizer relies on iterative correction over thousands of small steps.
+
+The basin where $n_\text{neg} = 0$ is \textbf{extraordinarily narrow}: for 89\% of molecules, the linear interpolation path from noisy start to true minimum \emph{never} passes through $n_\text{neg} = 0$. For the 11\% that do reach it, it occurs only in the last 5\% of the path ($t > 0.95$). The optimizer navigates $>$95\% of the trajectory with no eigenvalue-based signal that it is approaching the minimum.
+
+\subsection*{Condition number scaling}
+
+Median $\kappa$ at the starting geometry scales from $10^{4.1}$ (0.5\,$\angstrom$) to $10^{6.4}$ (2.0\,$\angstrom$). The sharpest convergence drop (59\%$\to$41\%) coincides with $\kappa$ jumping from $10^{4.4}$ to $10^{5.3}$---a $10\times$ increase. Along the interpolation path to the minimum, the condition number improves monotonically but remains $\sim$3$\times$ worse than the baseline ($10^{3.2}$) until the very end.
+
+\subsection*{Current status and open questions}
+
+\begin{enumerate}[nosep]
+  \item \textbf{v8 iHiSD crossover experiments are running} (24 configurations $\times$ 300 samples). At 0.5\,$\angstrom$: crossover \emph{hurts} (73\%$\to$55\%$\to$38\% as $\mu_\text{max}$ increases), because the Hessian is already reliable at low noise. Results at 1.5--2.0\,$\angstrom$ are pending and may differ.
+  \item \textbf{Persistently hard samples} (004, 008, 020, 024, 027) fail across all versions and noise seeds---likely molecules with pathological PES topology.
+  \item \textbf{Is strict $n_\text{neg} = 0$ the right criterion?} A relaxed convergence criterion (e.g.\ force convergence + eigenvalue tolerance) may be more appropriate. However, eigenvalue tolerance alone has a 97\% false convergence rate (Section~\ref{sec:eval-tolerance}).
+  \item \textbf{Could a hybrid approach work?} For example: gradient descent warmup (globally convergent, correct direction) until condition number drops below a threshold, then switch to Newton (fast local convergence). The diagnostic data provides empirical thresholds for such a transition.
+\end{enumerate}
+
+\newpage
+\tableofcontents
+\newpage
+
+%=============================================================================
+\section{Problem Statement and Physical Context}
+\label{sec:problem}
+%=============================================================================
+
+\subsection{Goal}
+
+Given a molecular geometry near a transition state (TS), find the nearest local energy \emph{minimum} on the potential energy surface (PES).
+
+\subsection{Physical Context}
+
+\begin{itemize}
+  \item Transition states are first-order saddle points on the PES (one imaginary vibrational frequency, i.e., one negative Hessian eigenvalue in the vibrational subspace).
+  \item Local minima have all positive vibrational frequencies: $n_\text{neg} = 0$.
+  \item The optimizer starts from a noisy geometry near the TS and must navigate through regions of mixed curvature to reach the closest minimum.
+  \item The Hessian is computed in the full $3N$-dimensional space, then projected into the $(3N-6)$-dimensional vibrational subspace via Eckart projection to remove translational and rotational modes.
+\end{itemize}
+
+\subsection{Why This Problem Is Hard}
+
+\begin{enumerate}
+  \item The PES has regions of negative curvature near the TS.
+  \item Small negative eigenvalues (``ghost modes'') are numerically ambiguous---below the noise floor of the semi-empirical Hessian.
+  \item The vibrational Hessian can be ill-conditioned (condition numbers exceeding $10^6$, and at high noise, $10^{8}$--$10^{26}$).
+  \item Trust-radius dynamics can collapse, rendering steps useless (the dominant failure mode).
+  \item Eigenvector rotation between steps makes mode-tracking unreliable (overlap $< 0.5$).
+  \item At high noise ($\geq 1.5\;\angstrom$), the quadratic model is completely invalid and the Newton direction itself is wrong.
+\end{enumerate}
+
+\subsection{Convergence Criterion}
+
+Two criteria are used depending on the optimizer mode:
+\begin{align}
+  \text{Standard (v1--v4, v6--v8):}&\quad n_\text{neg} = 0 \label{eq:conv-strict} \\
+  \text{SPDN (v5):}&\quad n_\text{neg,reliable} = 0 \;\wedge\; \|\vect{f}\| < f_\text{tol} \label{eq:conv-spdn}
+\end{align}
+where $n_\text{neg,reliable} = |\{i : \eval_i < -\tau_\text{soft}\}|$ ignores ghost eigenvalues below $\tau_\text{soft} = 10^{-4}$.
+
+%=============================================================================
+\section{Dataset and Experimental Setup}
+\label{sec:setup}
+%=============================================================================
+
+\subsection{Dataset: Transition1x}
+
+\begin{itemize}
+  \item \textbf{Source:} Schreiner et al., official HDF5 dataset ($\sim$1--2\,GB).
+  \item \textbf{Content:} Small organic molecules (H, C, N, O) with DFT reference data at the $\omega$B97x/6-31G(d) level.
+  \item \textbf{Per sample:} Reactant, TS, and product geometries; atomic numbers; DFT energies and forces; reaction SMILES.
+  \item \textbf{Loader:} \texttt{Transition1xDataset} (sequential, no shuffling---first $k$ samples are always the same).
+\end{itemize}
+
+\subsection{Calculator: DFTB0}
+
+\begin{itemize}
+  \item Density Functional Tight-Binding, zeroth order.
+  \item $\sim$2--3 orders of magnitude faster than full DFT.
+  \item Provides energies, analytical forces, and analytical Hessians.
+  \item Implemented via the SCINE/Sparrow backend (CPU-only).
+\end{itemize}
+
+\subsection{Starting Geometry Construction}
+\label{sec:starting-geom}
+
+The starting geometry is constructed from each dataset sample:
+
+\begin{enumerate}
+  \item \textbf{Base geometry:} Midpoint of reactant and TS coordinates:
+  \[
+    \vect{x}_\text{base} = \tfrac{1}{2}(\vect{x}_\text{reactant} + \vect{x}_\text{TS})
+  \]
+  (other bases tested: reactant, TS, three-quarter interpolant).
+
+  \item \textbf{Noise application:} Isotropic Gaussian noise per atom:
+  \[
+    \vect{x}_0 = \vect{x}_\text{base} + \vect{\epsilon}, \qquad \vect{\epsilon} \sim \mathcal{N}(\vect{0}, \sigma^2 \mat{I}_{3N})
+  \]
+  where $\sigma$ is the noise level in $\angstrom$. Seeded as \texttt{torch.manual\_seed(noise\_seed + sample\_index)}.
+
+  \item \textbf{Noise levels tested:} $\{0.5, 1.0, 1.5, 2.0\}\;\angstrom$.
+
+  \item \textbf{Key discovery:} Samples are loaded sequentially (no shuffling), so the first 15 samples are always the easiest. Results from 15-sample runs are inflated relative to 300-sample runs.
+\end{enumerate}
+
+\subsection{Parallelization}
+
+\begin{itemize}
+  \item \texttt{ProcessPoolExecutor} via \texttt{ParallelSCINEProcessor}.
+  \item Default: $192$ CPUs / $4$ threads per worker $= 48$ workers.
+  \item Each worker runs one sample independently.
+\end{itemize}
+
+%=============================================================================
+\section{Mathematical Formulations}
+\label{sec:math}
+%=============================================================================
+
+\subsection{Core Newton--Raphson Step}
+
+The standard Newton--Raphson update on a PES $E(\vect{x})$ is:
+\begin{equation}
+  \vect{x}_{k+1} = \vect{x}_k - \hess(\vect{x}_k)^{-1} \grad E(\vect{x}_k)
+  \label{eq:nr-basic}
+\end{equation}
+The Hessian inverse is computed via eigendecomposition in the vibrational subspace. Let $\{\eval_i, \evec_i\}_{i=1}^{3N-6}$ be the vibrational eigenvalues and eigenvectors. The step is:
+\begin{equation}
+  \Delta\vect{x} = -\sum_{i} w_i \, (\vect{g} \cdot \evec_i) \, \evec_i
+  \label{eq:nr-spectral}
+\end{equation}
+where $\vect{g} = \grad E$ is the gradient in the vibrational subspace and $w_i$ is a mode-dependent weight. The six step-building modes differ only in how $w_i$ is defined.
+
+\subsection{Step-Building Mode 1: Hard Filter (v1 default)}
+\label{sec:hard-filter}
+
+\begin{equation}
+  w_i = \begin{cases}
+    1/|\eval_i| & \text{if } |\eval_i| \geq \tau_\text{nr} \\
+    0 & \text{otherwise}
+  \end{cases}
+  \label{eq:hard-filter}
+\end{equation}
+where $\tau_\text{nr}$ is the \texttt{nr\_threshold} parameter (default $8 \times 10^{-3}$). If no modes pass the filter, a small gradient step is taken as fallback: $\Delta\vect{x} = 10^{-3} \cdot \vect{f}$.
+
+\subsection{Step-Building Mode 2: Levenberg--Marquardt Damping (v2)}
+\label{sec:lm-damping}
+
+\begin{equation}
+  w_i = \frac{|\eval_i|}{\eval_i^2 + \mu^2}
+  \label{eq:lm-weight}
+\end{equation}
+\begin{itemize}
+  \item $|\eval_i| \gg \mu$: $w_i \approx 1/|\eval_i|$ (pure Newton).
+  \item $|\eval_i| = \mu$: $w_i = 1/(2\mu)$ (bounded transition).
+  \item $|\eval_i| \ll \mu$: $w_i \approx |\eval_i|/\mu^2 \to 0$ (flat modes suppressed).
+\end{itemize}
+All modes contribute with smooth vanishing weight for near-zero eigenvalues. No hard cutoff.
+
+\subsection{Step-Building Mode 3: Shifted Newton (v3)}
+\label{sec:shifted-newton}
+
+\begin{equation}
+  w_i = \frac{1}{\eval_i + \sigma}, \qquad \sigma = \max(0, -\eval_\text{min}) + \varepsilon
+  \label{eq:shifted-newton}
+\end{equation}
+where $\varepsilon$ is the \texttt{shift\_epsilon} parameter. The shift $\sigma$ makes all effective eigenvalues $(\eval_i + \sigma)$ positive. A safety clamp ensures:
+\begin{equation}
+  \eval_i + \sigma \geq \varepsilon \quad \Rightarrow \quad w_i \leq 1/\varepsilon
+\end{equation}
+
+\textbf{Key property:} Negative modes get \emph{larger} weights than equally-sized positive modes:
+\begin{align}
+  \eval_i = -0.01,\; \sigma = 0.011 &\implies w_i = 1/0.001 = 1000 \\
+  \eval_i = +0.01,\; \sigma = 0.011 &\implies w_i = 1/0.021 \approx 48
+\end{align}
+The step is thus more aggressive along problematic (negative curvature) directions. As $\sigma \to 0$ near a true minimum, this recovers the pure Newton step.
+
+\textbf{Optional weight cap (v7):} If \texttt{max\_nr\_weight} $> 0$, an additional clamp is applied:
+\begin{equation}
+  \eval_i + \sigma \geq \max\left(\varepsilon,\; 1/w_\text{max}\right)
+\end{equation}
+
+\subsection{Step-Building Mode 4: Spectral Partitioning (SPDN, v5)}
+\label{sec:spdn-step}
+
+Eigenvalues are partitioned into three reliability regimes:
+\begin{equation}
+  w_i = \begin{cases}
+    1/|\eval_i| & \text{if } |\eval_i| > \tau_\text{hard} \quad \text{(Hard: full Newton)} \\
+    1/\tau_\text{hard} & \text{if } \tau_\text{soft} < |\eval_i| \leq \tau_\text{hard} \quad \text{(Soft: capped)} \\
+    1/\tau_\text{hard} & \text{if } |\eval_i| \leq \tau_\text{soft} \quad \text{(Null: ghost modes, bounded)}
+  \end{cases}
+  \label{eq:spdn-weight}
+\end{equation}
+Default: $\tau_\text{hard} = 0.01$, $\tau_\text{soft} = 10^{-4}$. Maximum weight $= 1/\tau_\text{hard} = 100$, a $20\times$ reduction from shifted Newton's $1/\varepsilon = 2000$.
+
+\textbf{All modes contribute}---none are excluded---ensuring full gradient information is captured.
+
+\subsection{Step-Building Mode 5: iHiSD-Inspired Crossover (v8)}
+\label{sec:crossover}
+
+Inspired by the improved High-index Saddle Dynamics (iHiSD) algorithm of Su, Wang, Zhang, Zhao, \& Zheng (2025): smoothly transition from a globally convergent method (gradient descent) to a locally fast method (Newton) via an adaptive crossover parameter $\alpha$. The iHiSD paper proves that the crossover dynamics inherits both the nonlocal convergence of gradient flow and the fast local convergence of HiSD, with a linear convergence rate of $(\kappa + \varepsilon)/(\kappa + 3\varepsilon)$ where $\kappa = L/\mu$ is the condition number.
+
+\begin{equation}
+  w_i = \frac{1}{\tilde{\eval}_i + \mu}, \qquad \mu = \mu_\text{max} \cdot (1 - \alpha)
+  \label{eq:crossover-weight}
+\end{equation}
+where $\tilde{\eval}_i = \text{clamp}(\eval_i + \sigma, \varepsilon)$ is the shifted eigenvalue from~\eqref{eq:shifted-newton}.
+
+\textbf{Adaptive $\alpha$ (state-based, NOT time-based):}
+\begin{align}
+  \alpha_\text{morse} &= \max\!\left(0,\; 1 - \frac{n_\text{neg}}{n_\text{neg,ref}}\right) \label{eq:alpha-morse} \\
+  \alpha_\text{force} &= \frac{1}{1 + \|\vect{f}\|/f_\text{ref}} \label{eq:alpha-force} \\
+  \alpha &= \alpha_\text{morse} \cdot \alpha_\text{force} \label{eq:alpha}
+\end{align}
+
+\textbf{Behavior:}
+\begin{itemize}
+  \item $\alpha = 0$ (far from minimum, $n_\text{neg} \geq n_\text{neg,ref}$): $\mu = \mu_\text{max}$, all modes get weight $\approx 1/\mu_\text{max}$ (gradient descent-like, equal weight).
+  \item $\alpha = 1$ (at minimum, $n_\text{neg} = 0$, small forces): $\mu = 0$, standard shifted Newton (curvature-scaled).
+  \item Always combined with Armijo backtracking line search (stateless, no trust region).
+\end{itemize}
+
+\subsection{Step Size Control: Trust Region}
+\label{sec:trust-region}
+
+The adaptive trust region (v1--v6 default) caps the maximum per-atom displacement:
+\begin{equation}
+  \Delta\vect{x}_\text{capped} = \Delta\vect{x} \cdot \min\!\left(1,\; \frac{r_\text{trust}}{\|\Delta\vect{x}\|_\infty}\right)
+\end{equation}
+The trust radius $r_\text{trust}$ is updated based on the ratio of actual to predicted energy change:
+\begin{equation}
+  \rho = \frac{\Delta E_\text{actual}}{\Delta E_\text{pred}}, \qquad
+  \Delta E_\text{pred} = \vect{g}^\top \Delta\vect{x} + \tfrac{1}{2}\sum_i \eval_i (\evec_i^\top \Delta\vect{x})^2
+  \label{eq:trust-rho}
+\end{equation}
+\begin{equation}
+  r_\text{trust} \leftarrow \begin{cases}
+    \min(1.5\, r_\text{trust},\; r_\text{max}) & \text{if } \rho > 0.75 \\
+    \max(0.5\, r_\text{trust},\; r_\text{floor}) & \text{if } 0.25 \leq \rho \leq 0.75 \\
+    \max(0.25\, r_\text{trust},\; r_\text{floor}) & \text{if } \rho < 0.25
+  \end{cases}
+  \label{eq:trust-update}
+\end{equation}
+with $r_\text{max} = 1.3\;\angstrom$ and $r_\text{floor} = 0.01\;\angstrom$.
+
+\subsection{Step Size Control: Armijo Backtracking Line Search}
+\label{sec:line-search}
+
+Replaces trust region for SPDN (v5) and optionally for shifted Newton (v7--v8):
+\begin{equation}
+  \text{Accept } \alpha \text{ if } E(\vect{x} + \alpha\,\vect{d}) \leq E(\vect{x}) + c_1 \alpha\, \vect{g}^\top\vect{d}
+  \label{eq:armijo}
+\end{equation}
+with $c_1 = 10^{-4}$, starting from $\alpha = 1.0$ and halving up to 15 times. No persistent state---$\alpha$ resets to 1.0 every step.
+
+\subsection{GDIIS Extrapolation (v5)}
+\label{sec:gdiis}
+
+Geometry Direct Inversion of the Iterative Subspace. Stores $M$ recent $(\vect{x}_i, \vect{e}_i)$ pairs (geometry, gradient). Solves the constrained least-squares problem:
+\begin{equation}
+  \min_{\vect{c}} \left\|\sum_i c_i \vect{e}_i\right\|^2 \quad \text{s.t.} \quad \sum_i c_i = 1
+  \label{eq:gdiis}
+\end{equation}
+Via the linear system:
+\begin{equation}
+  \begin{pmatrix} \mat{B} & \vect{1} \\ \vect{1}^\top & 0 \end{pmatrix}
+  \begin{pmatrix} \vect{c} \\ \lambda \end{pmatrix}
+  = \begin{pmatrix} \vect{0} \\ 1 \end{pmatrix}, \qquad
+  B_{ij} = \vect{e}_i \cdot \vect{e}_j
+  \label{eq:gdiis-system}
+\end{equation}
+Extrapolated geometry: $\vect{x}_\text{DIIS} = \sum_i c_i \vect{x}_i$. Accepted if $\max|c_i| \leq 10$ (conditioning) and $E(\vect{x}_\text{DIIS}) \leq E(\vect{x}_\text{current})$.
+
+%=============================================================================
+\section{Algorithm Evolution: v1 Through v8}
+\label{sec:evolution}
+%=============================================================================
+
+\subsection{v1: Basic Newton--Raphson}
+
+\begin{itemize}
+  \item Hard-filter step building (Eq.~\ref{eq:hard-filter}).
+  \item Adaptive trust region (Eq.~\ref{eq:trust-update}).
+  \item Parameters: $\tau_\text{nr} = 8 \times 10^{-3}$, $r_\text{max} = 0.3 \to 1.3\;\angstrom$.
+\end{itemize}
+
+\subsection{v2: Diagnostics and LM Damping}
+
+New features added:
+\begin{enumerate}
+  \item \textbf{Cascading evaluation:} $n_\text{neg}$ counted at 8 thresholds $\{0, 10^{-4}, 5\times10^{-4}, 10^{-3}, 2\times10^{-3}, 5\times10^{-3}, 8\times10^{-3}, 10^{-2}\}$, logged every step.
+  \item \textbf{Levenberg--Marquardt damping} (Eq.~\ref{eq:lm-weight}).
+  \item \textbf{Two-phase threshold annealing:} Bulk phase uses $\tau_\text{nr}$; cleanup phase drops to $\tau_\text{cleanup}$ when $\|\vect{f}\| < f_\text{anneal}$.
+  \item \textbf{Spectral gap diagnostic:} $|\eval_\text{min}|/|\eval_\text{2nd\;min}|$ logged every step.
+  \item \textbf{Bottom-$K$ vibrational spectrum} logged every step ($K=10$).
+\end{enumerate}
+
+\subsection{v3: Shifted Newton and Stagnation Escape}
+
+\begin{enumerate}
+  \item \textbf{Shifted Newton step} (Eq.~\ref{eq:shifted-newton})---the key algorithmic breakthrough.
+  \item \textbf{Stagnation-triggered perturbation:} When $n_\text{neg}$ unchanged for \texttt{stagnation\_window} steps, apply displacement along negative eigenvectors.
+  \item \textbf{Adaptive LM $\mu$ annealing:} Reduce $\mu$ when close to convergence.
+  \item \textbf{Negative-mode line search:} Scan along negative eigenvector to find curvature sign change.
+  \item \textbf{Trust radius fixes:} Floor at $0.01\;\angstrom$, reset after escape.
+  \item \textbf{Per-step diagnostics:} Gradient-mode overlap $|\vect{g} \cdot \evec_i|/\|\vect{g}\|$, step-mode decomposition, stagnation counter, energy plateau detection.
+\end{enumerate}
+
+\textbf{Result:} SN $\varepsilon = 5\times10^{-4}$ achieved 80\% convergence (12/15) on 15 samples at $1.0\;\angstrom$ noise.
+
+\subsection{v4: Addressing Three Failure Populations}
+
+From v3 failure analysis, three populations were identified (see Section~\ref{sec:failure-populations}). Five new features were designed to address them, \textbf{all activated via flags (default OFF)}:
+
+\begin{enumerate}
+  \item \textbf{Separate neg-mode trust radius} (\texttt{--neg-trust-floor}): Decompose NR step into neg/pos eigenvalue subspace components with independent trust radii.
+  \item \textbf{Blind-mode correction} (\texttt{--blind-mode-threshold}): For negative modes with $|\vect{g}\cdot\evec_i|/\|\vect{g}\| < \tau_\text{blind}$, add fixed-magnitude perturbation with alternating sign per step.
+  \item \textbf{Aggressive trust recovery} (\texttt{--aggressive-trust-recovery}): Softer trust shrink ($\times 0.5$ instead of $\times 0.25$) near convergence; auto-reset to $0.5 r_\text{max}$ when $n_\text{neg}$ decreases.
+  \item \textbf{Bidirectional stagnation escape} (\texttt{--escape-bidirectional}): Probe $\pm\evec_0$ for the most negative mode, evaluate Hessian at both, pick the direction with less negative eigenvalue. 2--3 extra evaluations.
+  \item \textbf{Mode-following} (\texttt{--mode-follow-eval-threshold}): Bidirectional probe along most negative eigenvector for large $|\eval_\text{min}|$. 2 extra evaluations per event.
+\end{enumerate}
+
+\textbf{Result:} \textbf{All v4 features hurt performance.} Convergence dropped from 53\% to 10\%, with 8 errors per run from the neg-trust-floor causing atom overlap crashes. See Section~\ref{sec:v4-results}.
+
+\subsection{v5: SPDN (Spectrally-Partitioned DIIS-Newton)}
+
+A complete redesign addressing the three root causes (oscillation-collapse, trust-crushing, ghost modes):
+\begin{enumerate}
+  \item \textbf{Spectral step builder} (Eq.~\ref{eq:spdn-weight}): bounded weights, max $1/\tau_\text{hard} = 100\times$.
+  \item \textbf{GDIIS extrapolation} (Eq.~\ref{eq:gdiis}): breaks oscillation cycles.
+  \item \textbf{Armijo backtracking line search} (Eq.~\ref{eq:armijo}): replaces trust region.
+  \item \textbf{Modified convergence} (Eq.~\ref{eq:conv-spdn}): ignores ghost eigenvalues, requires force convergence.
+  \item \textbf{Polyak heavy-ball momentum} (optional): $\Delta\vect{x} \mathrel{+}= \beta(\vect{x}_k - \vect{x}_{k-1})$.
+  \item \textbf{Spectral conditioning diagnostics} per step.
+\end{enumerate}
+
+\textbf{Result:} SPDN was catastrophically broken---0\% convergence at 0.5\,$\angstrom$ noise. The failure was due to the spectral step builder + GDIIS interaction, \emph{not} the line search component (which is reused successfully in v7--v8).
+
+\subsection{v6: Back to Basics}
+
+Philosophy: Strip everything back to core NR + trust radius. No SPDN, no LM, no stagnation escape, no blind correction, no mode following, no two-phase annealing. Only the shifted Newton step with trust region.
+
+\begin{itemize}
+  \item Only 0.5\,$\angstrom$ noise (easy regime baseline).
+  \item 300 samples (full test set), unique seed per job.
+  \item Two configs: SN $\varepsilon \in \{5\times10^{-4}, 10^{-3}\}$.
+\end{itemize}
+
+\textbf{Result:} 76--79\% convergence. See Section~\ref{sec:v6-results} for detailed diagnosis.
+
+\subsection{v7: Line Search Fix}
+
+Hypothesis: Trust radius collapse is the bottleneck (Section~\ref{sec:trust-collapse}). Replace trust region with Armijo backtracking for shifted Newton mode.
+
+\begin{itemize}
+  \item New parameter: \texttt{step\_control} $\in$ \{trust\_region, line\_search\}.
+  \item New parameter: \texttt{max\_nr\_weight} (cap shifted Newton amplification).
+  \item Noise levels: $\{0.5, 1.0, 1.5, 2.0\}\;\angstrom$.
+\end{itemize}
+
+\textbf{Result:} \textbf{Line search made things worse} (Table~\ref{tab:v7-results}). Trust region wins because it limits damage via $0.01\;\angstrom$ cap when the step direction is bad; line search starts $\alpha=1.0$ in a wrong direction, and even $\alpha=0.001$ in a wrong direction doesn't help.
+
+\subsection{v8: iHiSD-Inspired Crossover}
+
+Hypothesis: At high noise, Newton's \emph{direction} is wrong (not just the step size). Adaptively damp Newton toward gradient descent when far from convergence.
+
+\textbf{Inspiration from iHiSD:} The improved High-index Saddle Dynamics (iHiSD) algorithm of Su, Wang, Zhang, Zhao, \& Zheng introduces a crossover dynamics that smoothly transitions from gradient flow ($\alpha = 0$) to traditional HiSD ($\alpha = 1$) via a dynamic parameter $\alpha(t)$. Algorithm~1 of their paper defines the crossover direction:
+\begin{equation}
+  \vect{d}_m = \bigl((1 - \alpha_m)s - \alpha_m\bigr)\vect{g}_m + 2\alpha_m \sum_{i=1}^{k}\langle\evec_{m,i}, \vect{g}_m\rangle\evec_{m,i}
+\end{equation}
+where $s \in \{\pm 1\}$ is the search direction and $\{\evec_{m,i}\}$ are the $k$ eigenvectors. Their key insight is that gradient flow provides nonlocal convergence guarantees (can start outside the region of attraction), while HiSD provides fast local convergence. The crossover inherits both properties.
+
+\textbf{Our adaptation for minimization ($k=0$):} For finding minima, we adapt the iHiSD crossover concept using adaptive Levenberg--Marquardt damping rather than a literal mode switch:
+\begin{itemize}
+  \item Crossover step (Eq.~\ref{eq:crossover-weight}) with adaptive $\alpha$ (Eq.~\ref{eq:alpha}).
+  \item $\alpha$ is \emph{state-based} (depends on current $n_\text{neg}$ and force norm), NOT time-based as in the original iHiSD. This ensures the optimizer transitions to Newton when the geometry warrants it, regardless of step count.
+  \item Always uses Armijo line search (no trust region).
+  \item $\mu_\text{max}$ sweep: $\{0, 0.1, 0.5, 1.0, 2.0\}$.
+  \item Reference parameters: $n_\text{neg,ref} \in \{3, 5\}$, $f_\text{ref} = 0.1$.
+\end{itemize}
+
+\textbf{Result:} Experiments in progress. Preliminary baseline ($\mu_\text{max} = 0$, i.e., pure shifted Newton + line search) at 0.5\,$\angstrom$ achieves 72.8\%, consistent with v7 line search results. The crossover configurations at higher noise levels will reveal whether the GD$\to$Newton transition provides benefit where Newton alone fails.
+
+%=============================================================================
+\section{Experimental Results}
+\label{sec:results}
+%=============================================================================
+
+\subsection{v3 Results (15 samples, 1.0\,$\angstrom$ noise, seed 42)}
+
+\begin{table}[H]
+\centering
+\caption{Best v3 configurations (15 samples, 10k steps).}
+\label{tab:v3-results}
+\begin{tabular}{lcccc}
+\toprule
+Config & Converged & Rate & Mean Steps & Notes \\
+\midrule
+SN $\varepsilon=5\times10^{-4}$ & 12/15 & 80\% & -- & Best v3 \\
+SN $\varepsilon=10^{-3}$ & 13/15 & 87\% & 105 & Fastest \\
+SN $\varepsilon=10^{-4}$ & 11/15 & 73\% & -- & Too conservative \\
+SN $\varepsilon=2\times10^{-3}$ & 10/15 & 67\% & -- & Too aggressive \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Important caveat:} 15-sample results are inflated because samples are loaded sequentially (no shuffling). The first 15 are the easiest.
+
+\subsection{v4 Results (30 samples, 2.0\,$\angstrom$ noise, seed 42)}
+\label{sec:v4-results}
+
+\begin{table}[H]
+\centering
+\caption{v4 grid search results. All v4 features hurt performance.}
+\label{tab:v4-results}
+\begin{tabular}{lcccc}
+\toprule
+Config & Conv & Rate & Steps & Errors \\
+\midrule
+SN $\varepsilon=5\times10^{-4}$ (plain) & 16/30 & 53\% & 2401 & 0 \\
+SN $\varepsilon=2\times10^{-4}$ (plain) & 16/30 & 53\% & 3231 & 0 \\
+SN $\varepsilon=7\times10^{-4}$ (plain) & 12/30 & 40\% & 2500 & 0 \\
+SN $\varepsilon=5\times10^{-4}$ + ntf & 3/30 & 10\% & 615 & 8 \\
+SN $\varepsilon=3\times10^{-4}$ + ntf & 3/30 & 10\% & 747 & 8 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Main effects:}
+\begin{itemize}
+  \item \texttt{neg\_trust\_floor}: 46.7\% $\to$ 10.0\% convergence. Caused 8 crashes per run.
+  \item \texttt{blind\_mode\_correction}: No improvement.
+  \item \texttt{aggressive\_trust\_recovery}: No improvement.
+  \item \texttt{escape\_bidirectional}: No improvement.
+  \item \texttt{mode\_following}: No improvement.
+\end{itemize}
+
+\textbf{Sample hardness:} 7 samples never converge (0/9 configs): 000, 010, 020, 023, 024, 026, 027. 16 samples always converge. The overfitting problem (Section~\ref{sec:overfitting}).
+
+\textbf{Cascade table:}
+\begin{table}[H]
+\centering
+\caption{v4 cascade analysis showing false-rejection gap.}
+\label{tab:v4-cascade}
+\begin{tabular}{lccccc}
+\toprule
+Config & Strict & $\eval\geq -10^{-4}$ & $\eval\geq -10^{-3}$ & $\eval\geq -5\times10^{-3}$ & $\eval\geq -10^{-2}$ \\
+\midrule
+SN $\varepsilon=2\times10^{-4}$ & 0.533 & 0.567 & 0.667 & -- & 0.800 \\
+SN $\varepsilon=7\times10^{-4}$ & 0.400 & 0.433 & 0.533 & -- & 0.767 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Gap from strict to $\eval\geq -0.01$: 27--37\% of trajectories reach near-minimum geometries but have residual small negative eigenvalues.
+
+\subsection{v5 Results (50 samples, multi-noise, multi-seed)}
+
+SPDN achieved \textbf{0\% convergence} at all noise levels. The spectral step builder + GDIIS combination was catastrophically broken. Shifted Newton baselines at 0.5\,$\angstrom$: $\sim$74--76\%.
+
+\subsection{v6 Results (300 samples, 0.5\,$\angstrom$ noise)}
+\label{sec:v6-results}
+
+\begin{table}[H]
+\centering
+\caption{v6 back-to-basics results (run 1090871, 287 samples loaded).}
+\label{tab:v6-results}
+\begin{tabular}{lcccccc}
+\toprule
+Config & Conv & Valid & Rate & Errors & Steps & Wall \\
+\midrule
+SN $\varepsilon=10^{-3}$ & 219 & 278 & 78.8\% & 9 & 1232 & 55.5s \\
+SN $\varepsilon=5\times10^{-4}$ & 208 & 278 & 74.8\% & 9 & 1005 & 53.7s \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Failure mode breakdown:}
+\begin{table}[H]
+\centering
+\caption{v6 failure mode classification (556 trajectories total).}
+\label{tab:v6-failures}
+\begin{tabular}{lrrrr}
+\toprule
+Classification & Count & \% All & \% Failures \\
+\midrule
+converged & 427 & 76.8\% & -- \\
+almost\_converged & 64 & 11.5\% & 49.6\% \\
+oscillating & 57 & 10.3\% & 44.2\% \\
+ghost\_modes & 7 & 1.3\% & 5.4\% \\
+drifting & 1 & 0.2\% & 0.8\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{v7 Results (300 samples, 0.5--2.0\,$\angstrom$ noise)}
+\label{sec:v7-results}
+
+\begin{table}[H]
+\centering
+\caption{v7 line search vs trust region. Trust region wins at all noise levels.}
+\label{tab:v7-results}
+\begin{tabular}{lccc}
+\toprule
+Noise & Trust Region & Line Search & LS + mw=200 \\
+\midrule
+$0.5\;\angstrom$ & \textbf{77\%} & 72\% & 70\% \\
+$1.0\;\angstrom$ & \textbf{59\%} & 51\% & -- \\
+$1.5\;\angstrom$ & \textbf{41\%} & 31\% & 24\% \\
+$2.0\;\angstrom$ & \textbf{30\%} & -- & -- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Main effects (v7 hard-noise runs, 1.5--2.0\,$\angstrom$):}
+\begin{itemize}
+  \item \textbf{Step control:} Trust region (mean 35.5\%) $>$ line search (mean 27.5\%). Trust region wins by 8 percentage points on average.
+  \item \textbf{Weight cap:} \texttt{max\_nr\_weight=200} \emph{hurts}: 24\% vs 31\% without cap. Constraining Newton weights removes useful curvature information without fixing the direction problem.
+  \item \textbf{Noise level:} 1.5\,$\angstrom$ mean 32.2\% vs 2.0\,$\angstrom$ mean 29.6\%. Surprisingly close---the performance cliff is between 1.0 and 1.5\,$\angstrom$, not between 1.5 and 2.0.
+\end{itemize}
+
+\textbf{Cascade table (hard noise):}
+
+\begin{table}[H]
+\centering
+\caption{Cascade analysis at hard noise levels. Gap = false-rejection problem.}
+\label{tab:v7-hard-cascade}
+\small
+\begin{tabular}{lccccc}
+\toprule
+Config & Strict & $\eval\!\geq\!-10^{-3}$ & $\eval\!\geq\!-5\!\times\!10^{-3}$ & $\eval\!\geq\!-10^{-2}$ & Gap (strict$\to$$-0.01$) \\
+\midrule
+SN TR  $n$=1.5 & 41.5\% & 56.4\% & 76.3\% & 80.8\% & +39.3\% \\
+SN LS  $n$=1.5 & 31.0\% & 52.3\% & 78.0\% & 90.2\% & +59.2\% \\
+SN LS mw200 $n$=1.5 & 24.0\% & 44.9\% & 80.5\% & 88.5\% & +64.5\% \\
+SN TR  $n$=2.0 & 29.6\% & 44.6\% & 62.4\% & 70.7\% & +41.1\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The cascade tables reveal that \textbf{the false-rejection problem is massive at hard noise levels}. For line search at 1.5\,$\angstrom$, 90.2\% of trajectories reach geometries with all eigenvalues $\geq -0.01$, but only 31.0\% achieve strict $n_\text{neg} = 0$. The optimizer is \emph{getting close} but cannot eliminate residual small negative eigenvalues. This 59-percentage-point gap dwarfs the 18-point gap seen at 0.5\,$\angstrom$ (Section~\ref{sec:cascade}).
+
+\textbf{Hard samples at 1.5--2.0\,$\angstrom$:} Ten samples never converge across any of the 4 configs tested: 004, 008, 009, 020, 022, 024, 027, 044, 047, 048. These are likely molecules where the noisy starting geometry is so far from any basin that even 10,000 steps of trust-region-limited Newton cannot make meaningful progress. Sample~004 and~008 appear consistently in hard-sample lists across v4 and v7, suggesting molecule-specific PES difficulty rather than noise-realization dependence.
+
+\textbf{Two distinct failure regimes from trajectory analysis:}
+\begin{enumerate}
+  \item \textbf{``Almost converged'' (0.5--1.0\,$\angstrom$):} Forces decrease to $\sim\!0.03$ eV/$\angstrom$ but ghost $n_\text{neg}$ persist. Trust radius collapsed, taking $0.01\;\angstrom$ steps for thousands of iterations.
+  \item \textbf{``Genuinely stuck'' (1.5--2.0\,$\angstrom$):} Forces flat at 10--1000 eV/$\angstrom$ for 10,000 steps. $n_\text{neg} = 6$--$15$ throughout. Condition numbers $10^8$--$10^{26}$ (amplifying numerical noise by $10^{24}$). Displacement maxed at $1.3\;\angstrom$ cap. Zero progress---quadratic model completely invalid, Newton \emph{direction} is wrong.
+\end{enumerate}
+
+\subsection{v8 Results (300 samples, 0.5--2.0\,$\angstrom$ noise)}
+
+\textbf{Note: v8 experiments are still running as of March 2026. Only 0.5\,$\angstrom$ noise has completed so far.}
+
+\begin{table}[H]
+\centering
+\caption{v8 results at 0.5\,$\angstrom$ noise. Crossover \emph{hurts} at low noise.}
+\label{tab:v8-prelim}
+\begin{tabular}{lccccc}
+\toprule
+Config & Conv & Rate & Steps & Wall & Errors \\
+\midrule
+SN + LS, cm=0 (baseline) & 209/287 & \textbf{72.8\%} & 427 & 126s & 10 \\
+SN + LS, cm=0.1 & 157/287 & 54.7\% & 157 & 249s & 8 \\
+SN + LS, cm=0.5 & 109/287 & 38.0\% & 236 & 363s & 3 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Crossover hurts at 0.5\,$\angstrom$:} Adding damping ($\mu_\text{max} > 0$) monotonically degrades convergence from 73\% to 38\%. At low noise the Hessian is already reliable ($\kappa \sim 10^4$), so damping Newton toward gradient descent discards useful curvature information. The crossover converges in fewer steps \emph{when it converges} (157 vs 427) but the line search backtracks more aggressively, causing higher wall time. Results at 1.5--2.0\,$\angstrom$ (where the direction problem is severe) are still pending and may tell a different story.
+
+\subsection{Convergence vs Noise Summary}
+\label{sec:conv-vs-noise}
+
+\begin{table}[H]
+\centering
+\caption{Best convergence rate at each noise level across all algorithm versions (300 samples unless noted).}
+\label{tab:noise-summary}
+\begin{tabular}{lccl}
+\toprule
+Noise & Best Rate & Config & Version \\
+\midrule
+$0.5\;\angstrom$ & $\sim$79\% & SN $\varepsilon=10^{-3}$ + trust region & v6 \\
+$1.0\;\angstrom$ & $\sim$59\% & SN $\varepsilon=10^{-3}$ + trust region & v7 \\
+$1.5\;\angstrom$ & $\sim$41\% & SN $\varepsilon=10^{-3}$ + trust region & v7 \\
+$2.0\;\angstrom$ & $\sim$30\% & SN $\varepsilon=10^{-3}$ + trust region & v7 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Key observation:} The performance cliff is between 1.0 and 1.5\,$\angstrom$, where convergence drops from 59\% to 41\%. Between 1.5 and 2.0\,$\angstrom$ the drop is smaller (41\%$\to$30\%), suggesting that beyond a threshold displacement the optimizer enters a qualitatively different regime (Section~\ref{sec:cond-scaling}).
+
+%=============================================================================
+\section{Failure Mode Analysis}
+\label{sec:failures}
+%=============================================================================
+
+\subsection{Trust Radius Collapse: The Dominant Failure Mode}
+\label{sec:trust-collapse}
+
+\textbf{Every single failed v6 trajectory (129/129) ends with trust radius at the floor ($0.01\;\angstrom$).}
+
+The collapse mechanism:
+\begin{enumerate}
+  \item Shifted Newton computes weight $= 1/(\eval + \sigma)$, max $= 1/\varepsilon = 1000\times$.
+  \item Near-zero eigenvalue modes get amplified by $1000\times$, producing oversized steps.
+  \item Oversized steps violate the quadratic model: $\rho < 0.25 \implies$ trust shrinks by $0.25\times$.
+  \item After $\sim$4 bad steps: $1.3 \to 0.325 \to 0.081 \to 0.020 \to 0.01$ (floor).
+  \item At the floor, the entire step is uniformly scaled down.
+  \item Negative-mode displacement $= r_\text{trust} \times g_\text{overlap} = 0.01 \times 0.05 = 0.0005\;\angstrom$/step.
+  \item Flipping an eigenvalue requires $\sim$0.01--0.1\,$\angstrom$ displacement $\implies$ 20--200 steps of monotonic progress.
+  \item But eigenvalues oscillate, so monotonic progress never happens $\implies$ stuck forever.
+\end{enumerate}
+
+\textbf{Recovery is nearly impossible:} Trust grows by $1.5\times$ per good step, needs $\sim$13 consecutive good steps to recover from floor to $0.3\;\angstrom$. Any meaningful step triggers collapse again, creating the period-8 oscillation cycle.
+
+\subsection{Three Failure Populations}
+\label{sec:failure-populations}
+
+\subsubsection{Population A: ``Blind Modes'' (almost\_converged, 49.6\% of failures)}
+
+\begin{itemize}
+  \item Tiny eigenvalues: $\eval_\text{min} \in [-0.001, -0.0002]$.
+  \item High forces: 0.034--0.092 eV/$\angstrom$ (200--$900\times$ above threshold).
+  \item Very low gradient overlap with negative modes: $|\vect{g}\cdot\evec_i|/\|\vect{g}\| < 0.1$ (usually $< 0.05$).
+  \item Trust at floor for entire trajectory.
+  \item Key insight: ``almost\_converged'' is \emph{misleading}---most have $\|\vect{f}\| \gg 10^{-4}$, meaning they are \emph{not} at a minimum. The eigenvalue is small because it oscillates near zero, not because the geometry is close.
+\end{itemize}
+
+Representative samples:
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{cccccc}
+\toprule
+Sample & $n_\text{neg}$ & $\eval_\text{min}$ & $\|\vect{f}\|$ & Max overlap & Stagnation \\
+\midrule
+002 & 3 & $-2.2\times10^{-4}$ & 0.069 & 0.184 & 0.0\% \\
+016 & 1 & $-1.4\times10^{-3}$ & 0.041 & 0.015 & 80.9\% \\
+028 & 1 & $-4.4\times10^{-4}$ & 0.002 & 0.033 & 22.2\% \\
+098 & 1 & $-7.4\times10^{-4}$ & 0.092 & 0.051 & 99.6\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsubsection{Population B: ``Oscillation-Collapse'' (oscillating, 44.2\% of failures)}
+
+\begin{itemize}
+  \item Larger eigenvalues: $\eval_\text{min} \in [-0.01, -0.001]$.
+  \item High forces: 0.1--0.37 eV/$\angstrom$ (nowhere near a minimum).
+  \item Moderate gradient overlaps (0.02--0.10) but trust-crushed.
+\end{itemize}
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{cccccc}
+\toprule
+Sample & $n_\text{neg}$ & $\eval_\text{min}$ & $\|\vect{f}\|$ & Overlaps & Stagnation \\
+\midrule
+034 & 4 & $-0.010$ & 0.180 & 0.018, 0.002, 0.006, 0.002 & 0.4\% \\
+041 & 1 & $-0.007$ & 0.260 & 0.098 & 47.1\% \\
+109 & 3 & $-0.004$ & 0.374 & 0.075, 0.047, 0.026 & 9.7\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsubsection{Population C: ``Stagnation Zombies'' (subset of both A and B)}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{ccc}
+\toprule
+Sample & Stagnation \% & Description \\
+\midrule
+098 & 99.6\% & Frozen for $\sim$9960 of 10000 steps \\
+016 & 80.9\% & Overlap 0.015, blind, dead \\
+041 & 47.1\% & Partially unstuck, can't converge \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Oscillation Cycle Anatomy}
+
+The dominant failure mode follows a period-$\sim$8 oscillation detected by FFT autocorrelation:
+
+\begin{enumerate}
+  \item \textbf{Step $N$:} $\eval \approx -0.005$, weight $= 1/(0.005 + 5\times10^{-4}) = 182\times$. Step size $0.15\;\angstrom$ (after trust cap). Trust radius: $0.15\;\angstrom$.
+  \item \textbf{Step $N\!+\!1$:} Overshoot. Energy increased. Trust $\to 0.15 \times 0.25 = 0.0375\;\angstrom$.
+  \item \textbf{Step $N\!+\!2$:} Smaller step works. $\eval$ oscillates to $-0.006$.
+  \item \textbf{Step $N\!+\!3$:} Weight $= 154\times$. Large step again. Overshoot. Trust $\to$ floor.
+  \item \textbf{Steps $N\!+\!4$ to $\infty$:} Trust at floor. Step mostly along positive modes ($\sim$95\%). Negative-mode component: $\sim$0.0001\,$\angstrom$. \textbf{Stuck.}
+\end{enumerate}
+
+\subsection{Ghost Modes}
+\label{sec:ghost-modes}
+
+Ghost modes are numerically-zero eigenvalues in $[-10^{-4}, 0)$ that are:
+\begin{itemize}
+  \item Below the noise floor of the DFTB0 Hessian.
+  \item Eigenvectors rotate between steps (overlap $< 0.5$).
+  \item Low self-transition rate: residence time $\approx$ 3--5 steps in the ghost band.
+  \item The same physical direction is NOT persistently negative.
+  \item Correlate weakly with molecule size (more atoms $\to$ more modes near zero).
+\end{itemize}
+
+\subsection{Cascade Analysis}
+\label{sec:cascade}
+
+For SN $\varepsilon = 10^{-3}$ at 0.5\,$\angstrom$ (v6, 300 samples):
+
+\begin{table}[H]
+\centering
+\caption{Cascade analysis: convergence rate with eigenvalue tolerance.}
+\label{tab:cascade}
+\begin{tabular}{cccc}
+\toprule
+Tolerance $T$ & Conv Rate & $\Delta$ & Population Captured \\
+\midrule
+strict (0) & 76.3\% & -- & -- \\
+$-10^{-4}$ & 78.4\% & +2.1\% & Ghost modes only \\
+$-5\times10^{-4}$ & 81.2\% & +4.9\% & + very small negatives \\
+$-10^{-3}$ & 84.3\% & +8.0\% & + most ``almost converged'' \\
+$-10^{-2}$ & 94.1\% & +17.8\% & + some oscillating \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Irreducible failure rate: $\sim$6\% (eigenvalues worse than $-0.01$). But 17.8\% of samples are ``fixable''---they reach near-minimum geometries but have residual negative eigenvalues.
+
+\subsection{High-Noise Regime ($\geq 1.5\;\angstrom$)}
+
+At high noise, the failure mode is qualitatively different:
+\begin{itemize}
+  \item Forces flat at 10--1000 eV/$\angstrom$ for 10,000 steps (zero progress).
+  \item $n_\text{neg} = 6$--$15$ throughout (never decreasing).
+  \item Condition numbers $10^8$--$10^{26}$: the Hessian amplifies numerical noise by $10^{24}$.
+  \item Displacement always at $1.3\;\angstrom$ cap (step too large, not too small).
+  \item \textbf{Root cause:} The quadratic model is completely invalid. Newton's \emph{direction} is wrong, not just the step size. No step-size control (trust region or line search) can fix a wrong direction.
+\end{itemize}
+
+\subsection{Condition Number Scaling with Noise}
+\label{sec:cond-scaling}
+
+The diagnostic from labelled minima (Section~\ref{sec:diagnostic-results}) revealed a clear scaling relationship between noise level and condition number at the starting geometry:
+
+\begin{table}[H]
+\centering
+\caption{Median condition number at noisy starting points (287 samples, from diagnostic script). The log$_{10}$ values reveal exponential scaling with noise.}
+\label{tab:cond-scaling}
+\begin{tabular}{rccl}
+\toprule
+Noise & Median $\kappa$ & Median $\log_{10}\kappa$ & Interpretation \\
+\midrule
+$0.5\;\angstrom$ & $1.14 \times 10^4$ & 4.1 & Moderate; Newton step useful \\
+$1.0\;\angstrom$ & $2.79 \times 10^4$ & 4.4 & Degraded; $\sim\!50\times$ amplification \\
+$1.5\;\angstrom$ & $2.00 \times 10^5$ & 5.3 & Severe; 10$\times$ jump from 1.0\,$\angstrom$ \\
+$2.0\;\angstrom$ & $2.30 \times 10^6$ & 6.4 & Catastrophic; noise dominates \\
+\midrule
+At true minimum & $1.55 \times 10^3$ & 3.2 & Baseline: well-conditioned \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Key insight:} The condition number at the midpoint of the interpolation path from noisy start to true minimum is $\sim\!10^{3.6}$ at 0.5\,$\angstrom$ noise but $\sim\!10^{4.6}$ at 2.0\,$\angstrom$. This means even \emph{halfway} to the solution, the Hessian at high noise is an order of magnitude more ill-conditioned than at low noise. The implication is that the optimizer must navigate through a region of ill-conditioned Hessians for a longer portion of the trajectory at high noise.
+
+\textbf{Correlation with convergence:} The convergence rate drops from $\sim$79\% to $\sim$30\% as the median starting $\log_{10}\kappa$ increases from 4.1 to 6.4. The sharpest performance cliff (59\%$\to$41\%) coincides with the condition number jumping from $10^{4.4}$ to $10^{5.3}$---a $10\times$ increase.
+
+\subsection{Eigenvalue Band Analysis at Critical Geometries}
+
+The diagnostic script evaluated eigenvalue band populations at ground-truth minima and along interpolation paths. At the DFT-computed reactant geometries under DFTB0:
+
+\begin{table}[H]
+\centering
+\caption{Mean eigenvalue band populations at DFT-labelled reactant geometries (DFTB0 Hessian, 287 samples). Band naming: number of eigenvalues in each magnitude range.}
+\label{tab:band-reactant}
+\small
+\begin{tabular}{lrp{7cm}}
+\toprule
+Band & Mean count & Interpretation \\
+\midrule
+$\eval < -0.1$ & 0.90 & Nearly 1 mode per molecule with strongly negative curvature \\
+$-0.1 \leq \eval < -0.01$ & 0.63 & Additional moderately negative modes \\
+$-0.01 \leq \eval < -10^{-3}$ & 0.08 & Rare weakly negative \\
+$-10^{-3} \leq \eval < -10^{-4}$ & 0.00 & Ghost band: empty at minima \\
+$-10^{-4} \leq \eval < 0$ & 0.00 & Ghost band: empty at minima \\
+$0 \leq \eval < 10^{-4}$ & 0.00 & Near-zero positive: empty \\
+$10^{-4} \leq \eval < 10^{-3}$ & 0.00 & Rare low-positive \\
+$\eval \geq 10^{-3}$ & 26.08 & All genuine vibrational modes \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The negative eigenvalues at DFT minima are \textbf{not ghost modes}---they are in the strongly negative bands ($<\!-0.01$), meaning DFTB0 genuinely disagrees with DFT about the curvature of these modes. This is a fundamental accuracy limitation of the semi-empirical method, not a numerical artifact. The ghost band ($-10^{-4}$ to $0$) is \emph{empty} at labelled minima, confirming that ghost modes are an optimizer-trajectory artifact rather than a PES feature.
+
+\subsection{Persistently Difficult Samples}
+\label{sec:hard-samples}
+
+Across multiple versions and noise levels, certain samples consistently fail to converge. At 1.5--2.0\,$\angstrom$ (v7 hard-noise runs), 10 samples failed across all 4 tested configs: 004, 008, 009, 020, 022, 024, 027, 044, 047, 048.
+
+\textbf{Cross-version persistence:} Samples 020, 024, and 027 appear in both the v4 ``never converge'' list (Section~\ref{sec:v4-results}) and the v7 hard-noise list. Sample 010 is in the v4 list but not v7, and vice versa for 004 and 008---the difference likely reflects different noise realizations (v4 used seed 42; v7 uses SLURM job ID).
+
+\textbf{Hypothesis:} These molecules may have PES features (flat potential regions, multiple competing minima, large-amplitude vibrations) that make the minimum basin exceptionally narrow or the PES exceptionally anharmonic, such that the quadratic model remains invalid even at moderate displacement from the minimum.
+
+%=============================================================================
+\section{Eigenvalue Tolerance Investigation}
+\label{sec:eval-tolerance}
+%=============================================================================
+
+A systematic investigation (via \texttt{analyze\_nr\_eigenvalue\_justification.py}) produced evidence FOR and AGAINST using eigenvalue tolerance as a convergence criterion.
+
+\subsection{Six Analysis Modules}
+
+\begin{description}[leftmargin=!,labelwidth=\widthof{\textbf{A1.}}]
+  \item[A1.] \textbf{Band Evolution Statistics:} Ghost modes tend to appear in the final 10--20\% of the trajectory, after large negatives are resolved.
+  \item[A2.] \textbf{Tolerance Sweep:} At $T = 10^{-4}$, the \textbf{false convergence rate was 97\%}---97\% of trajectories declared converged under this tolerance later breach it.
+  \item[A3.] \textbf{Physical Significance:} Ghost eigenvalues ($|\eval| < 10^{-4}$) are at or below the numerical noise floor of the DFTB0 Hessian.
+  \item[A4.] \textbf{Stability:} Ghost modes are extremely unstable. They appear and disappear unpredictably. The same eigenvalue index can be positive at step $N$ and negative at step $N\!+\!1$.
+  \item[A5.] \textbf{Cascade Gap:} No natural gap in the CDF of required tolerances. The distribution is continuous from $10^{-8}$ to $10^{-1}$---no clean separation between ghost modes and real saddle points.
+  \item[A6.] \textbf{Force-Eigenvalue Consistency:} Many tolerance-qualifying geometries have $\|\vect{f}\| \gg f_\text{tol}$. They are NOT at minima even if eigenvalues look OK.
+\end{description}
+
+\subsection{Verdict}
+
+\textbf{Eigenvalue tolerance filtering is NOT a viable convergence strategy} for the standard optimizer. The 97\% false convergence rate, lack of a natural gap, and force-eigenvalue inconsistency all argue against it.
+
+However, SPDN's combined criterion ($n_\text{neg,reliable} = 0 \wedge \|\vect{f}\| < f_\text{tol}$) is different because it (a) only ignores eigenvalues below $\tau_\text{soft}$ and (b) requires force convergence as a safety gate.
+
+%=============================================================================
+\section{Surface Forensics}
+\label{sec:forensics}
+%=============================================================================
+
+Seven forensic modules (via \texttt{analyze\_nr\_surface\_forensics.py}):
+
+\begin{description}[leftmargin=!,labelwidth=\widthof{\textbf{F1.}}]
+  \item[F1.] \textbf{Trust Radius--Eigenvalue Correlation:} Strong negative correlation: as trust radius decreases, $n_\text{neg}$ remains constant or increases. Trust collapse events ($>$50\% drop in one step) are followed by eigenvalue oscillations for 10--20 steps.
+
+  \item[F2.] \textbf{Eigenvalue Band Transition Matrices:} $8\times 8$ transition matrix. High self-transition for extreme bands. Ghost band $[-10^{-4}, 0)$ has LOW self-transition: modes enter and leave frequently, residence time $\approx$ 3--5 steps.
+
+  \item[F3.] \textbf{Stagnation Anatomy:} In windows of $>$50 steps with constant $n_\text{neg}$: energy range $< 10^{-6}$ eV (flat), force norm slowly increasing, trust at floor for 100\% of stagnant steps, displacement $< 0.001\;\angstrom$/step.
+
+  \item[F4.] \textbf{Oscillation Detection (FFT):} Dominant period $\approx$ 8 steps, detected in 70\% of failed trajectories. Oscillation in $n_\text{neg}$, trust radius, and $\eval_\text{min}$.
+
+  \item[F5.] \textbf{Distance Evolution:} Converged trajectories move 0.5--2.0\,$\angstrom$ from start. Failed trajectories move 0.3--1.5\,$\angstrom$ then stop (trust-crushed). Not drifting---stuck near but not exactly at the minimum.
+
+  \item[F6.] \textbf{Ghost Mode Characterization:} Eigenvectors rotate with overlap $< 0.5$. Different modes take turns in the ghost band. Weak correlation with molecule size.
+
+  \item[F7.] \textbf{Trust-Crushed Population:} At the floor: step\_along\_neg\_frac $\approx$ 2--5\%. Actual neg-mode displacement: $\sim$0.0002--0.0005\,$\angstrom$. Moving $0.01\;\angstrom$ along negative modes takes 20--50 steps but curvature changes before then.
+\end{description}
+
+%=============================================================================
+\section{The Overfitting Problem}
+\label{sec:overfitting}
+%=============================================================================
+
+\subsection{Problem}
+
+v4 used 30 fixed samples with \texttt{noise\_seed=42}. Every run produced the exact same starting geometries. The same 16 samples always converged, the same 7 never did. We were overfitting to 30 specific starting points, not testing optimizers.
+
+\subsection{v4 Features Hurt Because}
+
+\begin{enumerate}
+  \item The 16 ``easy'' samples converge with plain SN anyway.
+  \item The 7 ``impossible'' samples have starting geometries too far from any minimum.
+  \item The 7 ``borderline'' samples are sensitive to hyperparameters, but with one noise realization we can't distinguish signal from noise.
+\end{enumerate}
+
+\subsection{Resolutions}
+
+\begin{itemize}
+  \item v5: Multi-seed ($\{42, 123, 456, 789, 1024\}$), multi-noise ($\{0.5, 1.0, 1.5, 2.0\}\;\angstrom$), 50 samples.
+  \item v6: Unique seed per job (\texttt{SLURM\_JOB\_ID}), 300 samples.
+  \item v6 discovery: 15-sample runs always test the easiest subset (sequential loading, no shuffling).
+\end{itemize}
+
+%=============================================================================
+\section{Diagnostic from Labelled Minima}
+\label{sec:diagnostic-minima}
+%=============================================================================
+
+A separate diagnostic script (\texttt{diagnostic\_from\_minima.py}) uses ground-truth reactant/product geometries from the Transition1x dataset for analysis only (using this information in the optimizer would be data leakage). The script was run on 287 samples with noise seed from \texttt{SLURM\_JOB\_ID}, evaluating at all four noise levels (0.5, 1.0, 1.5, 2.0\,$\angstrom$), with 20-point interpolation paths.
+
+\textbf{Important caveat:} The ``labelled minima'' are DFT-computed reactant and product geometries. Since we evaluate them with DFTB0, they are not exact minima of the DFTB0 PES. However, they are known to be \emph{very close} to the true DFTB0 minima---close enough that the diagnostic results are meaningful.
+
+\subsection{Questions Addressed}
+
+\begin{enumerate}
+  \item Does DFTB0 predict $n_\text{neg} = 0$ at the DFT-computed reactant minimum? (Fundamental accuracy issue.)
+  \item At the noisy starting point, does the gradient (steepest descent direction) or Newton step point closer to the true minimum?
+  \item Along the interpolation path from noisy start $\to$ true minimum, where does $n_\text{neg}$ first reach 0? Where does the quadratic model become valid?
+\end{enumerate}
+
+\subsection{Direction Quality Analysis}
+
+At the noisy starting point, three directions are compared:
+\begin{align}
+  \vect{d}_\text{SD} &= -\grad E / \|\grad E\| \quad \text{(steepest descent)} \\
+  \vect{d}_\text{NR} &= -(\hess + \varepsilon\mat{I})^{-1}\grad E \Big/ \left\|-(\hess + \varepsilon\mat{I})^{-1}\grad E\right\| \quad \text{(Newton)} \\
+  \vect{d}_\text{true} &= (\vect{x}_\text{min} - \vect{x}_0) / \|\vect{x}_\text{min} - \vect{x}_0\| \quad \text{(ground truth)}
+\end{align}
+Dot products $\vect{d}_\text{SD} \cdot \vect{d}_\text{true}$ and $\vect{d}_\text{NR} \cdot \vect{d}_\text{true}$ reveal which direction is more reliable at each noise level.
+
+\subsection{Interpolation Path Analysis}
+
+Linear interpolation $\vect{x}(t) = (1-t)\vect{x}_0 + t\,\vect{x}_\text{min}$ for $t \in [0,1]$, evaluating $n_\text{neg}(t)$, $\|\vect{f}(t)\|$, condition number, and eigenvalue spectrum at 20 points. Reveals the basin boundary: how close must you be to the minimum for the optimizer to succeed?
+
+\subsection{Results: Q1---DFTB0 Accuracy at DFT Minima}
+\label{sec:diagnostic-results}
+
+\textbf{This is the most consequential finding of the entire investigation.}
+
+\begin{table}[H]
+\centering
+\caption{DFTB0 Hessian evaluation at DFT-computed ground-truth geometries (287 samples). ``Expected $n_\text{neg}$'' is the Morse index predicted by DFT.}
+\label{tab:dftb0-at-minima}
+\begin{tabular}{lccccc}
+\toprule
+Geometry & Expected $n_\text{neg}$ & Correct \% & Mean $n_\text{neg}$ & Median & Max \\
+\midrule
+Reactant & 0 & \textbf{10.1\%} & 1.61 & 2 & 3 \\
+Product & 0 & \textbf{10.5\%} & 2.12 & 2 & 7 \\
+Transition state & 1 & \textbf{10.8\%} & 2.83 & 3 & 7 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Only 10\% of DFT-labelled reactant minima are predicted by DFTB0 to have $n_\text{neg} = 0$.} The median reactant has $n_\text{neg} = 2$, and the mean is 1.61. Product geometries are slightly worse (mean 2.12, max 7). This means our convergence criterion ($n_\text{neg} = 0$ strict) is \emph{fundamentally unachievable for most molecules} without the optimizer first performing a local relaxation away from the DFT minimum.
+
+Force norms at labelled minima are also far from zero:
+\begin{itemize}
+  \item Reactant: median $\|\vect{f}\| = 1.39$ eV/$\angstrom$, range [0.45, 3.01].
+  \item Product: median $\|\vect{f}\| = 1.16$ eV/$\angstrom$, range [0.36, 3.15].
+\end{itemize}
+These forces (100,000$\times$ above the convergence threshold of $10^{-4}$) confirm that the DFT minima are not DFTB0 stationary points. The optimizer must find the \emph{nearby DFTB0 minimum}, which may differ structurally from the DFT minimum.
+
+Condition numbers at labelled minima are well-behaved: median $\kappa \approx 10^{3.2}$ for reactants, $10^{3.4}$ for products. This confirms that the Hessian is reliable \emph{at the minimum}; the extreme condition numbers ($10^{6+}$) arise from displacement away from the minimum, not from the PES itself.
+
+\textbf{Band population analysis:} The negative eigenvalues at DFT minima are in the \emph{strongly negative} bands ($<\!-0.01$), not the ghost band. On average, each reactant has 0.90 modes with $\eval < -0.1$ and 0.63 modes in $[-0.1, -0.01)$. The ghost band ($-10^{-4}$ to $0$) is empty. This means DFTB0 genuinely predicts different curvature at these geometries---it is not a numerical artifact.
+
+\textbf{Implication for convergence ceiling:} If only 10\% of molecules can achieve $n_\text{neg} = 0$ at the DFT geometry, our optimizer's best-case convergence rate is bounded by two factors: (1)~how many molecules have a nearby DFTB0 minimum with $n_\text{neg} = 0$, and (2)~whether the optimizer can reach it. The 79\% convergence at 0.5\,$\angstrom$ suggests that for $\sim\!80\%$ of molecules, such a nearby minimum exists and is reachable with low-noise starting points.
+
+\subsection{Results: Q2---Direction Quality}
+
+\begin{table}[H]
+\centering
+\caption{Direction quality at noisy starting points: dot product of step direction with true direction to nearest minimum. Values near 0 indicate near-orthogonality.}
+\label{tab:direction-quality}
+\begin{tabular}{rcccccc}
+\toprule
+Noise & \multicolumn{2}{c}{SD $\cdot$ true} & \multicolumn{2}{c}{Newton $\cdot$ true} & SD better & Starting $n_\text{neg}$ \\
+ & mean & median & mean & median & (\%) & mean \\
+\midrule
+$0.5\;\angstrom$ & 0.029 & 0.039 & 0.055 & 0.065 & 46.0\% & 12.1 \\
+$1.0\;\angstrom$ & 0.038 & 0.036 & 0.025 & 0.027 & 54.0\% & 12.4 \\
+$1.5\;\angstrom$ & 0.093 & 0.096 & 0.043 & 0.038 & 62.4\% & 12.1 \\
+$2.0\;\angstrom$ & 0.110 & 0.115 & 0.027 & 0.026 & \textbf{70.0\%} & 12.0 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Both directions are nearly orthogonal to the true direction at all noise levels.} The best dot product is SD at 2.0\,$\angstrom$: mean 0.11 (barely above random in high-dimensional space). Newton's dot product \emph{degrades} with noise (0.055 $\to$ 0.027), while SD \emph{improves} (0.029 $\to$ 0.110).
+
+\textbf{SD is better than Newton in 70\% of cases at 2.0\,$\angstrom$ noise.} This validates the motivation for the iHiSD crossover (v8): at high noise, gradient descent direction is more reliable than Newton direction. However, both are so close to orthogonal that the practical benefit is limited.
+
+\textbf{Why does SD improve with noise?} Paradoxically, at higher noise the starting geometry is farther from any special PES feature, and the gradient points ``downhill'' on the energy surface. In high-dimensional space, this downhill direction has a small but positive correlation with the direction toward the minimum. Newton's direction, by contrast, is corrupted by the ill-conditioned Hessian.
+
+\textbf{Starting Morse index is constant:} Regardless of noise level, the starting geometry has $n_\text{neg} \approx 12$. This means the starting point is at a high-index saddle with $\sim$12 directions of negative curvature. The optimizer must convert all 12 negative modes to positive, which requires significant structural change.
+
+\subsection{Results: Q3---Interpolation Path and Basin of Attraction}
+
+\begin{table}[H]
+\centering
+\caption{Interpolation path from noisy start ($t=0$) to closest minimum ($t=1$). Shows where $n_\text{neg}$ first reaches 0 and how many samples never reach it.}
+\label{tab:interp-path}
+\begin{tabular}{rcccc}
+\toprule
+Noise & $n_\text{neg}$ never $=0$ & Among those that do: & Median cond. & Median cond. \\
+ & along path & mean $t$ first $= 0$ & at midpoint & at minimum \\
+\midrule
+$0.5\;\angstrom$ & 89.2\% & 0.961 & $10^{3.6}$ & $10^{3.2}$ \\
+$1.0\;\angstrom$ & 88.2\% & 0.981 & $10^{4.0}$ & $10^{3.2}$ \\
+$1.5\;\angstrom$ & 89.5\% & 0.993 & $10^{4.2}$ & $10^{3.2}$ \\
+$2.0\;\angstrom$ & 89.9\% & 0.998 & $10^{4.6}$ & $10^{3.2}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{The basin where $n_\text{neg} = 0$ is extraordinarily narrow.} For $\sim$89\% of samples, the interpolation path from noisy start to true minimum \emph{never} passes through a region with $n_\text{neg} = 0$---not even at the endpoint (consistent with Q1: only 10\% of labelled minima have $n_\text{neg} = 0$ under DFTB0). For the $\sim$11\% that do reach $n_\text{neg} = 0$, it only happens at $t > 0.95$ (within the last 5\% of the path to the minimum).
+
+\textbf{Implications:}
+\begin{enumerate}
+  \item The optimizer must navigate $>$95\% of the displacement to the minimum \emph{entirely within a region of nonzero Morse index}. There is no early-warning signal that the optimizer is heading the right direction (both SD and Newton directions are near-orthogonal to truth).
+  \item The condition number at the path midpoint is $\sim\!10\times$ better than at the noisy start but $\sim\!3\times$ worse than at the minimum. The Hessian becomes gradually more reliable as the optimizer approaches the minimum, but never reaches the baseline condition until the very end.
+  \item The fact that $n_\text{neg}$ never reaches 0 for 89\% of samples along a \emph{straight line} to the minimum suggests that the minimum's basin of attraction (in the $n_\text{neg} = 0$ sense) is not only narrow but also \emph{curved}---the optimizer must follow a nonlinear path that cannot be captured by linear interpolation.
+\end{enumerate}
+
+%=============================================================================
+\section{Per-Step Logging Fields (Complete Reference)}
+\label{sec:logging}
+%=============================================================================
+
+Every step in the trajectory records the following fields:
+
+\subsection{Core State}
+
+\begin{longtable}{lp{10cm}}
+\toprule
+Field & Description \\
+\midrule
+\endfirsthead
+\texttt{step} & Step number (0-indexed) \\
+\texttt{energy} & Total energy (eV) \\
+\texttt{force\_norm} & L2 norm of forces (eV/$\angstrom$) \\
+\texttt{n\_neg\_evals} & Number of negative vibrational eigenvalues \\
+\texttt{n\_neg\_total\_hessian} & Negative eigenvalues in full Hessian (including TR modes) \\
+\texttt{min\_vib\_eval} & Most negative vibrational eigenvalue \\
+\texttt{max\_vib\_eval} & Most positive vibrational eigenvalue \\
+\texttt{cond\_num} & Condition number of vibrational Hessian \\
+\texttt{eff\_step\_size} & Actual displacement norm ($\angstrom$) \\
+\texttt{min\_dist} & Minimum interatomic distance ($\angstrom$) \\
+\texttt{trust\_radius} & Current trust radius ($\angstrom$) \\
+\texttt{actual\_step\_disp} & Max per-atom displacement this step \\
+\texttt{hit\_trust\_radius} & Whether step was trust-limited (bool) \\
+\texttt{retries} & Number of trust-region retries or line-search backtracks \\
+\bottomrule
+\end{longtable}
+
+\subsection{Distance Tracking}
+
+\begin{longtable}{lp{10cm}}
+\toprule
+Field & Description \\
+\midrule
+\texttt{disp\_from\_start\_max/rmsd} & Displacement from starting geometry \\
+\texttt{dist\_to\_ts\_max} & Distance to known transition state \\
+\texttt{dist\_to\_reactant\_max/rmsd} & Distance to known reactant \\
+\texttt{dist\_to\_product\_max/rmsd} & Distance to known product \\
+\bottomrule
+\end{longtable}
+
+\subsection{Cascade Evaluation (8 fields)}
+
+$n_\text{neg}$ at thresholds $\{0, 10^{-4}, 5\times10^{-4}, 10^{-3}, 2\times10^{-3}, 5\times10^{-3}, 8\times10^{-3}, 10^{-2}\}$.
+
+\subsection{Eigenvalue Band Populations (8 fields)}
+
+Counts of eigenvalues in bands: $(-\infty, -0.1)$, $[-0.1, -0.01)$, $[-0.01, -10^{-3})$, $[-10^{-3}, -10^{-4})$, $[-10^{-4}, 0)$ (ghost band), $[0, 10^{-4})$, $[10^{-4}, 10^{-3})$, $[10^{-3}, +\infty)$.
+
+\subsection{Spectral Diagnostics}
+
+\texttt{bottom\_spectrum} (bottom $K$ eigenvalues), \texttt{spectral\_gap\_ratio} ($|\eval_\text{min}|/|\eval_\text{2nd\;min}|$), \texttt{dominant\_neg\_mode} (exactly 1 neg or gap $> 10$).
+
+\subsection{Eigenvector Continuity}
+
+\texttt{mode\_continuity\_min/mean} (overlap with previous step), \texttt{n\_mode\_rotation\_events} (modes with overlap $< 0.5$).
+
+\subsection{Negative Mode Diagnostics}
+
+\texttt{neg\_mode\_grad\_overlaps} ($|\vect{g}\cdot\evec_i|/\|\vect{g}\|$ per neg mode), \texttt{neg\_mode\_eigenvalues}, \texttt{step\_along\_neg\_frac/pos\_frac}, \texttt{min/max\_neg\_grad\_overlap}.
+
+\subsection{SPDN-Specific Fields}
+
+\texttt{spectral\_conditioning} (partition counts, condition numbers, change rates), \texttt{n\_neg\_reliable}, \texttt{saddle\_diagnostic}, \texttt{spdn\_step\_info} (weights, conditioning), \texttt{spdn\_linesearch} ($\alpha$, backtracks, accepted, energy change), \texttt{gdiis\_info} (status, coefficients, conditioning).
+
+\subsection{v4 Diagnostic Fields}
+
+\texttt{blind\_correction}, \texttt{mode\_follow\_info/triggered}, \texttt{escape\_triggered/accepted}, \texttt{trust\_radius\_reset}.
+
+\subsection{v7--v8 Fields}
+
+\texttt{linesearch} ($\alpha$, backtracks, accepted, energy change), \texttt{crossover\_info} ($\alpha$, $\mu$, $\sigma$, weight stats).
+
+%=============================================================================
+\section{Analysis Pipeline}
+\label{sec:analysis-pipeline}
+%=============================================================================
+
+\subsection{Grid Analysis (\texttt{analyze\_minimization\_nr\_grid.py})}
+
+Ranks configurations by convergence rate $\to$ steps $\to$ wall time. Computes main effects per hyperparameter, sample hardness, and the 2D cascade cross-table (optimizer filter $\times$ eigenvalue threshold).
+
+\textbf{Supported combo tag formats:} Hard filter (NRT), LM ($\mu$), shifted Newton (v3/v4), SPDN (v5), plain naming (v6), noise-prefixed (v7), crossover (v8).
+
+\subsection{Failure Autopsy (\texttt{analyze\_nr\_failure\_autopsy.py})}
+
+Classifies each failed trajectory into one of 7 failure modes:
+\begin{enumerate}
+  \item \texttt{ghost\_modes}: Only shallow negatives in $[-10^{-4}, 0)$.
+  \item \texttt{almost\_converged}: $|\eval_\text{min}| < 2\times10^{-3}$, $n_\text{neg} \leq 3$.
+  \item \texttt{oscillating}: Eigenvalues oscillating (30--70\% positive diffs).
+  \item \texttt{energy\_plateau}: Energy flat, eigenvalue not improving.
+  \item \texttt{genuinely\_stuck}: $>$50\% of steps stagnant.
+  \item \texttt{slow\_convergence}: Eigenvalue improving but too slowly.
+  \item \texttt{drifting}: All other cases.
+\end{enumerate}
+
+\subsection{Eigenvalue Tolerance Justification (\texttt{analyze\_nr\_eigenvalue\_justification.py})}
+
+Six modules (A1--A6, see Section~\ref{sec:eval-tolerance}). Outputs: tolerance sweep CSV, false convergence analysis, band evolution, cascade gap analysis, force-eigenvalue consistency, and 9 PNG heatmaps.
+
+\subsection{Surface Forensics (\texttt{analyze\_nr\_surface\_forensics.py})}
+
+Seven modules (F1--F7, see Section~\ref{sec:forensics}). Outputs: trust-eigenvalue correlation, band transition matrices, stagnation anatomy, oscillation cycles, distance evolution, ghost mode characterization, trust-crushed population analysis. 7 CSVs + 6 PNGs.
+
+\subsection{SPDN Diagnostics (\texttt{analyze\_nr\_spdn\_diagnostics.py})}
+
+Seven modules (D1--D7): SPDN vs legacy comparison, spectral conditioning deep dive, GDIIS performance (accept rates, conditioning), line search statistics, saddle point detection, walking-out-of-minima analysis, eigenvalue stability and change rates.
+
+\subsection{Cross-Seed Analysis (\texttt{analyze\_nr\_cross\_seed.py})}
+
+Multi-seed aggregation: convergence by noise $\times$ optimizer (mean $\pm$ std), difficulty curve, sample consistency (universally-hard vs seed-dependent), seed variance (robustness).
+
+\subsection{Trajectory Statistics (\texttt{analyze\_nr\_trajectory\_stats.py})}
+
+Per-trajectory and per-combo aggregates: trust radius evolution, step displacement, hit-trust-radius rate, retries, condition numbers, force decay, neg-mode evolution.
+
+\subsection{Trajectory Visualization (\texttt{plot\_nr\_grid\_trajectories.py})}
+
+Six-panel plots per trajectory: (1) trust radius vs displacement, (2) force norm \& retries, (3) condition number, (4) largest $|\eval|$, (5) smallest $|\eval|$, (6) cascading $n_\text{neg}$ counts.
+
+%=============================================================================
+\section{Experimental Design Summary}
+\label{sec:experiments}
+%=============================================================================
+
+\begin{table}[H]
+\centering
+\caption{Summary of all experimental runs.}
+\label{tab:experiments}
+\small
+\begin{tabular}{llccccp{4cm}}
+\toprule
+Version & Walltime & Configs & Noise & Samples & Steps & Key Features \\
+\midrule
+v3 & 9h & 19 & 1.0\,$\angstrom$ & 15 & 10k & SN $\varepsilon$ sweep, stagnation escape, LM annealing \\
+v4 & 9h & 41 & 2.0\,$\angstrom$ & 30 & 10k & v4 features (ntf, blind, atr, ebd, mf) \\
+v5 & 9h & 80 & 0.5--2.0 & 50 & 10k & SN vs SPDN, 5 seeds \\
+v6 & 24h & 2 & 0.5 & 300 & 10k & Pure SN + trust, back-to-basics \\
+v7 & 24h & 12 & 0.5--1.0 & 300 & 10k & Trust region vs line search \\
+v7h & 9h & 6 & 1.5--2.0 & 300 & 10k & Hard-noise extension of v7 \\
+v8 & 9h & 24 & 0.5--2.0 & 300 & 10k & iHiSD crossover, $\mu_\text{max}$ sweep \\
+diag & 6h & -- & 0.5--2.0 & 287 & -- & Labelled minima diagnostics (point evals) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%=============================================================================
+\section{Complete Hyperparameter Inventory}
+\label{sec:params}
+%=============================================================================
+
+\begin{longtable}{llp{7cm}l}
+\toprule
+Parameter & Default & Description & Version \\
+\midrule
+\endfirsthead
+\texttt{n\_steps} & 5000 & Maximum optimization steps & v1 \\
+\texttt{max\_atom\_disp} & 0.3--1.3 & Maximum trust radius / displacement cap ($\angstrom$) & v1 \\
+\texttt{force\_converged} & $10^{-4}$ & Force convergence threshold (eV/$\angstrom$) & v1 \\
+\texttt{min\_interatomic\_dist} & 0.5 & Collision guard ($\angstrom$) & v1 \\
+\texttt{nr\_threshold} & $8\times10^{-3}$ & Hard filter eigenvalue cutoff & v1 \\
+\texttt{project\_gradient\_and\_v} & True & Eckart-project gradient & v1 \\
+\texttt{purify\_hessian} & False & Enforce TR sum rules on Hessian & v1 \\
+\midrule
+\texttt{lm\_mu} & 0.0 & LM damping coefficient ($0 =$ off) & v2 \\
+\texttt{anneal\_force\_threshold} & 0.0 & Two-phase annealing gate & v2 \\
+\texttt{cleanup\_nr\_threshold} & 0.0 & Cleanup phase threshold & v2 \\
+\texttt{cleanup\_max\_steps} & 50 & Max cleanup steps & v2 \\
+\texttt{log\_spectrum\_k} & 10 & Bottom-$K$ eigenvalues to log & v2 \\
+\midrule
+\texttt{shift\_epsilon} & 0.0 & Shifted Newton $\varepsilon$ ($0 =$ off) & v3 \\
+\texttt{stagnation\_window} & 0 & Steps before escape trigger & v3 \\
+\texttt{escape\_alpha} & 0.1 & Escape perturbation magnitude & v3 \\
+\texttt{lm\_mu\_anneal\_factor} & 0.0 & LM $\mu$ annealing multiplier & v3 \\
+\texttt{neg\_mode\_line\_search} & False & Line search along neg eigenvector & v3 \\
+\texttt{trust\_radius\_floor} & 0.01 & Minimum trust radius ($\angstrom$) & v3 \\
+\midrule
+\texttt{neg\_trust\_floor} & 0.0 & Separate neg-mode trust floor & v4 \\
+\texttt{blind\_mode\_threshold} & 0.0 & Blind-mode correction gate & v4 \\
+\texttt{blind\_correction\_alpha} & 0.02 & Correction magnitude & v4 \\
+\texttt{aggressive\_trust\_recovery} & False & Softer trust shrink + resets & v4 \\
+\texttt{escape\_bidirectional} & False & Probe both $\pm\evec_0$ & v4 \\
+\texttt{mode\_follow\_eval\_threshold} & 0.0 & Mode-following gate & v4 \\
+\texttt{mode\_follow\_alpha} & 0.15 & Probe displacement & v4 \\
+\texttt{mode\_follow\_after\_steps} & 2000 & Delay before mode-following & v4 \\
+\midrule
+\texttt{optimizer\_mode} & \texttt{""} & \texttt{""} or \texttt{"spdn"} & v5 \\
+\texttt{spdn\_tau\_hard} & 0.01 & Hard regime threshold & v5 \\
+\texttt{spdn\_tau\_soft} & $10^{-4}$ & Ghost regime threshold & v5 \\
+\texttt{spdn\_diis\_size} & 8 & GDIIS buffer size & v5 \\
+\texttt{spdn\_diis\_every} & 5 & GDIIS attempt frequency & v5 \\
+\texttt{spdn\_momentum} & 0.0 & Polyak heavy-ball coefficient & v5 \\
+\midrule
+\texttt{step\_control} & \texttt{"trust\_region"} & \texttt{"trust\_region"} or \texttt{"line\_search"} & v7 \\
+\texttt{max\_nr\_weight} & 0.0 & Cap shifted Newton weight ($0 =$ no cap) & v7 \\
+\midrule
+\texttt{crossover\_mu\_max} & 0.0 & Crossover damping strength ($0 =$ off) & v8 \\
+\texttt{crossover\_n\_neg\_ref} & 3.0 & Morse index reference for $\alpha$ & v8 \\
+\texttt{crossover\_force\_ref} & 0.1 & Force reference for $\alpha$ (eV/$\angstrom$) & v8 \\
+\bottomrule
+\end{longtable}
+
+%=============================================================================
+\section{What Worked and What Didn't}
+\label{sec:what-worked}
+%=============================================================================
+
+\subsection{What Worked}
+
+\begin{enumerate}
+  \item \textbf{Shifted Newton step (v3):} The single most important algorithmic improvement. Giving negative modes larger weights is physically correct and produced the best convergence across all versions.
+  \item \textbf{Eckart projection:} \texttt{project\_gradient\_and\_v=True} prevents TR drift. Always used.
+  \item \textbf{Trust region (despite its flaws):} Still the best step-size control. Its damage-limiting behavior at the floor ($0.01\;\angstrom$ cap) is better than line search in a wrong direction.
+  \item \textbf{$\varepsilon = 10^{-3}$:} Consistently the best shift epsilon (fastest convergence, comparable or better rate).
+  \item \textbf{$r_\text{max} = 1.3\;\angstrom$:} Large trust radius allows aggressive progress early.
+  \item \textbf{Comprehensive logging:} 30+ fields per step enabled deep failure diagnosis.
+  \item \textbf{Cascade evaluation:} The 8-threshold cascade table is the key diagnostic tool for distinguishing real failures from false-rejection.
+  \item \textbf{Multi-seed testing (v5+):} Eliminated overfitting to specific noise realizations.
+  \item \textbf{300-sample testing (v6+):} Revealed that convergence rates with 15 samples are inflated.
+  \item \textbf{Diagnostic from labelled minima:} The single most informative diagnostic. Revealed that (a)~DFTB0 disagrees with DFT on Morse index at 90\% of minima, (b)~both SD and Newton directions are near-orthogonal to truth, (c)~the $n_\text{neg}=0$ basin is within the last 5\% of the path. This reframed the entire problem: we are not failing to optimize---we are failing because DFTB0 has a different PES topology from DFT.
+  \item \textbf{Condition number tracking:} The per-step $\kappa$ and diagnostic $\log_{10}\kappa$ scaling revealed the exact noise threshold ($\sim$1.0--1.5\,$\angstrom$) where the Hessian becomes unreliable.
+\end{enumerate}
+
+\subsection{What Didn't Work}
+
+\begin{enumerate}
+  \item \textbf{All v4 features:} Neg-trust-floor, blind-mode correction, aggressive trust recovery, bidirectional escape, mode-following. All hurt performance or had no effect.
+  \item \textbf{SPDN (v5):} Spectral step builder + GDIIS catastrophically broken (0\% convergence).
+  \item \textbf{Line search replacing trust region (v7):} Made things worse at all noise levels. Trust region's damage-limiting floor behavior is actually beneficial.
+  \item \textbf{Max weight cap (v7):} \texttt{max\_nr\_weight=200} didn't help. The problem is the step direction, not just magnitude.
+  \item \textbf{iHiSD crossover (v8):} Results pending. Preliminary baseline matches v7 line search. The diagnostic from labelled minima (Section~\ref{sec:diagnostic-results}) confirmed that SD direction is indeed better than Newton at high noise, validating the hypothesis but both directions are nearly orthogonal to truth.
+  \item \textbf{Eigenvalue tolerance:} 97\% false convergence rate. Not viable.
+  \item \textbf{LM damping (v2):} Inferior to shifted Newton at all tested configurations.
+  \item \textbf{Two-phase annealing (v2):} No significant benefit.
+  \item \textbf{Stagnation escape (v3):} Some benefit on specific samples but not generally helpful.
+  \item \textbf{Neg-mode line search (v3):} No significant benefit.
+  \item \textbf{GDIIS extrapolation (v5):} Either rejected or hurt convergence.
+  \item \textbf{Polyak momentum (v5):} No improvement.
+\end{enumerate}
+
+\subsection{Open Fundamental Issues}
+
+\begin{enumerate}
+  \item \textbf{Trust radius collapse:} Remains unsolved. Line search is worse, not better.
+  \item \textbf{DFTB0 accuracy (RESOLVED---it IS a bottleneck):} The diagnostic from labelled minima (Section~\ref{sec:diagnostic-results}) answered this definitively: \textbf{only 10\% of DFT minima have $n_\text{neg} = 0$ under DFTB0}. The median reactant has $n_\text{neg} = 2$ and $\|\vect{f}\| = 1.39$ eV/$\angstrom$. This means our convergence criterion ($n_\text{neg} = 0$) is fundamentally unachievable for most molecules at the DFT geometry---the optimizer must find a \emph{nearby but distinct} DFTB0 minimum. The 79\% ceiling at 0.5\,$\angstrom$ reflects the fraction of molecules for which such a nearby minimum exists and is reachable.
+  \item \textbf{Direction quality at high noise:} Both SD and Newton directions are nearly orthogonal to the true direction (dot product $< 0.12$). SD is better in 70\% of cases at 2.0\,$\angstrom$ but the absolute quality is poor. No single-step direction is reliable---the optimizer must rely on iterative descent through many small steps.
+  \item \textbf{Extremely narrow basin of attraction:} $n_\text{neg} = 0$ only within the last 5\% of displacement toward the minimum. For 89\% of molecules, the interpolation path never passes through $n_\text{neg} = 0$ at all. The optimizer navigates $>$95\% of the trajectory blind, with no eigenvalue-based signal that it is approaching the minimum.
+  \item \textbf{Condition number scaling:} Median $\kappa$ at starting geometry scales from $10^{4.1}$ (0.5\,$\angstrom$) to $10^{6.4}$ (2.0\,$\angstrom$). The performance cliff between 1.0 and 1.5\,$\angstrom$ coincides with the condition number jumping by $10\times$.
+  \item \textbf{Persistently hard samples:} Samples 004, 008, 020, 024, 027 fail across multiple versions and noise seeds. Understanding their PES structure could guide algorithm development.
+  \item \textbf{v8 crossover experiments pending:} May show that the GD$\to$Newton transition helps at high noise where the direction matters most.
+\end{enumerate}
+
+%=============================================================================
+\section{File Inventory}
+\label{sec:files}
+%=============================================================================
+
+\subsection{Core Algorithm}
+
+\begin{itemize}
+  \item \texttt{src/noisy/v2\_tests/baselines/minimization.py} ($\sim$2100 lines): \texttt{run\_newton\_raphson}, all step builders, GDIIS, diagnostics.
+  \item \texttt{src/noisy/v2\_tests/runners/run\_minimization\_parallel.py} ($\sim$700 lines): CLI runner, parallel worker, result construction.
+  \item \texttt{src/dependencies/common\_utils.py}: \texttt{Transition1xDataset}, \texttt{parse\_starting\_geometry}.
+  \item \texttt{src/noisy/multi\_mode\_eckartmw.py}: \texttt{get\_vib\_evals\_evecs}.
+\end{itemize}
+
+\subsection{Analysis Scripts}
+
+\begin{itemize}
+  \item \texttt{analyze\_minimization\_nr\_grid.py}: Grid ranking, main effects, cascade table.
+  \item \texttt{analyze\_nr\_failure\_autopsy.py}: Failure classification.
+  \item \texttt{analyze\_nr\_eigenvalue\_justification.py}: Tolerance investigation (A1--A6).
+  \item \texttt{analyze\_nr\_surface\_forensics.py}: PES forensics (F1--F7).
+  \item \texttt{analyze\_nr\_spdn\_diagnostics.py}: SPDN diagnostics (D1--D7).
+  \item \texttt{analyze\_nr\_cross\_seed.py}: Multi-seed aggregation.
+  \item \texttt{analyze\_nr\_trajectory\_stats.py}: Trajectory statistics.
+  \item \texttt{plot\_nr\_grid\_trajectories.py}: Six-panel visualization.
+  \item \texttt{diagnostic\_from\_minima.py}: Ground-truth diagnostic.
+\end{itemize}
+
+\subsection{SLURM Templates}
+
+\begin{itemize}
+  \item \texttt{minimization\_nr\_grid\_v3\_run.slurm}: 19 configs, 1.0\,$\angstrom$, 15 samples.
+  \item \texttt{minimization\_nr\_grid\_v4\_run.slurm}: 41 configs, 2.0\,$\angstrom$, 30 samples.
+  \item \texttt{minimization\_nr\_grid\_v5\_run.slurm}: 80 configs, 4 noise $\times$ 5 seeds, 50 samples.
+  \item \texttt{minimization\_nr\_grid\_v6\_run.slurm}: 2 configs, 0.5\,$\angstrom$, 300 samples.
+  \item \texttt{minimization\_nr\_grid\_v7\_run.slurm}: 6 configs, 0.5--1.0\,$\angstrom$, 300 samples.
+  \item \texttt{minimization\_nr\_grid\_v7\_hard\_run.slurm}: 6 configs, 1.5--2.0\,$\angstrom$, 300 samples.
+  \item \texttt{minimization\_nr\_grid\_v8\_run.slurm}: 24 configs, 0.5--2.0\,$\angstrom$, 300 samples.
+  \item \texttt{diagnostic\_from\_minima\_run.slurm}: Labelled minima diagnostic, 4 noise levels, 287 samples.
+\end{itemize}
+
+\subsection{Documentation}
+
+\begin{itemize}
+  \item \texttt{NR\_MINIMIZATION\_FINDINGS.txt}: v1--v5 comprehensive findings ($\sim$1150 lines).
+  \item \texttt{NR\_V6\_ANALYSIS.md}: v6 300-sample analysis and trust radius diagnosis.
+\end{itemize}
+
+\end{document}
