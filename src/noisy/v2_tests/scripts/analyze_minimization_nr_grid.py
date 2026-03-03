@@ -79,6 +79,10 @@ COMBO_RE_PLAIN_SHIFTED = re.compile(
     r"shifted_newton_se(?P<se>[^_]+)$"
 )
 # v5 SPDN: mad<v>_spdn[_tuned][_th<v>][_ts<v>][_ds<v>][_de<v>][_mom<v>]_pg<bool>_ph<bool>
+# PIC-ARC: n<noise>_si<sigma_init>_kt<kappa_threshold>_ar<accept_relaxed>_mr<metric_refresh>
+COMBO_RE_PIC_ARC = re.compile(
+    r"n(?P<noise>[^_]+)_si(?P<si>[^_]+)_kt(?P<kt>[^_]+)_ar(?P<ar>[^_]+)_mr(?P<mr>[^_]+)$"
+)
 # v8: n<noise>_mad<v>_se<v>_scls_cm<v>[_cnr<v>][_cfr<v>][_mw<v>]_pg<bool>_ph<bool>
 COMBO_RE_CROSSOVER_V8 = re.compile(
     r"n(?P<noise>[^_]+)_mad(?P<mad>[^_]+)_se(?P<se>[^_]+)"
@@ -159,6 +163,11 @@ class ComboRecord:
     crossover_mu_max: float = 0.0
     crossover_n_neg_ref: float = 3.0
     crossover_force_ref: float = 0.1
+    # PIC-ARC fields
+    sigma_init: float = 1.0
+    kappa_threshold: float = 1e6
+    accept_relaxed: bool = False
+    metric_refresh_every: int = 0
     # cascade_table from the results JSON (may be empty for old runs)
     cascade_table: Dict[str, Any] = field(default_factory=dict)
     results: List[Dict[str, Any]] = field(default_factory=list)
@@ -229,6 +238,33 @@ def _parse_combo_tag(combo_tag: str) -> Optional[Dict[str, Any]]:
         "escape_bidirectional": False,
         "mode_follow_eval_threshold": 0.0,
     }
+
+    # PIC-ARC (try first — distinct tag format with _si/_kt/_ar/_mr)
+    m = COMBO_RE_PIC_ARC.fullmatch(combo_tag)
+    if m:
+        return {
+            "mad": 1.3,
+            "nr_threshold": 0.0,
+            "lm_mu": 0.0,
+            "anneal_force_threshold": 0.0,
+            "project_gradient_and_v": True,
+            "purify_hessian": False,
+            **_v3_defaults,
+            **_v4_defaults,
+            "optimizer_mode": "pic_arc",
+            "noise_level": _safe_float(m.group("noise")),
+            "step_control": "trust_region",
+            "shift_epsilon": 0.0,
+            "crossover_mu_max": 0.0,
+            "crossover_n_neg_ref": 0.0,
+            "crossover_force_ref": 0.0,
+            "max_nr_weight": 0.0,
+            # PIC-ARC specific (stored for display/comparison)
+            "sigma_init": _safe_float(m.group("si")),
+            "kappa_threshold": _safe_float(m.group("kt")),
+            "accept_relaxed": m.group("ar") not in ("0", "false"),
+            "metric_refresh_every": int(_safe_float(m.group("mr"), 0)),
+        }
 
     # v8 crossover (most specific — has _cm field, so try before v7)
     m = COMBO_RE_CROSSOVER_V8.fullmatch(combo_tag)
@@ -497,6 +533,11 @@ def load_records(grid_dir: Path, result_glob: str) -> List[ComboRecord]:
                 crossover_force_ref=parsed.get("crossover_force_ref", 0.1),
                 total_diis_attempts=sum(r.get("total_diis_attempts", 0) for r in per_sample_results),
                 total_diis_accepts=sum(r.get("total_diis_accepts", 0) for r in per_sample_results),
+                # PIC-ARC fields
+                sigma_init=parsed.get("sigma_init", 1.0),
+                kappa_threshold=parsed.get("kappa_threshold", 1e6),
+                accept_relaxed=bool(parsed.get("accept_relaxed", False)),
+                metric_refresh_every=int(parsed.get("metric_refresh_every", 0)),
                 cascade_table=metrics.get("cascade_table", {}),
                 results=per_sample_results,
             )
