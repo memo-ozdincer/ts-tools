@@ -58,7 +58,7 @@ from src.parallel.utils import run_batch_parallel
 def evaluate_geometry(
     predict_fn,
     coords: torch.Tensor,
-    atomic_nums: torch.Tensor,  # noqa: ARG001 — kept for API consistency
+    atomic_nums: torch.Tensor,
     atomsymbols: List[str],
     log_spectrum_k: int = 10,
 ) -> Dict[str, Any]:
@@ -68,7 +68,7 @@ def evaluate_geometry(
     eigenvalue band populations, cascade counts, bottom spectrum, etc.
     """
     coords_flat = coords.reshape(1, -1).detach().requires_grad_(True)
-    result = predict_fn(coords_flat, do_hessian=True)
+    result = predict_fn(coords_flat, atomic_nums, do_hessian=True)
 
     energy = float(result["energy"].item())
     forces = result["forces"].detach().to("cpu")
