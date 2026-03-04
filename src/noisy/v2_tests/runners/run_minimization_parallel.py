@@ -32,6 +32,13 @@ v7 flags:
 - --step-control   Step control: 'trust_region' (default) or 'line_search' (Armijo backtracking)
 - --max-nr-weight  Cap shifted Newton weight (0 = no cap)
 
+v10 flags:
+- --arc-sigma-init  ARC: initial cubic regularization σ (default 1.0)
+- --arc-gamma1      ARC: σ increase factor on bad step (default 2.0)
+- --gdiis-buffer-size
+                  ARC: GDIIS buffer for oscillation damping (0 = off)
+- --gdiis-every   ARC: attempt GDIIS every N steps (default 5)
+
 Cascade evaluation:
   Every trajectory step now contains "n_neg_at_<threshold>" fields for
   thresholds [0.0, 1e-4, 5e-4, 1e-3, 2e-3, 5e-3, 8e-3, 1e-2].
@@ -191,6 +198,16 @@ def run_single_sample(
                 # v9 relaxed convergence
                 relaxed_eval_threshold=params.get("relaxed_eval_threshold", 0.0),
                 accept_relaxed=params.get("accept_relaxed", False),
+                # v10 ARC
+                arc_sigma_init=params.get("arc_sigma_init", 1.0),
+                arc_sigma_min=params.get("arc_sigma_min", 1e-4),
+                arc_sigma_max=params.get("arc_sigma_max", 1e4),
+                arc_eta1=params.get("arc_eta1", 0.1),
+                arc_eta2=params.get("arc_eta2", 0.9),
+                arc_gamma1=params.get("arc_gamma1", 2.0),
+                arc_gamma2=params.get("arc_gamma2", 0.5),
+                gdiis_buffer_size=params.get("gdiis_buffer_size", 0),
+                gdiis_every=params.get("gdiis_every", 5),
             )
         elif method == "pic_arc":
             result, trajectory = run_pic_arc(
@@ -265,6 +282,9 @@ def run_single_sample(
                         "total_diis_accepts": result.get("total_diis_accepts", 0),
                         "total_diis_energy_accepts": result.get("total_diis_energy_accepts", 0),
                         "optimizer_mode": result.get("optimizer_mode", ""),
+                        "final_arc_sigma": result.get("final_arc_sigma"),
+                        "arc_gdiis_attempts": result.get("arc_gdiis_attempts", 0),
+                        "arc_gdiis_accepts": result.get("arc_gdiis_accepts", 0),
                         "trajectory": trajectory,
                     },
                     f,
@@ -578,7 +598,7 @@ def main() -> None:
     parser.add_argument(
         "--optimizer-mode", type=str, default="",
         help="Optimizer mode: '' (default, use v1-v4 logic), 'spdn' (Spectrally-Partitioned "
-             "DIIS-Newton: spectral step builder + GDIIS + backtracking line search).",
+             "DIIS-Newton), 'arc' (v10: full-spectrum ARC with adaptive σ).",
     )
     parser.add_argument(
         "--spdn-tau-hard", type=float, default=0.01,
@@ -633,6 +653,44 @@ def main() -> None:
         "--crossover-force-ref", type=float, default=0.1,
         help="iHiSD crossover: force norm reference for alpha. "
              "alpha_force = 1/(1 + force_norm/ref). Default: 0.1 eV/A.",
+    )
+
+    # --- v10 ARC flags ---
+    parser.add_argument(
+        "--arc-sigma-init", type=float, default=1.0,
+        help="ARC: initial cubic regularization parameter σ (default 1.0).",
+    )
+    parser.add_argument(
+        "--arc-sigma-min", type=float, default=1e-4,
+        help="ARC: minimum σ clamp (default 1e-4).",
+    )
+    parser.add_argument(
+        "--arc-sigma-max", type=float, default=1e4,
+        help="ARC: maximum σ clamp (default 1e4).",
+    )
+    parser.add_argument(
+        "--arc-eta1", type=float, default=0.1,
+        help="ARC: successful step threshold (ρ ≥ η₁ → accept). Default 0.1.",
+    )
+    parser.add_argument(
+        "--arc-eta2", type=float, default=0.9,
+        help="ARC: very successful step threshold (ρ ≥ η₂ → decrease σ). Default 0.9.",
+    )
+    parser.add_argument(
+        "--arc-gamma1", type=float, default=2.0,
+        help="ARC: σ increase factor on unsuccessful step. Default 2.0.",
+    )
+    parser.add_argument(
+        "--arc-gamma2", type=float, default=0.5,
+        help="ARC: σ decrease factor on very successful step. Default 0.5.",
+    )
+    parser.add_argument(
+        "--gdiis-buffer-size", type=int, default=0,
+        help="ARC: GDIIS buffer size for oscillation damping. 0 = off (default).",
+    )
+    parser.add_argument(
+        "--gdiis-every", type=int, default=5,
+        help="ARC: attempt GDIIS every N steps when oscillation detected. Default 5.",
     )
 
     # --- PIC-ARC flags ---
@@ -774,6 +832,16 @@ def main() -> None:
         "crossover_mu_max": args.crossover_mu_max,
         "crossover_n_neg_ref": args.crossover_n_neg_ref,
         "crossover_force_ref": args.crossover_force_ref,
+        # v10 ARC additions
+        "arc_sigma_init": args.arc_sigma_init,
+        "arc_sigma_min": args.arc_sigma_min,
+        "arc_sigma_max": args.arc_sigma_max,
+        "arc_eta1": args.arc_eta1,
+        "arc_eta2": args.arc_eta2,
+        "arc_gamma1": args.arc_gamma1,
+        "arc_gamma2": args.arc_gamma2,
+        "gdiis_buffer_size": args.gdiis_buffer_size,
+        "gdiis_every": args.gdiis_every,
         # PIC-ARC additions
         "trust_radius_init": args.trust_radius_init,
         "sigma_init": args.sigma_init,

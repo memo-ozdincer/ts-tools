@@ -99,6 +99,13 @@ COMBO_RE_RELAXED_V9 = re.compile(
     r"_re(?P<re>[^_]+)_ar(?P<ar>[01])"
     r"_pg(?P<pg>true|false)_ph(?P<ph>true|false)$"
 )
+# v10 ARC: n<noise>_arc_si<σ_init>_g1<γ1>[_gd<gdiis>]_re<threshold>_ar<0|1>_pg<bool>_ph<bool>
+COMBO_RE_ARC_V10 = re.compile(
+    r"n(?P<noise>[^_]+)_arc_si(?P<si>[^_]+)_g1(?P<g1>[^_]+)"
+    r"(?:_gd(?P<gd>[^_]+))?"
+    r"_re(?P<re>[^_]+)_ar(?P<ar>[01])"
+    r"_pg(?P<pg>true|false)_ph(?P<ph>true|false)$"
+)
 # v7: n<noise>_mad<v>_se<v>_sc<tr|ls>[_mw<v>]_pg<bool>_ph<bool>
 COMBO_RE_SHIFTED_V7 = re.compile(
     r"n(?P<noise>[^_]+)_mad(?P<mad>[^_]+)_se(?P<se>[^_]+)"
@@ -173,6 +180,12 @@ class ComboRecord:
     # v9 relaxed convergence
     relaxed_eval_threshold: float = 0.0
     accept_relaxed: bool = False
+    # v10 ARC fields
+    arc_sigma_init: float = 1.0
+    arc_gamma1: float = 2.0
+    gdiis_buffer_size: int = 0
+    arc_gdiis_attempts: int = 0
+    arc_gdiis_accepts: int = 0
     # PIC-ARC fields
     sigma_init: float = 1.0
     kappa_threshold: float = 1e6
@@ -273,6 +286,36 @@ def _parse_combo_tag(combo_tag: str) -> Optional[Dict[str, Any]]:
             "kappa_threshold": _safe_float(m.group("kt")),
             "accept_relaxed": m.group("ar") not in ("0", "false"),
             "metric_refresh_every": int(_safe_float(m.group("mr"), 0)),
+        }
+
+    # v10 ARC (has _arc_ discriminator, try before v9)
+    m = COMBO_RE_ARC_V10.fullmatch(combo_tag)
+    if m:
+        return {
+            "mad": 1.3,
+            "nr_threshold": 0.0,
+            "lm_mu": 0.0,
+            "shift_epsilon": 0.0,
+            "anneal_force_threshold": 0.0,
+            "stagnation_window": 0,
+            "escape_alpha": 0.0,
+            "lm_mu_anneal_factor": 0.0,
+            "neg_mode_line_search": False,
+            "project_gradient_and_v": m.group("pg") == "true",
+            "purify_hessian": m.group("ph") == "true",
+            **_v4_defaults,
+            "optimizer_mode": "arc",
+            "noise_level": _safe_float(m.group("noise")),
+            "step_control": "trust_region",
+            "max_nr_weight": 0.0,
+            "crossover_mu_max": 0.0,
+            "crossover_n_neg_ref": 0.0,
+            "crossover_force_ref": 0.0,
+            "arc_sigma_init": _safe_float(m.group("si")),
+            "arc_gamma1": _safe_float(m.group("g1")),
+            "gdiis_buffer_size": int(_safe_float(m.group("gd") or "0", 0)),
+            "relaxed_eval_threshold": _safe_float(m.group("re")),
+            "accept_relaxed": m.group("ar") == "1",
         }
 
     # v9 relaxed convergence (has _re/_ar fields, try before v8/v7)
@@ -570,6 +613,12 @@ def load_records(grid_dir: Path, result_glob: str) -> List[ComboRecord]:
                 # v9 relaxed convergence
                 relaxed_eval_threshold=parsed.get("relaxed_eval_threshold", 0.0),
                 accept_relaxed=bool(parsed.get("accept_relaxed", False)),
+                # v10 ARC fields
+                arc_sigma_init=parsed.get("arc_sigma_init", 1.0),
+                arc_gamma1=parsed.get("arc_gamma1", 2.0),
+                gdiis_buffer_size=int(parsed.get("gdiis_buffer_size", 0)),
+                arc_gdiis_attempts=sum(r.get("arc_gdiis_attempts", 0) for r in per_sample_results),
+                arc_gdiis_accepts=sum(r.get("arc_gdiis_accepts", 0) for r in per_sample_results),
                 # PIC-ARC fields
                 sigma_init=parsed.get("sigma_init", 1.0),
                 kappa_threshold=parsed.get("kappa_threshold", 1e6),

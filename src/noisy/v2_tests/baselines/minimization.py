@@ -662,6 +662,154 @@ def _nr_step_shifted_newton(
     return delta_x, V_all, lam_all
 
 
+# ---------------------------------------------------------------------------
+# v10: Full-spectrum ARC (Adaptive Regularization with Cubics)
+# ---------------------------------------------------------------------------
+
+
+def _solve_arc_secular_full(
+    evals: torch.Tensor,
+    g_proj: torch.Tensor,
+    sigma: float,
+    max_iter: int = 50,
+    tol: float = 1e-10,
+) -> Tuple[float, int]:
+    """Solve the ARC secular equation for the full vibrational spectrum.
+
+    Finds λ* > max(0, -λ_min) such that σ·||s(λ*)|| = λ*,
+    where  s_i(λ) = -g_i / (λ_i + λ).
+
+    This is a scalar root-finding problem solved via safeguarded Newton.
+
+    Returns (lambda_star, n_iterations).
+    """
+    lam_min = float(evals.min().item())
+    boundary = max(0.0, -lam_min)
+
+    # Initial guess: safely above the boundary
+    lambda_k = boundary + 0.1 * sigma + 1e-6
+
+    g2 = g_proj ** 2  # cache squared gradient projections
+
+    n_iter = 0
+    for n_iter in range(1, max_iter + 1):
+        shifted = evals + lambda_k
+        shifted_safe = torch.clamp(shifted.abs(), min=1e-15)
+
+        s_norm_sq = float((g2 / (shifted_safe ** 2)).sum().item())
+        s_norm = s_norm_sq ** 0.5
+
+        if s_norm < 1e-30:
+            break
+
+        # φ(λ) = σ·||s(λ)|| − λ
+        phi = sigma * s_norm - lambda_k
+
+        if abs(phi) < tol * max(lambda_k, 1.0):
+            break
+
+        # φ'(λ) = −σ · Σ g_i² / (λ_i+λ)³  /  ||s(λ)||  − 1
+        dphi = -sigma * float((g2 / (shifted_safe ** 3)).sum().item()) / s_norm - 1.0
+
+        if abs(dphi) < 1e-30:
+            break
+
+        delta = phi / dphi
+        lambda_new = lambda_k - delta
+        # Stay above boundary
+        lambda_k = max(lambda_new, boundary + 1e-8)
+
+    return lambda_k, n_iter
+
+
+def _nr_step_arc(
+    grad: torch.Tensor,
+    V_all: torch.Tensor,
+    lam_all: torch.Tensor,
+    sigma: float,
+    max_atom_disp: float = 1.3,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, Any]]:
+    """Full-spectrum ARC step builder.
+
+    Minimizes the cubic model:
+        m(s) = g^T s + ½ s^T H s + (σ/3) ||s||³
+
+    The optimality condition gives the shifted Newton system:
+        (H + λ*·I) s* = −g,   where λ* = σ · ||s*||
+
+    Uses the vibrational eigendecomposition to solve in spectral form,
+    then finds λ* via the scalar secular equation.
+
+    Returns (delta_x, V_all, lam_all, arc_info).
+    """
+    coeffs = V_all.T @ grad  # g·v_i projections
+
+    lambda_star, secular_iters = _solve_arc_secular_full(
+        lam_all, coeffs, sigma
+    )
+
+    # Build the step in eigenbasis
+    shifted_lam = lam_all + lambda_star
+    shifted_lam = torch.clamp(shifted_lam, min=1e-15)
+    step_coeffs = -coeffs / shifted_lam
+    delta_x = V_all @ step_coeffs
+
+    step_norm = float(delta_x.norm().item())
+
+    # Compute effective weights for diagnostics
+    eff_max_weight = float((1.0 / shifted_lam).max().item())
+    eff_min_weight = float((1.0 / shifted_lam).min().item())
+
+    arc_info: Dict[str, Any] = {
+        "lambda_star": lambda_star,
+        "secular_iterations": secular_iters,
+        "step_norm": step_norm,
+        "sigma": sigma,
+        "effective_max_weight": eff_max_weight,
+        "effective_min_weight": eff_min_weight,
+    }
+
+    return delta_x, V_all, lam_all, arc_info
+
+
+def _detect_oscillation(
+    trajectory: list,
+    window: int = 8,
+    min_sign_change_frac: float = 0.5,
+) -> bool:
+    """Detect energy oscillation in recent trajectory.
+
+    Returns True if energy is oscillating (frequent sign changes in ΔE)
+    without making net progress.
+    """
+    if len(trajectory) < window:
+        return False
+
+    recent = trajectory[-window:]
+    energies = [t["energy"] for t in recent]
+
+    # Net progress: is total energy change small relative to oscillation amplitude?
+    total_change = abs(energies[-1] - energies[0])
+    max_e = max(energies)
+    min_e = min(energies)
+    amplitude = max_e - min_e
+
+    if amplitude < 1e-10:
+        return False  # Flat, not oscillating
+
+    # If net progress is large relative to amplitude, not oscillating
+    if total_change > 0.5 * amplitude:
+        return False
+
+    # Count sign changes in energy differences
+    diffs = [energies[i + 1] - energies[i] for i in range(len(energies) - 1)]
+    sign_changes = sum(
+        1 for i in range(len(diffs) - 1) if diffs[i] * diffs[i + 1] < 0
+    )
+
+    return sign_changes >= (window - 2) * min_sign_change_frac
+
+
 def _nr_step_spectral_partitioned(
     grad: torch.Tensor,
     V_all: torch.Tensor,
@@ -1452,6 +1600,16 @@ def run_newton_raphson(
     # --- v9 relaxed convergence ---
     relaxed_eval_threshold: float = 0.0,  # 0 = strict only; >0 = accept if min_eval >= -threshold
     accept_relaxed: bool = False,         # if True, treat RELAXED as converged
+    # --- v10 ARC options ---
+    arc_sigma_init: float = 1.0,          # initial cubic regularization σ
+    arc_sigma_min: float = 1e-4,          # minimum σ (prevents pure Newton)
+    arc_sigma_max: float = 1e4,           # maximum σ (prevents complete stagnation)
+    arc_eta1: float = 0.1,               # ρ threshold for successful step
+    arc_eta2: float = 0.9,               # ρ threshold for very successful step
+    arc_gamma1: float = 2.0,             # σ increase factor on bad step
+    arc_gamma2: float = 0.5,             # σ decrease factor on very good step
+    gdiis_buffer_size: int = 0,           # 0 = off; >0 = GDIIS buffer size
+    gdiis_every: int = 5,                # attempt GDIIS every N steps
 ) -> Tuple[Dict[str, Any], list]:
     """Newton-Raphson optimization to find energy minimum.
 
@@ -1542,13 +1700,14 @@ def run_newton_raphson(
     prev_neg_evecs: Optional[torch.Tensor] = None
     prev_neg_evals: Optional[torch.Tensor] = None
 
-    # --- Mode selection (priority: SPDN > crossover > shifted > LM > anneal > hard filter) ---
-    use_spdn = optimizer_mode.lower() == "spdn"
-    use_crossover = (not use_spdn) and crossover_mu_max > 0.0
-    use_line_search = step_control.lower() == "line_search" or use_crossover  # crossover forces line search
-    use_shifted = (not use_spdn) and (not use_crossover) and shift_epsilon > 0.0
-    use_lm = (not use_spdn) and (not use_crossover) and (not use_shifted) and lm_mu > 0.0
-    use_anneal = (not use_spdn) and (not use_crossover) and (not use_shifted) and (not use_lm) and anneal_force_threshold > 0.0
+    # --- Mode selection (priority: ARC > SPDN > crossover > shifted > LM > anneal > hard filter) ---
+    use_arc = optimizer_mode.lower() == "arc"
+    use_spdn = (not use_arc) and optimizer_mode.lower() == "spdn"
+    use_crossover = (not use_arc) and (not use_spdn) and crossover_mu_max > 0.0
+    use_line_search = (not use_arc) and (step_control.lower() == "line_search" or use_crossover)
+    use_shifted = (not use_arc) and (not use_spdn) and (not use_crossover) and shift_epsilon > 0.0
+    use_lm = (not use_arc) and (not use_spdn) and (not use_crossover) and (not use_shifted) and lm_mu > 0.0
+    use_anneal = (not use_arc) and (not use_spdn) and (not use_crossover) and (not use_shifted) and (not use_lm) and anneal_force_threshold > 0.0
     in_cleanup_phase = False
 
     # Effective LM mu (may be annealed)
@@ -1582,6 +1741,14 @@ def run_newton_raphson(
     prev_coords_flat: Optional[torch.Tensor] = None  # for momentum
     if use_spdn:
         gdiis = _GDIISExtrapolator(max_size=spdn_diis_size, min_size=3)
+
+    # v10 ARC state
+    arc_sigma = arc_sigma_init
+    arc_gdiis: Optional[_GDIISExtrapolator] = None
+    arc_gdiis_attempts = 0
+    arc_gdiis_accepts = 0
+    if use_arc and gdiis_buffer_size > 0:
+        arc_gdiis = _GDIISExtrapolator(max_size=gdiis_buffer_size, min_size=3)
 
     # Evaluate initial state
     out = predict_fn(coords, atomic_nums, do_hessian=True, require_grad=False)
@@ -1793,6 +1960,11 @@ def run_newton_raphson(
                 result_dict["total_diis_accepts"] = total_diis_accepts
                 result_dict["total_diis_energy_accepts"] = total_diis_energy_accepts
                 result_dict["optimizer_mode"] = "spdn"
+            if use_arc:
+                result_dict["optimizer_mode"] = "arc"
+                result_dict["final_arc_sigma"] = arc_sigma
+                result_dict["arc_gdiis_attempts"] = arc_gdiis_attempts
+                result_dict["arc_gdiis_accepts"] = arc_gdiis_accepts
             return result_dict, trajectory
 
         # ---------------------------------------------------------------
@@ -2000,9 +2172,15 @@ def run_newton_raphson(
         lam_all = evals_vib.to(device=grad.device, dtype=work_dtype)
 
         # ---------------------------------------------------------------
-        # Compute NR step (priority: SPDN > crossover > shifted > LM > anneal > HF)
+        # Compute NR step (priority: ARC > SPDN > crossover > shifted > LM > anneal > HF)
         # ---------------------------------------------------------------
-        if use_spdn:
+        if use_arc:
+            delta_x, V, lam, arc_step_info = _nr_step_arc(
+                grad, V_all, lam_all, arc_sigma, max_atom_disp,
+            )
+            step_record["step_mode"] = "arc"
+            step_record["arc_info"] = arc_step_info
+        elif use_spdn:
             delta_x, V, lam, spdn_step_info = _nr_step_spectral_partitioned(
                 grad, V_all, lam_all, spdn_tau_hard, spdn_tau_soft,
             )
@@ -2057,7 +2235,105 @@ def run_newton_raphson(
 
         step_disp = delta_x.reshape(-1, 3)
 
-        if use_spdn or use_line_search:
+        if use_arc:
+            # ---------------------------------------------------------------
+            # v10: ARC step-size control (replaces trust region entirely)
+            # ---------------------------------------------------------------
+            # Safety cap on max displacement
+            capped_disp = _cap_displacement(step_disp, max_atom_disp)
+            dx_flat = capped_disp.reshape(-1).to(work_dtype)
+
+            # Predicted decrease (includes cubic term)
+            dx_red = V.T @ dx_flat
+            step_norm_arc = float(dx_flat.norm().item())
+            pred_dE_quad = float(
+                (grad.dot(dx_flat) + 0.5 * (lam * dx_red * dx_red).sum()).item()
+            )
+            pred_dE_arc = pred_dE_quad - (arc_sigma / 3.0) * step_norm_arc ** 3
+            # m(0) - m(s) = -(g^T s + 0.5 s^T H s + (sigma/3)||s||^3)
+            pred_decrease = -pred_dE_arc
+
+            new_coords = coords + capped_disp
+            arc_accepted = False
+            retries = 0
+            rho_arc = 0.0
+            actual_dE = 0.0
+
+            if _min_interatomic_distance(new_coords) < min_interatomic_dist:
+                # Geometry invalid: treat as unsuccessful
+                arc_sigma = min(arc_sigma * arc_gamma1, arc_sigma_max)
+            else:
+                out_new = predict_fn(
+                    new_coords, atomic_nums, do_hessian=True, require_grad=False,
+                )
+                energy_new = _to_float(out_new["energy"])
+                actual_dE = energy_new - energy
+
+                rho_arc = (-actual_dE) / pred_decrease if pred_decrease > 1e-12 else 0.0
+
+                if rho_arc >= arc_eta1:
+                    # Successful step — accept
+                    arc_accepted = True
+                    coords = new_coords.detach()
+                    out = out_new
+
+                    if rho_arc >= arc_eta2:
+                        # Very successful — decrease σ
+                        arc_sigma = max(arc_sigma * arc_gamma2, arc_sigma_min)
+                    # else: keep σ unchanged
+                else:
+                    # Unsuccessful — reject step, increase σ
+                    arc_sigma = min(arc_sigma * arc_gamma1, arc_sigma_max)
+
+            step_record["arc_info"].update({
+                "rho": rho_arc,
+                "pred_decrease": pred_decrease,
+                "actual_dE": actual_dE,
+                "accepted": arc_accepted,
+                "sigma_after": arc_sigma,
+                "step_norm_capped": step_norm_arc,
+            })
+
+            # v10: GDIIS acceleration (oscillation breaking)
+            if arc_gdiis is not None:
+                arc_gdiis.store(coords.reshape(-1), grad.clone())
+
+                if (step > 0
+                        and step % gdiis_every == 0
+                        and arc_gdiis.can_extrapolate()
+                        and _detect_oscillation(trajectory, window=gdiis_buffer_size)):
+                    arc_gdiis_attempts += 1
+                    diis_coords_flat, diis_info = arc_gdiis.extrapolate()
+                    step_record["arc_gdiis_info"] = diis_info
+
+                    if diis_coords_flat is not None:
+                        diis_coords = diis_coords_flat.reshape(-1, 3)
+                        if _min_interatomic_distance(diis_coords) >= min_interatomic_dist:
+                            diis_out = predict_fn(
+                                diis_coords, atomic_nums,
+                                do_hessian=True, require_grad=False,
+                            )
+                            diis_energy = _to_float(diis_out["energy"])
+
+                            if diis_energy < energy + 1e-6:
+                                arc_gdiis_accepts += 1
+                                coords = diis_coords.detach()
+                                out = diis_out
+                                arc_sigma = arc_sigma_init  # reset σ after GDIIS jump
+                                arc_gdiis.reset()
+                                step_record["arc_gdiis_accepted"] = True
+                                step_record["arc_gdiis_energy_change"] = diis_energy - energy
+                                step += 1
+                                continue
+                            else:
+                                step_record["arc_gdiis_accepted"] = False
+                        else:
+                            step_record["arc_gdiis_accepted"] = False
+                            step_record["arc_gdiis_reject_reason"] = "min_dist_violation"
+
+            radius_used_for_step = max_atom_disp
+
+        elif use_spdn or use_line_search:
             # ---------------------------------------------------------------
             # Backtracking line search (Armijo condition)
             # Used by v5 SPDN and v7 line_search step control.
@@ -2267,4 +2543,9 @@ def run_newton_raphson(
         timeout_result["total_diis_accepts"] = total_diis_accepts
         timeout_result["total_diis_energy_accepts"] = total_diis_energy_accepts
         timeout_result["optimizer_mode"] = "spdn"
+    if use_arc:
+        timeout_result["optimizer_mode"] = "arc"
+        timeout_result["final_arc_sigma"] = arc_sigma
+        timeout_result["arc_gdiis_attempts"] = arc_gdiis_attempts
+        timeout_result["arc_gdiis_accepts"] = arc_gdiis_accepts
     return timeout_result, trajectory

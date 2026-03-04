@@ -1,0 +1,225 @@
+
+Here’s a structured literature survey aligned with your A–J outline. For full detail (including many more quotes and context) see the attached report “Geometry Optimization Survey,” which you can download and mine for implementation details.
+A. Geometry optimization methods
+Newton, quasi‑Newton, RFO
+	•	Schlegel, “Geometry optimization,” WIREs Comput Mol Sci 1, 790–809 (2011), DOI:10.1002/wcms.34. Comprehensive review of equilibrium and TS optimization: Newton/quasi‑Newton, Hessian updating (BFGS, SR1, PSB, Bofill), line search vs trust‑radius, and RFO. Highlights that for minimization the Hessian must be positive definite; for TSs, exactly one negative eigenvalue.storion+1 Useful algorithms:
+	◦	Augmented‑Hessian / RFO step: solve [
+	◦	H
+	◦	g
+	◦	g T 
+	◦	0
+	◦	]  [
+	◦	s
+	◦	1
+	◦	]  = 2 μ [
+	◦	W
+	◦	0
+	◦	0
+	◦	1
+	◦	]  [
+	◦	s
+	◦	1
+	◦	]   \begin{bmatrix}H & g\\ g^T & 0\end{bmatrix}\begin{bmatrix}s\\1\end{bmatrix} = 2\mu \begin{bmatrix}W & 0\\0 & 1\end{bmatrix}\begin{bmatrix}s\\1\end{bmatrix}  [HgTg0][s1]=2μ[W001][s1][storion]  then use lowest‑eigenvalue vector for minimization, second‑lowest for TS.[storion] 
+	◦	Partitioned RFO: one subspace for maximization (TS mode), the rest for minimization; allows progress even if the raw Hessian has the “wrong” index.[storion] 
+	•	Schlegel, “Geometry Optimization on Potential Energy Surfaces,” book chapter (2012). Extends the above, including concrete step‑size and trust‑radius update heuristics and how to combine quasi‑Newton with GDIIS/GE‑DIIS.[schlegelgroup.wayne] 
+This body of work supports:
+	•	Your use of full Hessians and eigenvalue shifting.
+	•	Interpreting your “shifted Newton” as a special RFO‑like regularized Newton step.
+Internal vs Cartesian, redundant internals, TRIC
+	•	Pulay & Fogarasi, “Geometry optimization in redundant internal coordinates,” JCP 96, 2856 (1992). Optimizes in redundant internals using generalized inverses; shows how to transform gradients and approximate Hessians into redundant internals and iteratively back‑transform to Cartesians.[worldscientific]  Key formulas (sketch):
+	◦	Redundant internal gradient f q  = B +  f x   f_q = B^+ f_x  fq=B+fx, where B  B  B is Wilson B‑matrix and B +   B^+  B+ its generalized inverse.[worldscientific] 
+	◦	Cartesian update from internal step: Δ x = A   Δ q  \Delta x = A\,\Delta q  Δx=AΔq with A = U B T  G − 1    A = U B^T G^{-1}  A=UBTG−1, iterated to handle curvature.[worldscientific] 
+	•	Fogarasi et al., “The Calculation of ab Initio Molecular Geometries: Efficient Optimization Techniques,” JACS 114, 8191 (1992). Introduces “natural valence” coordinates to reduce coupling and speed convergence.[saulius-grazulis] 
+	•	Baker et al., “Delocalized Internal Coordinates,” implemented e.g. in Q‑Chem. Delocalized internal coordinates (DLC) form a complete, non‑redundant set as good as or better than Pulay’s natural internals and can be generated automatically for complex topologies.[pubs.acs] 
+	•	Lindh, “Force‑constant weighted redundant coordinates in geometry optimizations,” Chem Phys Lett 311, 369 (1999). Presents a weighting scheme and “Lindh model Hessian” used widely as a preconditioner; it is not a true PES Hessian but a metric designed to make the surface more isotropic.numerical.rl+1
+	•	Wang & Song, “Geometry optimization made simple with translation and rotation coordinates,” JCP 144, 214108 (2016) – TRIC. TRIC adds explicit translation/rotation DOFs for fragments; they show consistently better convergence on water clusters, donor–acceptor complexes, and small proteins compared to standard Cartesians or internals.dial.uclouvain+1
+Relevance to your setting:
+	•	Your results suggest that conditioning problems are driven by large displacement, not Cartesian vs internals. These papers show how internal/TRIC systems and model Hessians effectively precondition the problem; those ideas could be combined with your full analytic Hessian (e.g., use model‑Hessian preconditioning of the true Hessian, or compute Hessian in internals and transform).
+Shifted / regularized Newton, cubic regularization
+	•	Nesterov & Polyak, “Cubic regularization of Newton method and its global performance,” Math Program 108, 177–205 (2006). Minimizes m k  ( s ) = f ( x k  ) + g k T  s + 1 2  s T  H k  s + M 6  ∥ s ∥ 3   m_k(s) = f(x_k)+g_k^T s + \tfrac12 s^T H_k s + \tfrac{M}{6}\|s\|^3  mk(s)=f(xk)+gkTs+21sTHks+6M∥s∥3 with M  M  M large enough to upper‑bound curvature; obtains global O ( ε − 3 / 2   )  O(\varepsilon^{-3/2})  O(ε−3/2) complexity to ∥ g ∥ ≤ ε  \|g\|\le\varepsilon  ∥g∥≤ε and λ min ⁡  ( H ) ≥ − ε   \lambda_{\min}(H)\ge -\sqrt{\varepsilon}  λmin(H)≥−ε.people.maths.ox+1 This gives a principled link between gradient tolerance and allowed negative eigenvalues.
+	•	Cartis, Gould & Toint, “Adaptive regularization using cubics (ARC),” SIAM‑style series, 2011ff. ARC generalizes cubic regularization with adaptive M k   M_k  Mk and approximate Hessians/step minimizers; retains the same complexity and allows inexact Hessians and subproblem solves.pubmed.ncbi.nlm.nih+1 Acceptance rule is trust‑region‑like, using ratio of actual vs predicted reduction, very close to what you are already doing.
+	•	Cartis, Gould & Toint, “Optimal Newton‑type methods for nonconvex smooth optimization,” 2011. Characterizes a class of regularized Newton/trust‑region methods that achieve optimal complexity, and constructs explicit examples where plain Newton is arbitrarily slow even with Lipschitz Hessian.manual.q-chem+1
+Your “shifted Newton”
+s
+=
+−
+∑
+i
+(
+g
+⋅
+v
+i
+)
+/
+(
+λ
+i
++
+σ
+)
+ 
+v
+i
+s = -\sum_i (g\cdot v_i)/(\lambda_i+\sigma)\,v_i
+s=−∑i(g⋅vi)/(λi+σ)vi with
+σ
+=
+max
+⁡
+(
+0
+,
+−
+λ
+min
+⁡
+)
++
+ε
+\sigma=\max(0,-\lambda_{\min})+\varepsilon
+σ=max(0,−λmin)+ε is essentially a spectral version of these regularizers. ARC and Nesterov–Polyak can help formalize why this works, and how to tie
+σ
+\sigma
+σ to
+∥
+g
+∥
+\|g\|
+∥g∥.
+
+B. Saddle points, TSs, negative eigenvalues, HiSD/iHiSD
+Classical TS search & eigenvalue following
+	•	Schlegel’s review gives detailed accounts of Cerjan–Miller eigenvector following, partitioned RFO, growing string, NEB, and reduced potential surface methods.pmc.ncbi.nlm.nih+1
+	•	Central assumptions: near a TS, the negative‑eigenvalue eigenvector approximates the reaction coordinate; eigenvalue shifting and partitioned RFO fix incorrect Hessian signatures locally.[storion] 
+	•	Your result that at large displacements negative eigenvectors do not point toward the minimum is consistent: you are far from the local quadratic regime those methods rely on.
+Sella
+	•	Hermes, Sargsyan, Najm, Zador, “Sella, an open-source automation-friendly molecular saddle point optimizer,” JCTC 18, 750–766 (2022).
+	◦	Redundant internals with automated generation, including dummy atoms for linear angles.[sciencedirect] 
+	◦	Iterative diagonalization of the Hessian: compute Hessian–vector products, find the leftmost eigenvector in a subspace, and use partitioned RFO for steps.pubmed.ncbi.nlm.nih+1
+	◦	Can target index (0 for minimum, 1 for FOSP) by modifying the effective Hessian: small shifts of zero/near‑zero eigenvalues, restricted diagonalization, and constrained optimization for translations/rotations.nature+1
+Insights you can borrow:
+	•	Target “effective index” by adjusting the small‑eigenvalue spectrum rather than rigidly enforcing n neg  = 0  n_{\text{neg}}=0  nneg=0.
+	•	Use partial diagonalization (e.g., smallest few eigenpairs) plus multisecant Hessian updates to reduce full diagonalization cost if you ever move to quasi‑Newton.nature+1
+HiSD and iHiSD
+	•	Su et al., “Improved high-index saddle dynamics for finding saddle points and solution landscapes,” arXiv:2502.03694 (2025). iHiSD defines a crossover dynamics from gradient flow to HiSD, with rigorous nonlocal convergence from outside the attraction region of a saddle. It also proves “gradient alignment tendency”: gradients asymptotically align with a Hessian eigenvector.chemrxiv+2
+	◦	They show that mixing gradient and saddle dynamics can enlarge basins of attraction for saddles.
+	◦	But they assume you’re already in a region where unstable eigenspaces reflect useful directions; your almost orthogonal gradient/Hessian observations suggest you’re outside that regime, explaining why LM‑style crossovers hurt.
+Practical handling of small negatives
+	•	Manuals (Gaussian, ORCA, Q‑Chem) and practitioner notes agree: any negative frequency formally disqualifies a minimum, but tiny ones are usually treated as numerical artifacts or shallow, often symmetry‑related saddles.osti+3
+	◦	Remedies: tighten SCF/geometry thresholds, recompute frequencies with smaller finite‑difference steps, perturb geometry along imaginary mode and reoptimize, or accept very small imaginary modes for noncritical tasks.arxiv+3
+This is essentially “relaxed convergence in practice” without a clear theory—an opening your work can exploit.
+
+C. Eckart conditions and projection
+	•	Eckart conditions (standard refs, e.g. Wikipedia). Define a body‑fixed frame such that the mass‑weighted mean‑square displacement between reference and current geometry is minimized; translational and rotational DOFs are decoupled from vibrations.[rowansci] 
+	•	Frequency/thermochemistry documentation (Rowan, ORCA) describe:
+	◦	Mass‑weighting Cartesian Hessian.
+	◦	Projecting out translational/rotational subspace (Eckart or acoustic sum rule) to obtain the vibrational Hessian.orca-manual.mpi-muelheim.mpg+2
+Important for your “ghost” negatives:
+	•	Projection is not numerically exact; any error in the rotation/translation subspace can “leak” into vibrational DOFs and slightly perturb small eigenvalues, sometimes flipping small positives to small negatives.arxiv+1
+	•	ORCA explicitly mentions an acoustic sum rule that can be toggled to reduce noise‑induced imaginary frequencies; this is a concrete example of deliberately altering small eigenvalues for numerical robustness.vergil.chemistry.gatech+1
+
+D. Spectral properties of molecular Hessians
+Direct, systematic studies of Hessian spectra vs displacement are rare, but some pieces are relevant:
+	•	Li et al., “Efficient Method for Numerical Calculations of Molecular Vibrational Frequencies,” JCTC 2024. Shows Hessians are sparse, and small off‑diagonal elements (<0.002 Hartree/Bohr²) can be dropped with only ~10–20 cm⁻¹ RMS frequency error.[gaussian] 
+	◦	Confirms that tiny perturbations in many matrix elements have modest spectral impact: your observed − 0.001  -0.001  −0.001 to − 0.01  -0.01  −0.01 Hartree/Bohr² negatives at converged structures are well within such tolerances.
+	•	Packwood et al., “Preconditioners for the geometry optimisation and saddle point search,” 2018. Interprets Lindh’s and similar model “Hessians” as preconditioners that intentionally reshape spectra, shifting zero modes to small positives to avoid instabilities.[numerical.rl.ac] 
+	•	ARC on manifolds (Boumal et al.). For Lipschitz Hessians, proves that ARC finds points with ∥ g ∥ ≤ ε  \|g\|\le\varepsilon  ∥g∥≤ε and λ min ⁡  ( H ) ≥ − ε 1 / 2    \lambda_{\min}(H)\ge -\varepsilon^{1/2}  λmin(H)≥−ε1/2.[forum.turbomole] 
+	◦	This is a theoretical justification for allowing small negative eigenvalues tied to gradient tolerance, aligning extremely well with your “relaxed convergence” notion.
+
+E. Convergence criteria and n_neg
+What QC codes actually do
+	•	Gaussian FAQ, ORCA, AMS, Q‑Chem manuals.
+	◦	Geometry convergence: thresholds on max/RMS force and displacement; sometimes energy changes.arxiv+2
+	◦	Type verification: after optimization, a separate frequency job with a more accurate Hessian checks n neg   n_{\text{neg}}  nneg (0 for minima, 1 for TS).wikipedia+2
+	◦	Gaussian explicitly notes cases where optimization criteria are satisfied but the exact Hessian reveals that the point is only “very near” a minimum, especially in flat regions; reoptimization or manual inspection is recommended.[arxiv] 
+	•	In practice, small imaginary frequencies (very low magnitude, often torsional) are:
+	◦	Attributed to numerical noise or symmetry.
+	◦	Fixed by tighter settings or symmetry breaking.
+	◦	Sometimes tolerated if they do not affect the main conclusions.arxiv+2
+Towards principled relaxed criteria
+Optimization theory (Nesterov–Polyak, ARC, ARC‑on‑manifolds) provides a natural relaxed condition:
+	•	Gradient tolerance: ∥ g ∥ ≤ ε  \|g\|\le\varepsilon  ∥g∥≤ε.
+	•	Second‑order tolerance: λ min ⁡  ( H ) ≥ − ε 1 / 2    \lambda_{\min}(H)\ge -\varepsilon^{1/2}  λmin(H)≥−ε1/2.people.maths.ox+2
+You could translate this into your units and thresholds for Transition1x:
+	•	Choose ε  \varepsilon  ε from your force norm (e.g. 10⁻⁴ eV/Å).
+	•	Compute an implied allowed negative eigenvalue scale and compare with your empirical − 0.001  -0.001  −0.001 to − 0.01  -0.01  −0.01 Hartree/Bohr²—likely they fall into or near that band.
+There is almost no explicit probabilistic literature (e.g. “probability that a point with small negative eigenvalues is truly a saddle vs a noisy minimum”), so your “false‑rejection gap” quantification would be novel.
+
+F. Optimization far from stationary points
+Global convergence & basins for Newton‑type methods
+	•	Cartis–Gould–Toint show that naive Newton can be arbitrarily bad globally, but regularized Newton (trust‑region, cubic) restores global convergence with optimal complexity.pubs.acs+2
+	•	Recent adaptive regularized Newton‑CG work; SIAM J Optim 2023 and arXiv:2502.04799.faccts+1
+	◦	Uses conjugate gradient with negative‑curvature monitoring inside a regularized model; if negative curvature is detected, switches to a direction based on λ min ⁡   \lambda_{\min}  λmin and its eigenvector instead of reverting to pure gradient.[faccts] 
+	◦	Ensures global complexity and quadratic local convergence when near a solution.
+Detecting transition from global to local phase
+	•	In trust‑region/ARC frameworks, the “Newton phase” is implicitly detected by:
+	◦	ρ ≈ 1  \rho\approx 1  ρ≈1 (predicted vs actual reduction match).
+	◦	Trust radius stops shrinking and often expands to allow ~full Newton steps.psicode+1
+Your observed advantage of trust‑region over line search—especially when the step direction is nearly orthogonal to the true direction—is exactly what this theory predicts: trust‑regions cap the damage of bad directions and only gradually allow full Newton behavior when the local model proves trustworthy.
+
+G. Optimization on noisy / inexact functions
+You are not in a classical stochastic setting, but “noisy” in the sense of:
+	•	Inexact PES curvature far from stationary points.
+	•	Numerical noise from SCF, grids, etc.
+Relevant theory:
+	•	Inexact Newton and trust‑region methods (standard Nocedal–Wright style). They tolerate approximate gradients/Hessians if errors decrease or are bounded in a relative sense; global convergence is preserved.
+	•	ARC and variants: ARC allows approximate Hessians and approximate model minimization as long as the model is “sufficiently accurate” relative to actual decrease.arxiv+1
+	◦	This matches your case: Hessians far away are inexact but still informative; your trust‑region acceptance criteria ensure you only accept steps where the quadratic model is reasonably predictive.
+	•	Implicit filtering (Kelley; Irwin et al., “Neural Network Accelerated Implicit Filtering,” PMLR 2023).
+	◦	Designed for noisy black‑box functions; combines stencil‑based local models with trust‑regions and quasi‑Newton updating.wikipedia+1
+	◦	Shows how to design trust‑region rules that are robust under noise and how to blend local model‑based steps with exploratory sampling.
+Your empirical observation that PIC‑ARC (a first‑order preconditioned cubic regularization method in internals) fails, whereas full‑Hessian shifted Newton works, is broadly consistent with this literature: when model error is large but structured, explicit curvature is more valuable than merely regularizing gradients.
+
+H. Molecular optimization software and practice
+geomeTRIC (TRIC)
+	•	Implements TRIC coordinates, BFGS/L‑BFGS quasi‑Newton, and several initial Hessian options (diagonal, Lindh, Schlegel, exact).people.maths.ox+2
+	•	Integrated into Psi4 and Q‑Chem as an alternative optimizer.manual.q-chem+1
+	•	Uses standard force/displacement convergence plus optional TS verification by frequencies; no strict built‑in requirement n neg  = 0  n_{\text{neg}}=0  nneg=0.
+Sella
+Already covered (Section B): notable for
+	•	Index‑targeted Hessian modification,
+	•	Iterative diagonalization,
+	•	Internal‑coordinate framework.
+AMS / SCINE / DL‑FIND / ASE
+	•	AMS manual: strong emphasis on gradient‑based convergence, explicitly stating that coordinate‑step thresholds are unreliable because they depend on the Hessian approximation; recommends tightening gradient criteria for accuracy.[docs.rowansci] 
+	•	ORCA: supports several model Hessians (Swart, Lindh, Almloef, Schlegel), exact Hessians, etc., with user control over initial Hessian choice.[scm] 
+	•	ASE and DL‑FIND rely heavily on BFGS/L‑BFGS or FIRE with line search or small trust‑regions; they assume starting geometries not too far from equilibrium and do not deeply analyze Hessian spectra.
+Handling of persistent negative eigenvalues is mostly pragmatic:
+	•	Tighten numerics, perturb structure, inspect symmetry, reoptimize; production workflows rarely insist on mathematically strict n neg  = 0  n_{\text{neg}}=0  nneg=0 for large, floppy, or symmetric systems.epubs.siam+2
+
+I. Dataset and benchmarking (Transition1x and others)
+	•	Bhowmik, Schreiner et al., “Transition1x – a dataset for building generalizable reactive machine learning potentials,” Nat Sci Data 10, 5 (2023).
+	◦	9.6M DFT (ωB97x/6‑31G(d)) energies and forces along NEB paths for ~10k organic reactions (up to 7 heavy atoms, multiple bond changes).arxiv+2
+	◦	Data generated by relaxing reactants/products then running NEB with IDPP initialization, saving intermediate images; unphysical or nonconverged reactions removed.[numerical.rl.ac] 
+	◦	Demonstrates that models trained only on equilibrium data fail in TS regions; Transition1x explicitly samples far‑from‑equilibrium geometries.
+Other datasets (ANI1x, QM9, various TS sets) mostly cover near‑equilibrium configurations and won’t probe the large‑displacement optimization regime the way Transition1x does.[numerical.rl.ac]
+Your study—quantifying convergence rates and eigenvalue behavior across the ~10k Transition1x reactions from large displacements—would essentially define a new class of optimization benchmark.
+
+J. Related problems: materials, biomolecules, ML landscapes
+Materials structure relaxation
+	•	Lenz et al., “Parametrically constrained geometry relaxations for high-throughput materials discovery,” npj Comput Mater 5, 67 (2019).
+	◦	Uses parametric constraints to restrict relaxation to low‑dimensional manifolds (e.g., symmetry‑preserving distortions, phonon modes), stabilizing optimization from far‑displaced or dynamically unstable structures.[lib.ysu] 
+	◦	On 359 materials, constrained relaxations reduce steps by ~30–50% on average and make metastable saddles (e.g., cubic ZrO₂) optimizable.[lib.ysu] 
+	◦	Analogous to your case: large displacements create severe conditioning and multiple descent directions; constraining motion to selected collective modes acts as a powerful regularizer.
+Biomolecular minimization
+	•	Protein minimizations typically use first‑order methods followed by limited‑memory quasi‑Newton, often with bond/angle restraints that are gradually relaxed—a form of parameterized trust‑region in coordinate space.[docs.rowansci] 
+	◦	Less directly relevant mathematically, but demonstrates that large‑displacement optimization in practice is almost always regularized by constraints or preconditioning, often in internal coordinates.
+Nonconvex ML optimization
+	•	Regularized Newton and second‑order methods (cubic regularization, trust‑region Newton‑CG) are seeing renewed interest in ML for nonconvex, high‑dimensional losses, because they converge faster in iterations even when Hessians are very ill‑conditioned and only approximated.nature+1
+	◦	Echoes your experience that “Hessian is unreliable but still better than nothing”: approximate curvature information, appropriately regularized, can greatly outperform first‑order methods in complex landscapes.
+
+How this maps to your specific findings
+	•	Ghost negative eigenvalues / “false‑rejection gap”:
+	◦	Practice in QC codes and ARC‑style theory both support allowing small negative eigenvalues whose magnitude is coupled to force tolerance. Formally, you can motivate a condition like λ min ⁡  ≥ − C   ∥ g ∥ 1 / 2    \lambda_{\min} \ge -C\,\|g\|^{1/2}  λmin≥−C∥g∥1/2 as “second‑order critical” and empirically calibrate C  C  C on Transition1x.turbomole+2
+	◦	Eckart projection and numerical noise can realistically produce small negative modes at otherwise converged minima.
+	•	Gradient directions nearly orthogonal to true displacement but Newton still works (~80% at 0.5 Å):
+	◦	Regularized Newton/ARC explain this: even if the global direction to the minimum is poorly aligned, local quadratic models can still give descent directions; trust‑regions ensure poor steps are truncated, so the method navigates the complex landscape via a sequence of locally adequate models.pubmed.ncbi.nlm.nih+1
+	•	Condition number explosion with displacement:
+	◦	Preconditioners (Lindh, model Hessians, TRIC) are specifically designed to combat this by reshaping the Hessian spectrum; your data makes an unusually explicit, quantitative case for just how bad conditioning gets at 2 Å.people.maths.ox+1
+	•	Shifted Newton is best step; trust‑region beats line search:
+	◦	Directly in line with RFO, Nesterov–Polyak, ARC, and trust‑region theory: shifting eigenvalues and bounding step norms is exactly what these frameworks recommend when Hessians are indefinite and far from a solution.people.maths.ox+2
+	•	Escape mechanisms and GD→Newton crossover fail:
+	◦	HiSD/iHiSD and eigenvector‑following theory assume negative eigendirections and gradients are meaningful near saddles; your data shows that in large‑displacement regimes, they are not, so crossovers based on those assumptions can be systematically harmful.chemrxiv+1
+	•	First‑order methods fail but Hessian‑based methods succeed:
+	◦	Preconditioner and regularized Newton literature, plus recent ML Hessian work, all emphasize that even approximate curvature can be dramatically more informative than gradients alone in nonconvex landscapes.github+1
