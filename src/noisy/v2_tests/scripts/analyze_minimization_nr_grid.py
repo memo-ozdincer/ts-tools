@@ -92,17 +92,28 @@ COMBO_RE_CROSSOVER_V8 = re.compile(
     r"(?:_mw(?P<mw>[^_]+))?"
     r"_pg(?P<pg>true|false)_ph(?P<ph>true|false)$"
 )
-# v9: n<noise>_mad<v>_se<v>_sc<tr|ls>_re<threshold>_ar<0|1>_pg<bool>_ph<bool>
+# v9: n<noise>_mad<v>_se<v>_sc<tr|ls>[_str]_re<threshold>_ar<0|1>_pg<bool>_ph<bool>
 COMBO_RE_RELAXED_V9 = re.compile(
     r"n(?P<noise>[^_]+)_mad(?P<mad>[^_]+)_se(?P<se>[^_]+)"
     r"_sc(?P<sc>tr|ls)"
+    r"(?:_str(?P<str>))?"
     r"_re(?P<re>[^_]+)_ar(?P<ar>[01])"
     r"_pg(?P<pg>true|false)_ph(?P<ph>true|false)$"
 )
-# v10 ARC: n<noise>_arc_si<σ_init>_g1<γ1>[_gd<gdiis>]_re<threshold>_ar<0|1>_pg<bool>_ph<bool>
+# v10 ARC: n<noise>_arc_si<σ_init>_g1<γ1>[_gd<gdiis>][_glf<force>]_re<threshold>_ar<0|1>_pg<bool>_ph<bool>
 COMBO_RE_ARC_V10 = re.compile(
     r"n(?P<noise>[^_]+)_arc_si(?P<si>[^_]+)_g1(?P<g1>[^_]+)"
     r"(?:_gd(?P<gd>[^_]+))?"
+    r"(?:_glf(?P<glf>[^_]+))?"
+    r"_re(?P<re>[^_]+)_ar(?P<ar>[01])"
+    r"_pg(?P<pg>true|false)_ph(?P<ph>true|false)$"
+)
+# v10b RFO: n<noise>_rfo[_gd<gdiis>][_glf<force>][_str]_re<threshold>_ar<0|1>_pg<bool>_ph<bool>
+COMBO_RE_RFO_V10 = re.compile(
+    r"n(?P<noise>[^_]+)_rfo"
+    r"(?:_gd(?P<gd>[^_]+))?"
+    r"(?:_glf(?P<glf>[^_]+))?"
+    r"(?:_str(?P<str>))?"
     r"_re(?P<re>[^_]+)_ar(?P<ar>[01])"
     r"_pg(?P<pg>true|false)_ph(?P<ph>true|false)$"
 )
@@ -186,6 +197,9 @@ class ComboRecord:
     gdiis_buffer_size: int = 0
     arc_gdiis_attempts: int = 0
     arc_gdiis_accepts: int = 0
+    # v10b fields
+    gdiis_late_force_threshold: float = 0.0
+    schlegel_trust_update: bool = False
     # PIC-ARC fields
     sigma_init: float = 1.0
     kappa_threshold: float = 1e6
@@ -314,6 +328,37 @@ def _parse_combo_tag(combo_tag: str) -> Optional[Dict[str, Any]]:
             "arc_sigma_init": _safe_float(m.group("si")),
             "arc_gamma1": _safe_float(m.group("g1")),
             "gdiis_buffer_size": int(_safe_float(m.group("gd") or "0", 0)),
+            "gdiis_late_force_threshold": _safe_float(m.group("glf") or "0", 0),
+            "relaxed_eval_threshold": _safe_float(m.group("re")),
+            "accept_relaxed": m.group("ar") == "1",
+        }
+
+    # v10b RFO (has _rfo discriminator, try before v9)
+    m = COMBO_RE_RFO_V10.fullmatch(combo_tag)
+    if m:
+        return {
+            "mad": 1.3,
+            "nr_threshold": 0.0,
+            "lm_mu": 0.0,
+            "shift_epsilon": 0.0,
+            "anneal_force_threshold": 0.0,
+            "stagnation_window": 0,
+            "escape_alpha": 0.0,
+            "lm_mu_anneal_factor": 0.0,
+            "neg_mode_line_search": False,
+            "project_gradient_and_v": m.group("pg") == "true",
+            "purify_hessian": m.group("ph") == "true",
+            **_v4_defaults,
+            "optimizer_mode": "rfo",
+            "noise_level": _safe_float(m.group("noise")),
+            "step_control": "trust_region",
+            "max_nr_weight": 0.0,
+            "crossover_mu_max": 0.0,
+            "crossover_n_neg_ref": 0.0,
+            "crossover_force_ref": 0.0,
+            "gdiis_buffer_size": int(_safe_float(m.group("gd") or "0", 0)),
+            "gdiis_late_force_threshold": _safe_float(m.group("glf") or "0", 0),
+            "schlegel_trust_update": m.group("str") is not None,
             "relaxed_eval_threshold": _safe_float(m.group("re")),
             "accept_relaxed": m.group("ar") == "1",
         }
@@ -339,6 +384,7 @@ def _parse_combo_tag(combo_tag: str) -> Optional[Dict[str, Any]]:
             "noise_level": _safe_float(m.group("noise")),
             "relaxed_eval_threshold": _safe_float(m.group("re")),
             "accept_relaxed": m.group("ar") == "1",
+            "schlegel_trust_update": m.group("str") is not None,
             **_v3_defaults,
             **_v4_defaults,
         }

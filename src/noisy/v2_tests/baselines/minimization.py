@@ -772,6 +772,94 @@ def _nr_step_arc(
     return delta_x, V_all, lam_all, arc_info
 
 
+def _solve_rfo_secular(
+    evals: torch.Tensor,
+    g_proj: torch.Tensor,
+    max_iter: int = 50,
+    tol: float = 1e-12,
+) -> Tuple[float, int]:
+    """Solve the RFO secular equation for the lowest eigenvalue of the
+    augmented Hessian (Schlegel 2011, Eq. 20).
+
+    Finds μ < λ_min such that:  Σ c_i² / (λ_i - μ) + μ = 0
+
+    where c_i = g · v_i.  The function f(μ) = Σ c_i²/(λ_i - μ) + μ is
+    monotonically increasing with a unique root below λ_min.
+    """
+    c2 = g_proj ** 2
+    lam_min = float(evals.min().item())
+
+    # Initial guess: start well below λ_min
+    g_norm_sq = float(c2.sum().item())
+    if g_norm_sq < 1e-30:
+        # Zero gradient: μ = 0 (pure Newton)
+        return 0.0, 0
+
+    mu = lam_min - (g_norm_sq ** 0.5) - 0.1
+
+    for n_iter in range(1, max_iter + 1):
+        denom = evals - mu
+        denom_safe = torch.where(denom.abs() < 1e-15, torch.ones_like(denom) * 1e-15, denom)
+
+        f_val = float((c2 / denom_safe).sum().item()) + mu
+        f_deriv = float((c2 / (denom_safe ** 2)).sum().item()) + 1.0
+
+        if abs(f_val) < tol * max(abs(mu), 1.0):
+            break
+
+        if abs(f_deriv) < 1e-30:
+            break
+
+        delta = f_val / f_deriv
+        mu_new = mu - delta
+
+        # Safeguard: stay below λ_min
+        mu = min(mu_new, lam_min - 1e-8)
+
+    return mu, n_iter
+
+
+def _nr_step_rfo(
+    grad: torch.Tensor,
+    V_all: torch.Tensor,
+    lam_all: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, Any]]:
+    """RFO (Rational Function Optimization) step builder.
+
+    Uses the augmented Hessian eigenvalue problem (Schlegel 2011, Eq. 20):
+        [H  g][s]       [s]
+        [gᵀ 0][1] = μ  [1]
+
+    The lowest eigenvalue μ gives an adaptive shift that automatically
+    interpolates between steepest descent (large gradient → large shift)
+    and Newton (small gradient → small shift). No hyperparameters needed.
+
+    For minimization, μ < λ_min, so all (λ_i - μ) > 0 and the step
+    is guaranteed downhill.
+    """
+    coeffs = V_all.T @ grad
+    mu_rfo, secular_iters = _solve_rfo_secular(lam_all, coeffs)
+
+    shifted = lam_all - mu_rfo
+    shifted = torch.clamp(shifted, min=1e-15)
+    step_coeffs = -coeffs / shifted
+    delta_x = V_all @ step_coeffs
+
+    step_norm = float(delta_x.norm().item())
+    eff_max_weight = float((1.0 / shifted).max().item())
+    eff_min_weight = float((1.0 / shifted).min().item())
+
+    rfo_info: Dict[str, Any] = {
+        "mu_rfo": mu_rfo,
+        "secular_iterations": secular_iters,
+        "step_norm": step_norm,
+        "effective_max_weight": eff_max_weight,
+        "effective_min_weight": eff_min_weight,
+    }
+
+    return delta_x, V_all, lam_all, rfo_info
+
+
 def _detect_oscillation(
     trajectory: list,
     window: int = 8,
@@ -946,27 +1034,24 @@ def _nr_step_crossover(
 # ---------------------------------------------------------------------------
 
 class _GDIISExtrapolator:
-    """Geometry DIIS for breaking optimizer oscillation cycles.
+    """Geometry DIIS (GDIIS) for accelerating geometry optimization.
 
-    Stores recent (geometry, gradient) pairs and computes an extrapolated
-    geometry that minimizes the predicted gradient norm.  GDIIS is the
-    standard fix for oscillating optimizers in computational chemistry
-    (Pulay, 1980; Csaszar & Pulay, 1984).
+    Stores recent (geometry, gradient, Newton-step) triples and computes
+    an extrapolated geometry that minimizes the predicted Newton correction.
 
-    For an oscillation with period P, a buffer of size ≥ P captures
-    the full cycle.  The DIIS equations find the linear combination of
-    stored geometries whose interpolated gradient is smallest — this is
-    typically the center of the oscillation cycle, which is much closer
-    to the true minimum.
+    True GDIIS (Schlegel 2011, Eq. 16; Csaszar & Pulay 1984) uses the
+    Newton step residuals H⁻¹g as error vectors, NOT raw gradients:
 
-    The constrained minimization problem is:
         min ||Σ cᵢ eᵢ||²   subject to Σ cᵢ = 1
-    where eᵢ is the gradient (error vector) at geometry xᵢ.
+        where eᵢ = H⁻¹gᵢ  (the Newton step at geometry xᵢ)
 
     This leads to the linear system:
         [B  1] [c]   [0]
         [1  0] [λ] = [1]
-    where Bᵢⱼ = eᵢ · eⱼ.
+    where Bᵢⱼ = eᵢ · eⱼ = (H⁻¹gᵢ)ᵀ(H⁻¹gⱼ).
+
+    Using Newton steps instead of raw gradients accounts for the
+    curvature of the PES and produces better interpolations.
     """
 
     def __init__(self, max_size: int = 8, min_size: int = 3):
@@ -974,14 +1059,30 @@ class _GDIISExtrapolator:
         self.min_size = min_size
         self.coords_history: List[torch.Tensor] = []
         self.grad_history: List[torch.Tensor] = []
+        self.step_history: List[torch.Tensor] = []
 
-    def store(self, coords_flat: torch.Tensor, grad_flat: torch.Tensor) -> None:
-        """Store a (geometry, gradient) pair."""
+    def store(
+        self,
+        coords_flat: torch.Tensor,
+        grad_flat: torch.Tensor,
+        step_flat: Optional[torch.Tensor] = None,
+    ) -> None:
+        """Store a (geometry, gradient, step) triple.
+
+        If step_flat is provided, it is used as the error vector for the
+        B matrix (true GDIIS). Otherwise, falls back to using the gradient
+        (Pulay SCF-DIIS).
+        """
         self.coords_history.append(coords_flat.detach().clone())
         self.grad_history.append(grad_flat.detach().clone())
+        self.step_history.append(
+            step_flat.detach().clone() if step_flat is not None
+            else grad_flat.detach().clone()
+        )
         if len(self.coords_history) > self.max_size:
             self.coords_history.pop(0)
             self.grad_history.pop(0)
+            self.step_history.pop(0)
 
     @property
     def n_stored(self) -> int:
@@ -1001,14 +1102,15 @@ class _GDIISExtrapolator:
         if n < self.min_size:
             return None, {"status": "insufficient_data", "n_stored": n}
 
-        device = self.grad_history[0].device
-        dtype = self.grad_history[0].dtype
+        device = self.step_history[0].device
+        dtype = self.step_history[0].dtype
 
-        # Build error matrix Bᵢⱼ = eᵢ · eⱼ
+        # Build error matrix Bᵢⱼ = eᵢ · eⱼ using Newton step residuals
+        # (true GDIIS, Schlegel 2011 Eq. 16)
         B = torch.zeros(n, n, dtype=dtype, device=device)
         for i in range(n):
             for j in range(i, n):
-                dot = torch.dot(self.grad_history[i], self.grad_history[j])
+                dot = torch.dot(self.step_history[i], self.step_history[j])
                 B[i, j] = dot
                 B[j, i] = dot
 
@@ -1068,6 +1170,7 @@ class _GDIISExtrapolator:
         """Clear all stored data."""
         self.coords_history.clear()
         self.grad_history.clear()
+        self.step_history.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -1610,6 +1713,9 @@ def run_newton_raphson(
     arc_gamma2: float = 0.5,             # σ decrease factor on very good step
     gdiis_buffer_size: int = 0,           # 0 = off; >0 = GDIIS buffer size
     gdiis_every: int = 5,                # attempt GDIIS every N steps
+    gdiis_late_force_threshold: float = 0.0,  # 0 = off; >0 = attempt GDIIS when force < threshold
+    # --- v10b Schlegel trust radius fix ---
+    schlegel_trust_update: bool = False,  # True = boundary-check growth + step-anchored shrink
 ) -> Tuple[Dict[str, Any], list]:
     """Newton-Raphson optimization to find energy minimum.
 
@@ -1700,14 +1806,15 @@ def run_newton_raphson(
     prev_neg_evecs: Optional[torch.Tensor] = None
     prev_neg_evals: Optional[torch.Tensor] = None
 
-    # --- Mode selection (priority: ARC > SPDN > crossover > shifted > LM > anneal > hard filter) ---
+    # --- Mode selection (priority: ARC > RFO > SPDN > crossover > shifted > LM > anneal > hard filter) ---
     use_arc = optimizer_mode.lower() == "arc"
-    use_spdn = (not use_arc) and optimizer_mode.lower() == "spdn"
-    use_crossover = (not use_arc) and (not use_spdn) and crossover_mu_max > 0.0
-    use_line_search = (not use_arc) and (step_control.lower() == "line_search" or use_crossover)
-    use_shifted = (not use_arc) and (not use_spdn) and (not use_crossover) and shift_epsilon > 0.0
-    use_lm = (not use_arc) and (not use_spdn) and (not use_crossover) and (not use_shifted) and lm_mu > 0.0
-    use_anneal = (not use_arc) and (not use_spdn) and (not use_crossover) and (not use_shifted) and (not use_lm) and anneal_force_threshold > 0.0
+    use_rfo = (not use_arc) and optimizer_mode.lower() == "rfo"
+    use_spdn = (not use_arc) and (not use_rfo) and optimizer_mode.lower() == "spdn"
+    use_crossover = (not use_arc) and (not use_rfo) and (not use_spdn) and crossover_mu_max > 0.0
+    use_line_search = (not use_arc) and (not use_rfo) and (step_control.lower() == "line_search" or use_crossover)
+    use_shifted = (not use_arc) and (not use_rfo) and (not use_spdn) and (not use_crossover) and shift_epsilon > 0.0
+    use_lm = (not use_arc) and (not use_rfo) and (not use_spdn) and (not use_crossover) and (not use_shifted) and lm_mu > 0.0
+    use_anneal = (not use_arc) and (not use_rfo) and (not use_spdn) and (not use_crossover) and (not use_shifted) and (not use_lm) and anneal_force_threshold > 0.0
     in_cleanup_phase = False
 
     # Effective LM mu (may be annealed)
@@ -1965,19 +2072,17 @@ def run_newton_raphson(
                 result_dict["final_arc_sigma"] = arc_sigma
                 result_dict["arc_gdiis_attempts"] = arc_gdiis_attempts
                 result_dict["arc_gdiis_accepts"] = arc_gdiis_accepts
+            if use_rfo:
+                result_dict["optimizer_mode"] = "rfo"
             return result_dict, trajectory
 
         # ---------------------------------------------------------------
         # v5 SPDN: GDIIS extrapolation attempt
         # ---------------------------------------------------------------
         if use_spdn and gdiis is not None:
-            # Build projected gradient for GDIIS storage
-            grad_for_diis = -forces.reshape(-1)
-            if project_gradient_and_v:
-                grad_for_diis = -project_vector_to_vibrational_torch(
-                    forces.reshape(-1), coords, atomsymbols,
-                )
-            gdiis.store(coords.reshape(-1), grad_for_diis)
+            # Note: GDIIS storage is deferred to after step-building so we can
+            # store the Newton step vector (true GDIIS, Schlegel 2011 Eq. 16).
+            # Extrapolation uses data from PREVIOUS iterations only.
 
             # Attempt extrapolation every spdn_diis_every steps
             if (step > 0
@@ -2180,6 +2285,10 @@ def run_newton_raphson(
             )
             step_record["step_mode"] = "arc"
             step_record["arc_info"] = arc_step_info
+        elif use_rfo:
+            delta_x, V, lam, rfo_info = _nr_step_rfo(grad, V_all, lam_all)
+            step_record["step_mode"] = "rfo"
+            step_record["rfo_info"] = rfo_info
         elif use_spdn:
             delta_x, V, lam, spdn_step_info = _nr_step_spectral_partitioned(
                 grad, V_all, lam_all, spdn_tau_hard, spdn_tau_soft,
@@ -2234,6 +2343,16 @@ def run_newton_raphson(
             prev_coords_flat = coords.reshape(-1).clone()
 
         step_disp = delta_x.reshape(-1, 3)
+
+        # Deferred GDIIS storage: store (coords, grad, step) AFTER step-building
+        # so we have the Newton step vector for true GDIIS (Schlegel 2011 Eq. 16).
+        if use_spdn and gdiis is not None:
+            grad_for_diis = -forces.reshape(-1)
+            if project_gradient_and_v:
+                grad_for_diis = -project_vector_to_vibrational_torch(
+                    forces.reshape(-1), coords, atomsymbols,
+                )
+            gdiis.store(coords.reshape(-1), grad_for_diis, delta_x.clone())
 
         if use_arc:
             # ---------------------------------------------------------------
@@ -2294,14 +2413,20 @@ def run_newton_raphson(
                 "step_norm_capped": step_norm_arc,
             })
 
-            # v10: GDIIS acceleration (oscillation breaking)
+            # v10: GDIIS acceleration (oscillation breaking + late-stage)
             if arc_gdiis is not None:
-                arc_gdiis.store(coords.reshape(-1), grad.clone())
+                arc_gdiis.store(coords.reshape(-1), grad.clone(), delta_x.clone())
 
+                # Trigger GDIIS on oscillation OR late-stage (force below threshold)
+                _oscillating = _detect_oscillation(trajectory, window=gdiis_buffer_size)
+                _late_stage = (
+                    gdiis_late_force_threshold > 0
+                    and force_norm < gdiis_late_force_threshold
+                )
                 if (step > 0
                         and step % gdiis_every == 0
                         and arc_gdiis.can_extrapolate()
-                        and _detect_oscillation(trajectory, window=gdiis_buffer_size)):
+                        and (_oscillating or _late_stage)):
                     arc_gdiis_attempts += 1
                     diis_coords_flat, diis_info = arc_gdiis.extrapolate()
                     step_record["arc_gdiis_info"] = diis_info
@@ -2429,6 +2554,9 @@ def run_newton_raphson(
                 energy_new = _to_float(out_new["energy"])
                 actual_dE = energy_new - energy
 
+                # Actual step norm (max per-atom displacement)
+                step_max_disp = float(capped_disp.reshape(-1, 3).norm(dim=1).max().item())
+
                 # Accept if energy decreased (allow tiny numerical noise)
                 if actual_dE <= 1e-5:
                     accepted = True
@@ -2436,25 +2564,39 @@ def run_newton_raphson(
                     # Update trust radius based on rho
                     rho = actual_dE / pred_dE if pred_dE < -1e-8 else 0.0
 
-                    if rho > 0.75:
-                        current_trust_radius = min(current_trust_radius * 1.5, max_atom_disp)
-                    elif rho < 0.25:
-                        current_trust_radius = max(current_trust_radius * 0.5, trust_radius_floor)
-                    elif rho < 0.0:
-                        # v4: softer shrink in near-zero eigenvalue regime (ρ unreliable)
-                        if aggressive_trust_recovery and abs(min_vib_eval) < 0.01:
+                    if schlegel_trust_update:
+                        # Schlegel (2011): only grow if step was near boundary
+                        if rho > 0.75 and step_max_disp >= 0.8 * radius_used_for_step:
+                            current_trust_radius = min(current_trust_radius * 1.5, max_atom_disp)
+                        elif rho < 0.25:
+                            # Shrink to fraction of actual step, not fraction of radius
+                            current_trust_radius = max(0.25 * step_max_disp, trust_radius_floor)
+                        elif rho < 0.0:
+                            current_trust_radius = max(0.25 * step_max_disp, trust_radius_floor)
+                    else:
+                        if rho > 0.75:
+                            current_trust_radius = min(current_trust_radius * 1.5, max_atom_disp)
+                        elif rho < 0.25:
                             current_trust_radius = max(current_trust_radius * 0.5, trust_radius_floor)
-                        else:
-                            current_trust_radius = max(current_trust_radius * 0.25, trust_radius_floor)
+                        elif rho < 0.0:
+                            # v4: softer shrink in near-zero eigenvalue regime (ρ unreliable)
+                            if aggressive_trust_recovery and abs(min_vib_eval) < 0.01:
+                                current_trust_radius = max(current_trust_radius * 0.5, trust_radius_floor)
+                            else:
+                                current_trust_radius = max(current_trust_radius * 0.25, trust_radius_floor)
 
                     coords = new_coords.detach()
                     out = out_new
                 else:
-                    # v4: softer shrink on rejection in near-zero eigenvalue regime
-                    if aggressive_trust_recovery and abs(min_vib_eval) < 0.01:
-                        current_trust_radius = max(current_trust_radius * 0.5, trust_radius_floor)
+                    if schlegel_trust_update:
+                        # Schlegel: shrink to fraction of actual step
+                        current_trust_radius = max(0.25 * step_max_disp, trust_radius_floor)
                     else:
-                        current_trust_radius = max(current_trust_radius * 0.25, trust_radius_floor)
+                        # v4: softer shrink on rejection in near-zero eigenvalue regime
+                        if aggressive_trust_recovery and abs(min_vib_eval) < 0.01:
+                            current_trust_radius = max(current_trust_radius * 0.5, trust_radius_floor)
+                        else:
+                            current_trust_radius = max(current_trust_radius * 0.25, trust_radius_floor)
                     retries += 1
 
             if not accepted:
@@ -2548,4 +2690,6 @@ def run_newton_raphson(
         timeout_result["final_arc_sigma"] = arc_sigma
         timeout_result["arc_gdiis_attempts"] = arc_gdiis_attempts
         timeout_result["arc_gdiis_accepts"] = arc_gdiis_accepts
+    if use_rfo:
+        timeout_result["optimizer_mode"] = "rfo"
     return timeout_result, trajectory

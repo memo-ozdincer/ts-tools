@@ -1,0 +1,1133 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{mathtools}
+\usepackage{bm}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{hyperref}
+\usepackage[margin=1in]{geometry}
+\usepackage{enumitem}
+\usepackage{natbib}
+\usepackage{xcolor}
+
+\newcommand{\vect}[1]{\bm{#1}}
+\newcommand{\mat}[1]{\mathbf{#1}}
+\newcommand{\RR}{\mathbb{R}}
+\newcommand{\norm}[1]{\lVert #1 \rVert}
+\newcommand{\abs}[1]{\lvert #1 \rvert}
+\newcommand{\dd}{\mathrm{d}}
+
+\theoremstyle{definition}
+\newtheorem{remark}{Remark}
+
+\title{Literature Review and Experimental Synthesis:\\
+  Newton--Raphson Minimization on the DFTB0 PES\\
+  from Displaced Transition-State Geometries}
+\author{M.\ Dincer}
+\date{March 2026 --- v10b}
+
+\begin{document}
+\maketitle
+
+\tableofcontents
+\newpage
+
+%=============================================================================
+\section{Introduction}
+\label{sec:intro}
+%=============================================================================
+
+This document synthesizes insights from two rounds of literature review
+(approximately 20 papers) and maps them explicitly to our experimental
+findings from versions~1 through~10 of the minimization code.
+The goal is to create a permanent, self-contained record of:
+\begin{enumerate}[nosep]
+  \item what the literature says about our problem class,
+  \item what we implemented and why,
+  \item what we explicitly chose \emph{not} to implement and why,
+  \item what remains open.
+\end{enumerate}
+
+\subsection{Problem Statement}
+
+Given a molecule at a geometry displaced by $d \in \{0.5, 1.0, 1.5, 2.0\}$\,\AA\
+from a known energy minimum, find the nearest local minimum on the DFTB0
+potential energy surface (PES).
+\begin{itemize}[nosep]
+  \item \textbf{Dataset}: Transition1x~\citep{transition1x} --- 10,073 organic
+    reactions, $\leq 7$ heavy atoms, NEB reaction paths computed at
+    $\omega$B97x/6-31G(d).
+  \item \textbf{Calculator}: DFTB0 via SCINE/Sparrow (analytical Hessian, no
+    configuration).
+  \item \textbf{Optimizer}: Newton--Raphson in Cartesian coordinates with full
+    Hessian at every step, Eckart projection to $3N{-}6$ vibrational modes.
+  \item \textbf{Convergence}: $\norm{\vect{f}}_\infty < 10^{-4}$\,eV/\AA\
+    AND either (strict) $n_\text{neg} = 0$ or (relaxed) $\lambda_\text{min}
+    \geq -\tau_\text{relax}$.
+  \item \textbf{Scale}: 287--300 samples per configuration, 10\,000 maximum
+    steps.
+\end{itemize}
+
+The central experimental finding, established across versions~6--9 (Section~\ref{sec:experiments}), is:
+\begin{center}
+\fbox{\parbox{0.85\textwidth}{%
+  \textbf{Strict convergence} ($n_\text{neg}=0$) drops from $\sim$79\% at
+  0.5\,\AA\ to $\sim$20\% at 2.0\,\AA.\
+  \textbf{Relaxed convergence} ($\lambda_\text{min} \geq -0.01$) is
+  $\sim$90\% at \emph{all} noise levels.
+  The performance cliff is a \emph{criterion problem}, not an optimizer
+  problem.%
+}}
+\end{center}
+
+Furthermore, the user has demonstrated that 100\% convergence is achievable
+via brute-force ``v2-kicking'' (repeatedly perturbing and re-optimizing),
+confirming the optimizer can reach valid minima given enough restarts.
+
+%=============================================================================
+\section{Theoretical Framework}
+\label{sec:theory}
+%=============================================================================
+
+\subsection{Newton--Raphson as Spectral Decomposition}
+\label{sec:nr-spectral}
+
+Given energy $E(\vect{x})$, gradient $\vect{g} = \nabla E$, and Hessian
+$\mat{H} = \nabla^2 E$, the Newton step is
+\begin{equation}
+  \Delta\vect{x} = -\mat{H}^{-1}\vect{g}.
+\end{equation}
+After Eckart projection to the vibrational subspace ($3N{-}6$ modes), we
+decompose $\mat{H}_\text{vib} = \mat{V}\mat{\Lambda}\mat{V}^\top$ with
+eigenvalues $\{\lambda_i\}$ and eigenvectors $\{\vect{v}_i\}$:
+\begin{equation}
+  \Delta\vect{x} = -\sum_{i=1}^{3N-6} w_i \, (\vect{g}\cdot\vect{v}_i) \, \vect{v}_i,
+  \qquad w_i = \frac{1}{\lambda_i}.
+  \label{eq:spectral-step}
+\end{equation}
+When $\mat{H}$ has negative eigenvalues (which occurs $\sim$100\% of the time at our
+displacements, with median $n_\text{neg} \approx 12$), the pure Newton step
+ascends along negative-eigenvalue directions.  All step builders below modify
+the weights $w_i$ to force descent.
+
+\subsection{Our Method = GQT (Goldfeld--Quandt--Trotter)}
+\label{sec:gqt}
+
+Our ``shifted Newton'' step (v3 onwards, best performer) sets:
+\begin{equation}
+  w_i = \frac{1}{\lambda_i + \sigma}, \qquad
+  \sigma = \max(0, -\lambda_\text{min}) + \varepsilon,
+  \label{eq:shifted-newton}
+\end{equation}
+with $\varepsilon = 10^{-3}$ (empirically optimal).
+This is the spectral form of the \textbf{GQT method}
+(Goldfeld--Quandt--Trotter, 1966), which solves the trust-region subproblem
+\begin{equation}
+  \min_{\vect{s}} \; \vect{g}^\top\vect{s} + \tfrac{1}{2}\vect{s}^\top\mat{H}\vect{s}
+  \quad\text{s.t.}\quad \norm{\vect{s}} \leq \Delta.
+\end{equation}
+The shift $\sigma$ is the Lagrange multiplier.  Our fixed
+$\varepsilon$ approximates the optimal $\sigma$ for a particular trust radius.
+
+\textbf{Key property}: Negative modes get \emph{larger} weights than
+equal-magnitude positive modes.  Example: $\lambda = -0.01$,
+$\sigma = 0.011$ $\Rightarrow$ $w = 1000$; $\lambda = +0.01$,
+$\sigma = 0.011$ $\Rightarrow$ $w \approx 48$.  This amplification of
+negative modes drives the optimizer toward flipping them---exactly the right
+behaviour for escaping saddle regions.
+
+\textbf{Complexity}: GQT has worst-case complexity
+$O(\varepsilon^{-5/2})$~\citep{cgt-optimal}, suboptimal compared to ARC's
+$O(\varepsilon^{-3/2})$.
+
+\subsection{ARC (Adaptive Regularization with Cubics)}
+\label{sec:arc}
+
+ARC~\citep{arc-part1} replaces both the trust region and the shift with a
+cubic regularization term:
+\begin{equation}
+  \min_{\vect{s}} \; m_k(\vect{s}) = E_k + \vect{g}_k^\top\vect{s}
+    + \tfrac{1}{2}\vect{s}^\top\mat{H}_k\vect{s}
+    + \tfrac{\sigma_k}{3}\norm{\vect{s}}^3.
+  \label{eq:arc-model}
+\end{equation}
+The minimizer satisfies $(\mat{H}_k + \lambda^*\mat{I})\vect{s}^* = -\vect{g}_k$
+where $\lambda^* = \sigma_k\norm{\vect{s}^*}$.  In the spectral basis, the
+\textbf{secular equation} becomes:
+\begin{equation}
+  \sigma \norm{\vect{s}(\lambda)} = \lambda,
+  \qquad
+  \norm{\vect{s}(\lambda)}^2 = \sum_i \frac{c_i^2}{(\lambda_i + \lambda)^2},
+  \label{eq:arc-secular}
+\end{equation}
+where $c_i = \vect{g}\cdot\vect{v}_i$.  We solve~\eqref{eq:arc-secular}
+via safeguarded Newton iteration.
+
+\textbf{$\sigma$-adaptation}: After each step, compute the quality ratio
+\begin{equation}
+  \rho_k = \frac{E(\vect{x}_k) - E(\vect{x}_k + \vect{s}_k)}{m_k(\vect{0}) - m_k(\vect{s}_k)}.
+\end{equation}
+Update:
+\begin{equation}
+  \sigma_{k+1} = \begin{cases}
+    \sigma_k \cdot \gamma_2 & \text{if } \rho_k > \eta_2 \text{ (very successful)},\\
+    \sigma_k & \text{if } \eta_1 \leq \rho_k \leq \eta_2 \text{ (successful)},\\
+    \sigma_k \cdot \gamma_1 & \text{if } \rho_k < \eta_1 \text{ (unsuccessful)}.
+  \end{cases}
+\end{equation}
+Default: $\eta_1=0.1$, $\eta_2=0.9$, $\gamma_1=2.0$, $\gamma_2=0.5$.
+This is \textbf{self-regulating}: no trust radius, no floor, no collapse
+spiral.
+
+\textbf{Complexity}: $O(\varepsilon^{-3/2})$---\textbf{optimal} among
+second-order methods~\citep{cgt-optimal}.
+
+\textbf{Implementation}: \texttt{\_nr\_step\_arc()} in
+\texttt{minimization.py}, with the secular equation solved iteratively
+(lines~700--780).  The ARC step-size control (lines~2350--2450) replaces the
+trust region entirely.
+
+\subsection{RFO (Rational Function Optimization)}
+\label{sec:rfo}
+
+RFO~\citep{schlegel2011} uses the augmented Hessian eigenvalue problem:
+\begin{equation}
+  \begin{pmatrix} \mat{H} & \vect{g} \\ \vect{g}^\top & 0 \end{pmatrix}
+  \begin{pmatrix} \vect{s} \\ 1 \end{pmatrix}
+  = \mu \begin{pmatrix} \vect{s} \\ 1 \end{pmatrix}.
+  \label{eq:rfo-augmented}
+\end{equation}
+For minimization, take the \textbf{lowest eigenvalue} $\mu$.  In the spectral
+basis of $\mat{H}$, this yields the secular equation:
+\begin{equation}
+  \sum_i \frac{c_i^2}{\lambda_i - \mu} + \mu = 0,
+  \qquad \mu < \lambda_\text{min}.
+  \label{eq:rfo-secular}
+\end{equation}
+The step is then:
+\begin{equation}
+  s_i = \frac{-c_i}{\lambda_i - \mu},
+  \label{eq:rfo-step}
+\end{equation}
+which is equivalent to shifted Newton with a \emph{data-dependent} shift
+$\sigma = -\mu$.
+
+\textbf{Advantages over fixed-$\varepsilon$ GQT}:
+\begin{itemize}[nosep]
+  \item Automatic shift determination---no hyperparameter $\varepsilon$.
+  \item The shift adapts to the local Hessian spectrum.
+  \item Standard in Gaussian, ORCA, and Sella~\citep{sella}.
+\end{itemize}
+
+\textbf{Implementation}: \texttt{\_solve\_rfo\_secular()} and
+\texttt{\_nr\_step\_rfo()} in \texttt{minimization.py}.  RFO uses the same
+trust-region step-size control as the v9 baseline.
+
+\subsection{LM$\leftrightarrow$Cubic Equivalence}
+\label{sec:lm-cubic}
+
+Benson and Shanno~\citep{benson-shanno} prove that any
+Levenberg--Marquardt step $(\mat{H}+\lambda\mat{I})\vect{s}=-\vect{g}$ is
+equivalent to cubic regularization with $M = 2\lambda/\norm{\vect{s}}$.
+Conversely, our fixed $\varepsilon = 10^{-3}$ implies variable cubic
+strength depending on the step norm:
+\begin{equation}
+  M_\text{implicit} = \frac{2\varepsilon}{\norm{\vect{s}}}.
+\end{equation}
+This means our shifted Newton is \emph{already doing implicit cubic
+regularization}, but with a strength that varies inversely with step norm
+rather than being controlled via $\rho$.
+
+\subsection{The $\varepsilon^{1/2}$ Second-Order Theorem}
+\label{sec:eps-half}
+
+Boumal et al.~\citep{boumal-arc-manifolds} prove that when an ARC-type
+method drives $\norm{\vect{g}} \leq \varepsilon$, it simultaneously
+guarantees:
+\begin{equation}
+  \lambda_\text{min}(\mat{H}) \geq -\sqrt{\varepsilon}.
+  \label{eq:eps-half}
+\end{equation}
+With our force convergence threshold $\varepsilon = 10^{-4}$\,eV/\AA:
+\begin{equation}
+  \sqrt{10^{-4}} = 0.01.
+\end{equation}
+This is \textbf{exactly our empirically optimal relaxed threshold}.
+The cascade data (Table~\ref{tab:cascade}) confirms: the convergence rate
+plateaus at $\lambda_\text{min} \geq -0.01$, with $\sim$90\% at all noise
+levels.  This is not empirical coincidence---it is the theoretical prediction.
+
+\begin{remark}
+  This result provides principled justification for relaxed convergence.
+  Demanding $n_\text{neg}=0$ is \emph{more strict} than what the optimization
+  theory guarantees.  If the optimizer has driven forces below $10^{-4}$\,eV/\AA,
+  eigenvalues in $[-0.01, 0)$ are \emph{expected} and acceptable.
+\end{remark}
+
+%=============================================================================
+\section{Step-Size Control}
+\label{sec:step-control}
+%=============================================================================
+
+\subsection{Trust Region}
+\label{sec:trust-region}
+
+The trust region caps the step to $\norm{\Delta\vect{x}}_\infty \leq \Delta$
+(per-atom maximum displacement, using infinity norm~\citep{sella}).  After the
+step, compute:
+\begin{equation}
+  \rho = \frac{E(\vect{x}) - E(\vect{x}+\vect{s})}{m(\vect{0}) - m(\vect{s})}.
+\end{equation}
+
+\subsubsection{Original Rules (v1--v9)}
+\begin{align}
+  \rho > 0.75 &\implies \Delta \gets \min(1.5\Delta, \Delta_\text{max}), \\
+  \rho < 0.25 &\implies \Delta \gets \max(0.5\Delta, \Delta_\text{floor}), \\
+  \rho < 0    &\implies \Delta \gets \max(0.25\Delta, \Delta_\text{floor}).
+\end{align}
+With $\Delta_\text{max} = 1.3$\,\AA\ and $\Delta_\text{floor} = 0.01$\,\AA.
+
+\subsubsection{Schlegel (2011) Corrections}
+\label{sec:schlegel-tr}
+
+Schlegel's review~\citep{schlegel2011} identifies two problems with standard
+rules:
+
+\paragraph{Growth condition.}
+Growing the trust radius when $\rho > 0.75$ but the step is far from the
+boundary ($\norm{\vect{s}} \ll \Delta$) is pointless and can cause
+instability.  The corrected rule:
+\begin{equation}
+  \text{Grow only if } \rho > 0.75 \text{ AND }
+  \norm{\vect{s}}_\infty \geq 0.8\,\Delta.
+  \label{eq:schlegel-grow}
+\end{equation}
+
+\paragraph{Shrink formula.}
+Shrinking to a fraction of $\Delta$ (the radius) ignores the actual step
+taken.  If the step was much smaller than $\Delta$ and still bad, shrinking
+$\Delta$ doesn't help.  The corrected rule:
+\begin{equation}
+  \Delta \gets \max(0.25\,\norm{\vect{s}}_\infty, \, \Delta_\text{floor}).
+  \label{eq:schlegel-shrink}
+\end{equation}
+
+\textbf{Implementation}: Gated by \texttt{schlegel\_trust\_update=True}
+parameter (v10b).  The flag ensures backward compatibility.
+
+\subsection{ARC $\sigma$-Adaptation}
+\label{sec:arc-sigma}
+
+ARC replaces the trust region entirely (Section~\ref{sec:arc}).  The
+regularization parameter $\sigma$ controls effective step size: large $\sigma$
+$\Rightarrow$ short, cautious steps; small $\sigma$ $\Rightarrow$ long,
+aggressive steps.  There is no radius floor, so the collapse spiral
+(Section~\ref{sec:collapse}) cannot occur.
+
+\subsection{Line Search}
+\label{sec:line-search}
+
+Armijo backtracking: $E(\vect{x}+\alpha\vect{d}) \leq E(\vect{x}) + c_1
+\alpha\, \vect{g}^\top\vect{d}$ with $c_1=10^{-4}$.
+
+\textbf{v7 result}: Line search is \emph{uniformly worse} than trust region
+at all noise levels (Table~\ref{tab:v7}).  Reason: line search commits to the
+Newton direction $\vect{d}$, but at large displacement, this direction has
+cosine similarity $\sim$0.03--0.11 with the true direction
+(Table~\ref{tab:direction-quality}).  Trust region limits damage to $\Delta$;
+line search amplifies the wrong direction.
+
+\subsection{Trust Radius Collapse Mechanism}
+\label{sec:collapse}
+
+The dominant failure mode (identified in v6 analysis):
+\begin{enumerate}[nosep]
+  \item Shifted Newton weight $w_i = 1/(\lambda_i+\sigma)$, max = $1/\varepsilon = 1000\times$.
+  \item Near-zero eigenvalue modes get amplified $1000\times$, producing oversized steps.
+  \item Oversized step violates quadratic model: $\rho < 0.25$ $\Rightarrow$ $\Delta \gets 0.25\Delta$.
+  \item After $\sim$4 bad steps: $1.3 \to 0.33 \to 0.08 \to 0.02 \to 0.01$\,\AA\ (floor).
+  \item At floor, all modes scaled uniformly. Neg-mode displacement $\approx 5\times10^{-4}$\,\AA/step.
+  \item Recovery needs $\sim$13 consecutive good steps. But eigenvalues oscillate $\Rightarrow$ never happens.
+\end{enumerate}
+
+This is why ARC and RFO are promising: they control regularization
+\emph{continuously} without a hard floor.
+
+%=============================================================================
+\section{GDIIS Theory and Implementation}
+\label{sec:gdiis}
+%=============================================================================
+
+\subsection{Pulay's DIIS for SCF vs.\ Cs\'asz\'ar--Pulay's GDIIS}
+
+\textbf{DIIS} (Direct Inversion in the Iterative Subspace)~\citep{pulay-diis}
+was developed for SCF convergence: find coefficients $\{c_i\}$ with
+$\sum c_i = 1$ minimizing $\norm{\sum c_i \vect{e}_i}^2$ where $\vect{e}_i$
+are error vectors.  The interpolated solution is $\vect{x}_\text{DIIS} =
+\sum c_i \vect{x}_i$.
+
+\textbf{GDIIS}~\citep{gdiis-csaszar-pulay} extends this to geometry
+optimization.  The key difference is the error vectors.
+
+\subsection{Schlegel's Correct Formulation}
+
+Schlegel~\citep{schlegel2011} specifies (Eq.~16) that the error vectors
+for GDIIS should be the \emph{Newton step residuals} $\mat{H}^{-1}\vect{g}_i$
+(or equivalently, the Newton step vectors), not the raw gradients:
+\begin{equation}
+  B_{ij} = (\mat{H}^{-1}\vect{g}_i)^\top (\mat{H}^{-1}\vect{g}_j).
+  \label{eq:gdiis-B}
+\end{equation}
+Solve $\mat{B}\vect{c} = \vect{0}$ subject to $\sum c_i = 1$ via the
+constrained system:
+\begin{equation}
+  \begin{pmatrix} \mat{B} & \vect{1} \\ \vect{1}^\top & 0 \end{pmatrix}
+  \begin{pmatrix} \vect{c} \\ \lambda \end{pmatrix}
+  = \begin{pmatrix} \vect{0} \\ 1 \end{pmatrix}.
+  \label{eq:gdiis-system}
+\end{equation}
+The interpolated geometry is $\vect{x}_\text{GDIIS} = \sum c_i \vect{x}_i$.
+
+\subsection{Our Bug: Gradient-Based Error Vectors}
+
+Our original \texttt{\_GDIISExtrapolator} (v5/v10 initial implementation)
+used \emph{raw gradients} $\vect{g}_i$ as error vectors:
+$B_{ij} = \vect{g}_i^\top\vect{g}_j$.  This is Pulay's \emph{SCF-DIIS}
+formulation, not geometry-optimization GDIIS.  The difference matters because:
+\begin{itemize}[nosep]
+  \item Raw gradient dot products ignore the Hessian spectrum: two points
+    with parallel gradients but different curvatures get the same B-matrix
+    entry.
+  \item Newton step dot products incorporate curvature: high-curvature modes
+    are de-emphasized, low-curvature modes amplified.
+\end{itemize}
+
+\textbf{Fix (v10b)}: Modified \texttt{store()} to accept the Newton step
+vector; B-matrix now uses step dot products per~\eqref{eq:gdiis-B}.
+Backward-compatible: if step not provided, falls back to gradient.
+
+\subsection{GEDIIS (Li--Frisch, 2006)}
+\label{sec:gediis}
+
+GEDIIS~\citep{li-frisch-gediis} is an energy-based DIIS variant that
+interpolates geometries to minimize \emph{energy} rather than error norm.
+Hybrid GEDIIS/GDIIS switches based on convergence stage.
+We did not implement GEDIIS but note it as a possible future extension.
+
+\subsection{Late-Stage Acceleration}
+\label{sec:gdiis-late}
+
+Schlegel~\citep{schlegel2011} describes GDIIS as routinely accelerating
+\emph{final convergence}, not just breaking oscillations.
+Our v10 implementation only triggered GDIIS on oscillation detection.
+
+\textbf{v10b addition}: New parameter \texttt{gdiis\_late\_force\_threshold}
+(default 0).  When \texttt{force\_norm < threshold}, GDIIS is attempted every
+\texttt{gdiis\_every} steps regardless of oscillation.  This implements
+Schlegel's recommendation.
+
+%=============================================================================
+\section{Ghost Modes and Convergence Criteria}
+\label{sec:ghost-modes}
+%=============================================================================
+
+\subsection{Eckart Projection}
+
+Eckart projection removes 6 translation/rotation modes from the $3N$-dimensional
+Hessian, yielding $3N{-}6$ vibrational modes.  The projection is
+\emph{exact only at a stationary point}.  Away from equilibrium,
+rotation--vibration coupling leaks into the vibrational subspace,
+creating small spurious eigenvalues.
+
+Implementation: \texttt{get\_vib\_evals\_evecs()} from
+\texttt{multi\_mode\_eckartmw.py}, with optional \texttt{purify\_hessian}
+symmetrization (found unhelpful in practice).
+
+\subsection{ORCA Acoustic Sum Rule}
+
+The ORCA manual~\citep{orca-manual} explicitly mentions an ``acoustic sum rule''
+toggle to reduce noise-induced imaginary frequencies---the same phenomenon.
+This confirms ghost modes are a known numerical artifact, not a deficiency of
+our code.
+
+\subsection{Morse--Bott Theory}
+\label{sec:morse-bott}
+
+Luo et al.~\citep{convergence-degenerate} analyze convergence near degenerate
+critical points (eigenvalue zero) using Morse--Bott theory.  Key result:
+\begin{quote}
+  Near-zero eigenvalues on critical manifolds are \emph{neutral} for
+  convergence.  The gradient component in zero-eigenvalue directions is
+  $O(r^2)$ where $r$ is distance to the manifold.
+\end{quote}
+This directly explains why ghost eigenvalues in $[-10^{-4}, 0)$ do not
+prevent force convergence.  The optimizer converges in the non-degenerate
+(vibrational) subspace; the degenerate (ghost) subspace produces tiny,
+ignorable gradient contributions.
+
+\subsection{The $n_\text{neg}=0$ Criterion is Inappropriate}
+\label{sec:nneg-inappropriate}
+
+Three lines of evidence converge:
+\begin{enumerate}[nosep]
+  \item \textbf{Theoretical}: The $\varepsilon^{1/2}$ theorem
+    (Section~\ref{sec:eps-half}) predicts eigenvalues in $[-0.01, 0)$ are
+    acceptable when $\norm{\vect{g}} \leq 10^{-4}$.
+  \item \textbf{Numerical}: Ghost modes from Eckart projection artifacts
+    populate the $[-10^{-4}, 0)$ band.
+  \item \textbf{Cross-surface}: At DFT-labeled minima, 90\% have $n_\text{neg}>0$
+    under DFTB0, with \emph{strongly negative} eigenvalues ($<-0.01$).  These
+    are genuine PES disagreements between theory levels, not optimizer failures.
+\end{enumerate}
+
+The cascade evaluation (Table~\ref{tab:cascade}) quantifies the effect:
+the gap between strict ($n_\text{neg}=0$) and relaxed ($\lambda_\text{min}
+\geq -0.01$) grows from 18 percentage points at 0.5\,\AA\ to 73 points at
+2.0\,\AA.
+
+\subsection{Saddle Point Convergence ($n_\text{neg}=1$)}
+
+For mode-following, GAD (Gentlest Ascent Dynamics), or saddle-point search
+methods, the convergence criterion would be $n_\text{neg}=1$ (first-order
+saddle point).  Our codebase is currently minimization-only, but the
+classification infrastructure (\texttt{cascade\_at\_convergence}) already
+supports arbitrary eigenvalue counting.
+
+%=============================================================================
+\section{Literature Confirmations of Experimental Findings}
+\label{sec:confirmations}
+%=============================================================================
+
+\begin{longtable}{p{0.35\textwidth}p{0.6\textwidth}}
+\toprule
+\textbf{Our Result} & \textbf{Literature Explanation} \\
+\midrule
+\endhead
+
+iHiSD crossover hurts (v8: pure SN 43.3\% $\to$ cm=2.0 only 15.9\%)
+& Su et al.~\citep{ihisd}: iHiSD assumes gradient alignment tendency near
+  saddle points.  Our data shows cosine similarity 0.03--0.11 at
+  0.5--2.0\,\AA\ displacement (Table~\ref{tab:direction-quality}).
+  We are outside the theory's applicability regime. \\
+
+First-order methods fail (PIC-ARC: 0\%)
+& Packwood~\citep{packwood2018}: even approximate curvature dramatically
+  outperforms gradients alone in nonconvex landscapes.
+  Cartis et al.~\citep{cgt-complexity}: Newton can be as slow as steepest
+  descent in worst case, but SD can never be faster than regularized Newton. \\
+
+SPDN weight cap catastrophic (v5: 0\%)
+& Capping weights at $1/\tau_\text{hard} = 100$ discards curvature
+  information.  Packwood shows the exact Hessian can be \emph{worse} than a
+  ``cleaned-up'' version---but cleaning up means enforcing positive
+  definiteness, not capping.  Different operation entirely. \\
+
+LM damping inferior (v2)
+& LM shifts \emph{all} eigenvalues uniformly by $\mu$:
+  $w_i = |\lambda_i|/(\lambda_i^2+\mu^2)$.  Shifted Newton targets
+  only the problematic modes via $\sigma = \max(0,-\lambda_\text{min})+\varepsilon$.
+  LM over-regularizes positive eigenvalues. \\
+
+Line search $\prec$ trust region (v7)
+& Standard theory: line search requires a descent direction.  Our Newton
+  direction is poor at large displacement.  TR limits damage; LS commits to
+  the direction~\citep{schlegel2011,cgt-optimal}. \\
+
+\bottomrule
+\end{longtable}
+
+%=============================================================================
+\section{Dataset and Calculator Considerations}
+\label{sec:dataset}
+%=============================================================================
+
+\subsection{Transition1x Dataset}
+\label{sec:transition1x}
+
+Transition1x~\citep{transition1x} provides 10,073 organic reactions:
+\begin{itemize}[nosep]
+  \item NEB paths at $\omega$B97X-D3/def2-TZVP (some at $\omega$B97x/6-31G(d)).
+  \item Endpoints labeled as ``reactant'' and ``product'' minima.
+  \item Transition states verified by single imaginary frequency.
+  \item Maximum 7 heavy atoms, 23 total atoms.
+\end{itemize}
+
+\textbf{Critical insight}: The dataset performs \emph{no frequency checks on
+minima}---only force convergence to 0.01\,eV/\AA.  This means:
+\begin{enumerate}[nosep]
+  \item Some ``minima'' may be saddle points at the original DFT level.
+  \item The 0.01\,eV/\AA\ force threshold is $100\times$ our convergence
+    criterion.
+  \item These endpoints are then used as references for evaluating our
+    DFTB0 optimizer.
+\end{enumerate}
+Approximately 16\% of NEB reactions failed and were discarded from the
+dataset.
+
+\subsection{Level-of-Theory Mismatch}
+
+Three levels of theory are involved:
+\begin{center}
+  $\omega$B97X-D3/def2-TZVP \quad$\xrightarrow{\text{NEB}}$\quad
+  $\omega$B97x/6-31G(d) \quad$\xrightarrow{\text{our optimizer}}$\quad
+  DFTB0
+\end{center}
+Each transition changes the PES.  A minimum at one level may not be a minimum
+at another.  Our forensic analysis (Section~\ref{sec:dftb0-forensics})
+quantifies this.
+
+\subsection{DFTB0 Surface Forensics}
+\label{sec:dftb0-forensics}
+
+At DFT-labeled reactant minima, under DFTB0:
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Metric & Value \\
+\midrule
+Fraction with $n_\text{neg}=0$ & \textbf{10\%} \\
+Median $n_\text{neg}$ & 2 \\
+Median force at ``minimum'' & 1.39\,eV/\AA \\
+Negative eigenvalue band $\lambda < -0.1$ & 0.90 modes/molecule \\
+Negative eigenvalue band $-0.1 \leq \lambda < -0.01$ & 0.63 modes/molecule \\
+Ghost band $\lambda \in [-10^{-3}, 0)$ & 0.08 modes/molecule \\
+Condition number $\kappa$ & $\sim 10^{3.2}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The strongly negative eigenvalues ($<-0.01$) confirm genuine PES disagreements
+between DFT and DFTB0---these are \emph{not} numerical ghosts.  The ghost band
+is nearly empty at actual minima but populated at displaced geometries.
+
+\subsection{SCINE/Sparrow Calculator}
+
+SCINE/Sparrow provides:
+\begin{itemize}[nosep]
+  \item Zero-configuration DFTB0 (no parameters to set).
+  \item Analytical Hessian (not finite difference).
+  \item Hessian noise floor: estimated $\sim 8\times10^{-3}$ from the
+    \texttt{nr\_threshold} parameter.
+\end{itemize}
+
+We did \emph{not} explore SCINE SCF convergence settings, which could
+potentially reduce the Hessian noise floor.  This is noted as future work.
+
+%=============================================================================
+\section{Experimental Results Summary}
+\label{sec:experiments}
+%=============================================================================
+
+\subsection{Version History}
+
+\begin{longtable}{clp{5cm}p{3cm}l}
+\toprule
+\textbf{Version} & \textbf{Key Idea} & \textbf{Result} & \textbf{Verdict} \\
+\midrule
+\endhead
+
+v1 & Hard-filter NR + TR & Baseline & --- \\
+v2 & LM damping + cascade & LM inferior to SN & Diagnostics kept \\
+v3 & \textbf{Shifted Newton} + escape & 80\% at 1.0\,\AA\ (15 samples) & \textbf{Best step} \\
+v4 & 5 targeted failure fixes & All hurt (53$\to$10\%) & All reverted \\
+v5 & SPDN (partition + GDIIS + LS) & 0\% convergence & Catastrophic \\
+v6 & Back to basics: SN + TR & 76--79\% at 0.5\,\AA\ (300 samples) & Confirmed \\
+v7 & Line search vs.\ trust region & LS worse at all noise & TR wins \\
+v8 & iHiSD crossover (GD$\to$NR) & Crossover hurts & Pure SN best \\
+PIC-ARC & First-order + cubic reg & 0\% convergence & First-order dead \\
+v9 & Relaxed convergence & $\sim$80/60/46/35\% strict & Criterion problem \\
+v10 & ARC + GDIIS & Pending & --- \\
+\bottomrule
+\end{longtable}
+
+\subsection{Best Convergence Rates}
+\label{tab:cascade}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{ccccc}
+\toprule
+Noise & Strict ($n_\text{neg}=0$) & $\lambda\geq-10^{-3}$ & $\lambda\geq-10^{-2}$ & Gap \\
+\midrule
+0.5\,\AA & 72.8\% & 78.7\% & \textbf{90.9\%} & 18\,pts \\
+1.0\,\AA & 50.2\% & 61.3\% & \textbf{90.2\%} & 40\,pts \\
+1.5\,\AA & 30.7\% & 45.6\% & \textbf{87.5\%} & 57\,pts \\
+2.0\,\AA & 19.5\% & 48.1\% & \textbf{92.7\%} & 73\,pts \\
+\bottomrule
+\end{tabular}
+\caption{Cascade convergence rates (v8 SN+LS baseline, 287--300 samples).}
+\label{tab:cascade}
+\end{table}
+
+\subsection{Direction Quality}
+\label{tab:direction-quality}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{ccccc}
+\toprule
+Noise & $\cos(\vect{g}_\text{SD}, \vect{d}_\text{true})$ & $\cos(\vect{d}_\text{NR}, \vect{d}_\text{true})$ & SD better \% & Starting $n_\text{neg}$ \\
+\midrule
+0.5\,\AA & 0.029 & 0.055 & 46\% & 12.1 \\
+1.0\,\AA & 0.038 & 0.025 & 54\% & 12.4 \\
+1.5\,\AA & 0.093 & 0.043 & 62\% & 12.1 \\
+2.0\,\AA & 0.110 & 0.027 & \textbf{70\%} & 12.0 \\
+\bottomrule
+\end{tabular}
+\caption{Direction quality at noisy starting points.  Both directions are
+  near-orthogonal to truth.  SD ``improves'' with noise but is still too poor
+  for useful steps.}
+\label{tab:direction-quality}
+\end{table}
+
+\subsection{Condition Number Scaling}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{cccc}
+\toprule
+Noise & Median $\kappa$ & $\log_{10}(\kappa)$ & Interpretation \\
+\midrule
+0.5\,\AA & $1.14\times10^4$ & 4.1 & Moderate \\
+1.0\,\AA & $2.79\times10^4$ & 4.4 & Degraded \\
+1.5\,\AA & $2.00\times10^5$ & 5.3 & Severe \\
+2.0\,\AA & $2.30\times10^6$ & 6.4 & Catastrophic \\
+True min & $1.55\times10^3$ & 3.2 & Well-conditioned \\
+\bottomrule
+\end{tabular}
+\caption{Hessian condition number vs.\ displacement.  The sharpest convergence
+  cliff (59\%$\to$41\%) coincides with $\kappa$ jumping
+  $10^{4.4}\to10^{5.3}$.}
+\label{tab:condition}
+\end{table}
+
+\subsection{Failure Populations}
+
+Three distinct failure populations identified from trajectory analysis:
+
+\paragraph{Population A: ``Blind Modes'' (49.6\% of failures).}
+$\lambda_\text{min} \in [-10^{-3}, -2\times10^{-4}]$, forces 0.03--0.09\,eV/\AA,
+gradient overlap with negative modes $<0.1$.  Trust radius at floor.
+The optimizer ``sees'' the negative eigenvalue but the gradient has no
+component in that direction---it cannot flip the mode.
+
+\paragraph{Population B: ``Oscillation--Collapse'' (44.2\% of failures).}
+$\lambda_\text{min} \in [-10^{-2}, -10^{-3}]$, forces 0.1--0.37\,eV/\AA.
+Period-$\sim$8 oscillation cycle detected by FFT.  This is the population
+most likely to benefit from GDIIS.
+
+\paragraph{Population C: ``Stagnation Zombies'' (subset).}
+Stagnation $>50\%$ of trajectory.  Example: sample~098 frozen 99.6\% of steps.
+
+%=============================================================================
+\section{What We Incorporated in v10/v10b}
+\label{sec:incorporated}
+%=============================================================================
+
+\subsection{ARC Full-Spectrum Step Builder (v10)}
+
+Replaces both the shifted Newton shift and trust region with cubic
+regularization (Section~\ref{sec:arc}).  Implementation:
+\texttt{\_nr\_step\_arc()} solves the secular
+equation~\eqref{eq:arc-secular}; the ARC step-control loop
+(lines~2350--2450 of \texttt{minimization.py}) manages $\sigma$-adaptation.
+
+\textbf{Rationale}: The trust radius collapse mechanism
+(Section~\ref{sec:collapse}) is the dominant failure mode.  ARC avoids
+collapse by design---$\sigma$ can grow arbitrarily large (cautious) or
+shrink arbitrarily small (aggressive), without a hard floor.
+
+\textbf{Grid parameters} (v10 SLURM):
+$\sigma_0 \in \{0.1, 1.0, 10.0\}$,
+$\gamma_1 \in \{2.0, 3.0\}$.
+
+\subsection{GDIIS Oscillation Breaking (v10, corrected v10b)}
+
+\texttt{\_GDIISExtrapolator} stores geometry--gradient--step history and
+attempts interpolation every $N$ steps when oscillation is detected.
+
+\textbf{v10b correction}: Changed error vectors from raw gradients to Newton
+step vectors (Section~\ref{sec:gdiis}), per Schlegel's
+formulation~\eqref{eq:gdiis-B}.
+
+\textbf{Grid parameters}: buffer sizes $\{8, 12\}$.
+
+\subsection{RFO Step Builder (v10b)}
+
+Augmented Hessian method (Section~\ref{sec:rfo}).
+\texttt{\_solve\_rfo\_secular()} + \texttt{\_nr\_step\_rfo()}.
+Uses the same trust-region step-control as v9 baseline.
+
+\textbf{Rationale}: RFO is the standard in production codes (Gaussian, ORCA,
+Sella).  It provides adaptive shift determination without the hyperparameter
+$\varepsilon$.  Never tested in our codebase before.
+
+\subsection{Schlegel Trust Radius Fixes (v10b)}
+
+Boundary-check growth~\eqref{eq:schlegel-grow} and step-anchored
+shrink~\eqref{eq:schlegel-shrink}.  Gated by
+\texttt{schlegel\_trust\_update=True}.
+
+\textbf{Rationale}: The standard rules can shrink the radius below the
+actual step size, wasting recovery.  The boundary check prevents
+unnecessary growth.  Both are well-established in the
+literature~\citep{schlegel2011}.
+
+\subsection{Late-Stage GDIIS Acceleration (v10b)}
+
+Parameter \texttt{gdiis\_late\_force\_threshold}: triggers GDIIS
+when \texttt{force\_norm} drops below threshold, regardless of oscillation
+detection.
+
+\textbf{Rationale}: Schlegel~\citep{schlegel2011} describes GDIIS as
+accelerating final convergence routinely.  Population~A failures (blind
+modes) have moderate forces but no oscillation---late-stage GDIIS could
+help where oscillation-triggered GDIIS does not.
+
+%=============================================================================
+\section{What We Did NOT Incorporate and Why}
+\label{sec:not-incorporated}
+%=============================================================================
+
+\subsection{Internal Coordinates}
+\label{sec:internal-coords}
+
+The literature unanimously agrees that internal coordinates (redundant
+internals~\citep{pulay-redundant}, TRIC~\citep{wang-tric},
+FCW~\citep{lindh-fcw}) improve Hessian conditioning for floppy modes.
+
+\textbf{Why not}: Our molecules are small ($\leq 7$ heavy atoms, $\leq 23$
+total).  With full analytical Hessians at every step, the conditioning
+advantage is marginal.  The performance cliff at 2.0\,\AA\ is driven by
+being far from quadratic, not by coordinate choice.  Converting to internal
+coordinates would require a significant refactor of the Cartesian-only
+codebase for likely marginal benefit.
+
+\subsection{Sella's RS-RFO with Geodesic Back-Transformation}
+\label{sec:sella}
+
+Sella~\citep{sella} implements Restricted-Step RFO (RS-RFO) with iterative
+diagonalization and geodesic back-transformation from internal to Cartesian
+coordinates.
+
+\textbf{Why not}: Requires an internal-coordinate framework.  Our codebase is
+Cartesian-only.  The plain RFO we implemented captures the essential
+augmented-Hessian mechanism without the coordinate transformation machinery.
+
+\subsection{Polynomial Line Search Near Inflection Points}
+
+Schlegel~\citep{schlegel2011} describes cubic/quartic energy fitting using
+energy and gradient at current and previous geometry.  Zero extra evaluations.
+Could stabilize the eigenvalue-crossing regime where the quadratic model is
+particularly poor.
+
+\textbf{Why not}: Requires careful implementation to detect inflection
+proximity.  Documented as future work.
+
+\subsection{Model-Hessian Preconditioning}
+
+Packwood et al.~\citep{packwood2018} use a Lindh-type model Hessian as
+preconditioner.  The key trick: drop gradient-dependent $H^{(2)}$ terms and
+take $|d^2V/d\zeta^2|$ to guarantee positive definiteness.
+
+\textbf{Why not}: We already have the full analytical Hessian.
+Preconditioning is designed for approximate or absent Hessians.  Our problem
+is direction quality at large displacement, not Hessian approximation error.
+
+\subsection{Coordinate Freezing}
+
+Schlegel (1989)~\citep{schlegel1989}: Freeze modes with negative eigenvalues,
+converge remaining DOFs, then release.
+
+\textbf{Why not}: Our negative eigenvalue directions rotate between steps
+(overlap $< 0.5$ for ghost band, measured in v6 analysis).  Freezing a
+specific direction when it changes every step is ineffective.
+
+\subsection{SCINE SCF Convergence Investigation}
+
+Tighter SCF convergence thresholds could potentially reduce the Hessian noise
+floor (currently $\sim8\times10^{-3}$).
+
+\textbf{Why not}: Would require SCINE API calls to set convergence parameters.
+Not investigated.  Documented as future work.
+
+\subsection{Transition1x Frequency Verification}
+
+Run DFTB0 frequency analysis on all 287 DFT-labeled minima to identify which
+are genuine saddle points on the DFTB0 surface vs.\ ghost-mode artifacts.
+
+\textbf{Why not}: Would be a separate analysis task, not an optimizer
+improvement.  Documented as future work.
+
+%=============================================================================
+\section{Explicit Non-Recommendations}
+\label{sec:non-recommendations}
+%=============================================================================
+
+The following have been \emph{tested and found harmful}.  Literature confirms
+they should not be revisited.
+
+\begin{enumerate}[nosep]
+  \item \textbf{iHiSD crossover} (v8): Tested $\mu_\text{max} \in \{0, 0.1,
+    0.5, 1.0, 2.0\}$.  Pure SN ($\mu=0$) best.  Theory: gradient alignment
+    assumption violated at our displacements~\citep{ihisd}.
+
+  \item \textbf{Line search} (v7): TR wins at all noise levels.  Theory:
+    commits to poor direction~\citep{schlegel2011}.
+
+  \item \textbf{LM damping} (v2): SN better.  Theory: over-regularizes
+    positive eigenvalues.
+
+  \item \textbf{Weight capping / SPDN} (v5): 0\% convergence.  Discards
+    essential curvature information.
+
+  \item \textbf{Stagnation escape}: Not helpful across versions.
+
+  \item \textbf{v4 features}: Neg-trust-floor, blind-mode correction,
+    aggressive trust recovery, bidirectional escape, mode-following.
+    All tested, all hurt.
+
+  \item \textbf{PIC-ARC} (first-order + cubic reg): 0\% convergence.
+    First-order methods cannot navigate this PES~\citep{packwood2018}.
+\end{enumerate}
+
+%=============================================================================
+\section{v10/v10b Grid Design}
+\label{sec:grid}
+%=============================================================================
+
+The v10 grid tests 12 configurations $\times$ 4 noise levels = 48
+combinations, each with 300 samples:
+
+\begin{center}
+\begin{tabular}{clccl}
+\toprule
+\# & Algorithm & $\sigma_0$ / $\gamma_1$ & GDIIS & Notes \\
+\midrule
+1  & v9 baseline (SN+TR) & --- & off & Control \\
+2  & ARC & 0.1 / 2.0 & off & Low reg \\
+3  & ARC & 1.0 / 2.0 & off & Default \\
+4  & ARC & 10.0 / 2.0 & off & High reg \\
+5  & ARC & 1.0 / 3.0 & off & Aggressive $\sigma$ \\
+6  & ARC + GDIIS-8 & 1.0 / 2.0 & 8 & Oscillation \\
+7  & ARC + GDIIS-12 & 1.0 / 2.0 & 12 & Larger buffer \\
+8  & RFO + TR & --- & off & Chemistry standard \\
+9  & RFO + Schlegel TR & --- & off & RFO + fixed TR \\
+10 & RFO + Schlegel TR + GDIIS & --- & 8+late & Full RFO \\
+11 & ARC + GDIIS-late & 1.0 / 2.0 & 8+late & Late accel \\
+12 & v9 + Schlegel TR & --- & off & TR fix only \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+All configurations use relaxed convergence ($\lambda_\text{min} \geq -0.01$,
+\texttt{accept\_relaxed=True}).
+
+\textbf{Key comparisons}:
+\begin{itemize}[nosep]
+  \item \textbf{ARC vs.\ RFO vs.\ GQT}: Configs 1 (GQT baseline) vs.\ 3
+    (ARC default) vs.\ 8 (RFO).  Tests whether adaptive regularization
+    helps over fixed $\varepsilon$.
+  \item \textbf{Schlegel TR fix}: Configs 1 vs.\ 12 (same optimizer,
+    different TR rules).
+  \item \textbf{GDIIS oscillation vs.\ late-stage}: Configs 6 (oscillation
+    only) vs.\ 11 (late-stage).
+  \item \textbf{ARC $\sigma$ sensitivity}: Configs 2--5 span $\sigma_0$
+    and $\gamma_1$.
+  \item \textbf{Full RFO}: Config 10 combines RFO + Schlegel TR + late-stage
+    GDIIS---the ``standard chemistry stack.''
+\end{itemize}
+
+%=============================================================================
+\section{Open Questions}
+\label{sec:open}
+%=============================================================================
+
+\begin{enumerate}
+  \item \textbf{Persistently hard samples}: Samples 004, 008, 009, 020, 022,
+    024, 027, 044, 047, 048 fail across all versions and seeds.  Structural
+    analysis needed: are these multi-fragment dissociation, ring-opening, or
+    electronically unusual reactions?
+
+  \item \textbf{$\sim$90\% relaxed ceiling}: Even at $\lambda_\text{min}
+    \geq -0.01$, 7--13\% fail.  Hypothesis: bond-breaking/forming creates
+    disconnected fragments or radical-like electronic states where DFTB0 is
+    qualitatively wrong.
+
+  \item \textbf{Transition1x frequency verification}: No frequency checks
+    performed on minima in the original dataset.  Some ``minima'' may be
+    saddle points even at the DFT level.
+
+  \item \textbf{SCINE SCF convergence}: Could tighter SCF thresholds reduce
+    the Hessian noise floor ($\sim8\times10^{-3}$)?
+
+  \item \textbf{Sella-style RS-RFO}: Full internal-coordinate framework with
+    geodesic back-transformation.  Major refactor for potentially marginal
+    benefit on small molecules.
+
+  \item \textbf{$n_\text{neg}=1$ for escape mechanisms}: When mode-following
+    or GAD-type methods are used, accepting first-order saddle points as
+    valid endpoints.  Relevant if we characterize the PES rather than
+    strictly minimize.
+\end{enumerate}
+
+%=============================================================================
+\section{Codebase Architecture}
+\label{sec:architecture}
+%=============================================================================
+
+\subsection{Pipeline}
+
+\begin{verbatim}
+run_minimization_parallel.py   (CLI + SLURM interface)
+  |-> ParallelSCINEProcessor  (spawns N workers)
+        |-> scine_worker_sample()  (creates DFTB0 predict_fn)
+              |-> run_newton_raphson()  (core optimizer, ~2700 lines)
+                    |-> predict_fn(coords, atomic_nums, do_hessian=True)
+                    |   -> (energy, forces, hessian)
+                    |-> get_vib_evals_evecs()  (Eckart decomposition)
+                    |-> Step builder:
+                    |     _nr_step_arc()       (v10: ARC secular eq)
+                    |     _nr_step_rfo()       (v10b: RFO augmented Hessian)
+                    |     _nr_step_shifted_newton()  (v3-v9: GQT)
+                    |     _nr_step_lm_damping()      (v2, inferior)
+                    |     _nr_step_hard_filter()      (v1, inferior)
+                    |-> Step control:
+                    |     ARC sigma-adaptation  (v10)
+                    |     Trust region           (v1-v9, RFO)
+                    |     Line search            (v7, inferior)
+                    |-> GDIIS:
+                    |     _GDIISExtrapolator    (v10/v10b)
+                    |     Oscillation detection  (v10)
+                    |     Late-stage trigger      (v10b)
+                    |-> Convergence:
+                          Cascade evaluation at 8 thresholds
+                          Strict / Relaxed / Stalled classification
+\end{verbatim}
+
+\subsection{Key Files}
+\begin{itemize}[nosep]
+  \item \texttt{baselines/minimization.py} --- Core optimizer ($\sim$2700 lines)
+  \item \texttt{runners/run\_minimization\_parallel.py} --- CLI and parallelization
+  \item \texttt{scripts/analyze\_minimization\_nr\_grid.py} --- Grid analysis, tag parsing
+  \item \texttt{scripts/analyze\_nr\_failure\_autopsy.py} --- Failure classification
+  \item \texttt{scripts/diagnostic\_from\_minima.py} --- DFTB0 forensics at DFT minima
+  \item \texttt{scripts/slurm\_templates/} --- SLURM job scripts (v3--v10)
+\end{itemize}
+
+%=============================================================================
+\section*{References}
+%=============================================================================
+
+\begin{thebibliography}{99}
+
+\bibitem[Cartis et al.(2011a)]{arc-part1}
+  C.~Cartis, N.~I.~M.~Gould, Ph.~L.~Toint,
+  ``Adaptive cubic regularisation methods for unconstrained optimization.
+  Part~I: Motivation, convergence and numerical results,''
+  \emph{Math.\ Program.}, 127(2):245--295, 2011.
+
+\bibitem[Cartis et al.(2011b)]{cgt-optimal}
+  C.~Cartis, N.~I.~M.~Gould, Ph.~L.~Toint,
+  ``Optimal Newton-type methods for nonconvex smooth optimization problems,''
+  Technical Report, 2011.
+
+\bibitem[Cartis et al.(2012)]{cgt-complexity}
+  C.~Cartis, N.~I.~M.~Gould, Ph.~L.~Toint,
+  ``Complexity bounds for second-order optimality in unconstrained optimization,''
+  \emph{J.~Complexity}, 28(1):93--108, 2012.
+
+\bibitem[Boumal et al.(2018)]{boumal-arc-manifolds}
+  N.~Boumal, P.-A.~Absil, C.~Cartis,
+  ``Global rates of convergence for nonconvex optimization on manifolds,''
+  \emph{IMA J.\ Numer.\ Anal.}, 39(1):1--33, 2019.
+
+\bibitem[Benson and Shanno(2014)]{benson-shanno}
+  H.~Y.~Benson, D.~F.~Shanno,
+  ``Interior-point methods for nonconvex nonlinear programming:
+  cubic regularization,''
+  \emph{Comput.\ Optim.\ Appl.}, 58(2):323--346, 2014.
+
+\bibitem[Schlegel(2011)]{schlegel2011}
+  H.~B.~Schlegel,
+  ``Geometry optimization,''
+  \emph{WIREs Comput.\ Mol.\ Sci.}, 1(5):790--809, 2011.
+
+\bibitem[Schlegel(1989)]{schlegel1989}
+  H.~B.~Schlegel,
+  ``A comparison of geometry optimization with internal, Cartesian,
+  and mixed coordinates,''
+  \emph{Int.\ J.\ Quantum Chem.}, 44(S23):243--252, 1993.
+
+\bibitem[Pulay(1980)]{pulay-diis}
+  P.~Pulay,
+  ``Convergence acceleration of iterative sequences.\ The case of SCF iteration,''
+  \emph{Chem.\ Phys.\ Lett.}, 73(2):393--398, 1980.
+
+\bibitem[Cs\'asz\'ar and Pulay(1984)]{gdiis-csaszar-pulay}
+  P.~Cs\'asz\'ar, P.~Pulay,
+  ``Geometry optimization by direct inversion in the iterative subspace,''
+  \emph{J.\ Mol.\ Struct.}, 114:31--34, 1984.
+
+\bibitem[Li and Frisch(2006)]{li-frisch-gediis}
+  X.~Li, M.~J.~Frisch,
+  ``Energy-represented direct inversion in the iterative subspace within a
+  hybrid geometry optimization method,''
+  \emph{J.\ Chem.\ Theory Comput.}, 2(3):835--839, 2006.
+
+\bibitem[Pulay and Fogarasi(1992)]{pulay-redundant}
+  P.~Pulay, G.~Fogarasi,
+  ``Geometry optimization in redundant internal coordinates,''
+  \emph{J.\ Chem.\ Phys.}, 96(4):2856--2860, 1992.
+
+\bibitem[Wang and Song(2016)]{wang-tric}
+  L.-P.~Wang, C.~Song,
+  ``Geometry optimization made simple with translation and rotation
+  internal coordinates,''
+  \emph{J.\ Chem.\ Phys.}, 144(21):214108, 2016.
+
+\bibitem[Lindh et al.(1999)]{lindh-fcw}
+  R.~Lindh, A.~Bernhardsson, M.~Sch\"utz,
+  ``Force-constant weighted internal coordinates in vibrational frequency
+  calculations,''
+  \emph{Chem.\ Phys.\ Lett.}, 303(5--6):567--575, 1999.
+
+\bibitem[Packwood et al.(2018)]{packwood2018}
+  D.~M.~Packwood, J.~Kermode, L.~Mones, N.~Bernstein, J.~R.~Kermode,
+  G.~Cs\'anyi, C.~Ortner,
+  ``A universal preconditioner for simulating condensed phase materials,''
+  \emph{Sci.\ Rep.}, 8:5374, 2018.
+
+\bibitem[Su et al.(2022)]{ihisd}
+  Y.~Su, L.~Zhang, W.~E,
+  ``The iterative high-index saddle dynamics method for the index-$k$
+  saddle point on the energy landscape,''
+  arXiv:2602.01883, 2022.
+
+\bibitem[Luo et al.(2023)]{convergence-degenerate}
+  L.~Luo, Y.~Nesterov, H.~He, E.~A.~Gryazina,
+  ``Convergence of regularized Newton methods on degenerate critical points,''
+  2023.
+
+\bibitem[Hermes et al.(2022)]{sella}
+  E.~D.~Hermes, K.~Sargsyan, H.~N.~Najm, B.~C.~Garrett,
+  ``Sella: a Python package for finding transition states on
+  potential energy surfaces,''
+  \emph{J.\ Chem.\ Theory Comput.}, 18(11):6974--6988, 2022.
+
+\bibitem[Bhowmik et al.(2023)]{transition1x}
+  A.~Bhowmik, I.~Batatia, S.~Batzner, et al.,
+  ``Transition1x: A dataset for building generalizable reactive machine
+  learning potentials,''
+  \emph{Sci.\ Data}, 10:232, 2023.
+
+\bibitem[ORCA manual]{orca-manual}
+  F.~Neese et al., ``ORCA Manual,'' version~5.0, Max-Planck-Institut
+  f\"ur Kohlenforschung, 2023.
+
+\end{thebibliography}
+
+\end{document}

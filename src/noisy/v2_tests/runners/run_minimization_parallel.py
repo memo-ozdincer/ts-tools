@@ -33,11 +33,16 @@ v7 flags:
 - --max-nr-weight  Cap shifted Newton weight (0 = no cap)
 
 v10 flags:
+- --optimizer-mode  'arc' for ARC, 'rfo' for Rational Function Optimization
 - --arc-sigma-init  ARC: initial cubic regularization σ (default 1.0)
 - --arc-gamma1      ARC: σ increase factor on bad step (default 2.0)
 - --gdiis-buffer-size
                   ARC: GDIIS buffer for oscillation damping (0 = off)
 - --gdiis-every   ARC: attempt GDIIS every N steps (default 5)
+- --gdiis-late-force-threshold
+                  Attempt GDIIS when force_norm < this (0 = off, default)
+- --schlegel-trust-update
+                  Use Schlegel trust radius rules (boundary-check growth, step-anchored shrink)
 
 Cascade evaluation:
   Every trajectory step now contains "n_neg_at_<threshold>" fields for
@@ -208,6 +213,8 @@ def run_single_sample(
                 arc_gamma2=params.get("arc_gamma2", 0.5),
                 gdiis_buffer_size=params.get("gdiis_buffer_size", 0),
                 gdiis_every=params.get("gdiis_every", 5),
+                gdiis_late_force_threshold=params.get("gdiis_late_force_threshold", 0.0),
+                schlegel_trust_update=params.get("schlegel_trust_update", False),
             )
         elif method == "pic_arc":
             result, trajectory = run_pic_arc(
@@ -598,7 +605,8 @@ def main() -> None:
     parser.add_argument(
         "--optimizer-mode", type=str, default="",
         help="Optimizer mode: '' (default, use v1-v4 logic), 'spdn' (Spectrally-Partitioned "
-             "DIIS-Newton), 'arc' (v10: full-spectrum ARC with adaptive σ).",
+             "DIIS-Newton), 'arc' (v10: full-spectrum ARC with adaptive σ), "
+             "'rfo' (v10b: Rational Function Optimization with augmented Hessian).",
     )
     parser.add_argument(
         "--spdn-tau-hard", type=float, default=0.01,
@@ -691,6 +699,14 @@ def main() -> None:
     parser.add_argument(
         "--gdiis-every", type=int, default=5,
         help="ARC: attempt GDIIS every N steps when oscillation detected. Default 5.",
+    )
+    parser.add_argument(
+        "--gdiis-late-force-threshold", type=float, default=0.0,
+        help="GDIIS late-stage: attempt GDIIS when force_norm < this. 0 = off (default).",
+    )
+    parser.add_argument(
+        "--schlegel-trust-update", action="store_true", default=False,
+        help="Use Schlegel trust radius rules: boundary-check growth + step-anchored shrink.",
     )
 
     # --- PIC-ARC flags ---
@@ -842,6 +858,8 @@ def main() -> None:
         "arc_gamma2": args.arc_gamma2,
         "gdiis_buffer_size": args.gdiis_buffer_size,
         "gdiis_every": args.gdiis_every,
+        "gdiis_late_force_threshold": args.gdiis_late_force_threshold,
+        "schlegel_trust_update": args.schlegel_trust_update,
         # PIC-ARC additions
         "trust_radius_init": args.trust_radius_init,
         "sigma_init": args.sigma_init,

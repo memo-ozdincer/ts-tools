@@ -4,7 +4,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=192
 #SBATCH --gpus-per-node=0
-#SBATCH --time=09:00:00
+#SBATCH --time=16:00:00
 #SBATCH --output=/scratch/memoozd/ts-tools-scratch/logs/min_nr_v10_%j.out
 #SBATCH --error=/scratch/memoozd/ts-tools-scratch/logs/min_nr_v10_%j.err
 #SBATCH --account=rrg-aspuru
@@ -25,24 +25,28 @@
 #   -> oversized steps -> trust shrinks 0.25x per bad step -> floor at 0.01A.
 #   User proved 100% is achievable via brute-force "v2-kicking".
 #
-# v10 approach: ARC (Adaptive Regularization with Cubics)
-#   - Replaces BOTH shifted Newton shift AND trust region
-#   - Single self-regulating mechanism: sigma controls regularization
-#   - No trust radius floor, no collapse spiral
-#   - Theoretically optimal O(eps^{-3/2}) complexity
-#   - GDIIS acceleration for oscillation breaking (Population B failures)
+# v10 approach: ARC + RFO + Schlegel TR fixes + GDIIS late-stage
+#   - ARC: replaces shifted Newton + trust region (O(eps^{-3/2}))
+#   - RFO: augmented Hessian, adaptive shift (chemistry standard)
+#   - Schlegel TR: boundary-check growth + step-anchored shrink
+#   - GDIIS: oscillation breaking + late-stage acceleration (Schlegel 2011)
 #
-# Grid: 7 configs x 4 noise levels = 28 combos x 300 samples each
+# Grid: 12 configs x 4 noise levels = 48 combos x 300 samples each
 #
-# | # | Algorithm        | sigma_init | gamma1 | GDIIS | Notes              |
-# |---|-----------------|------------|--------|-------|--------------------|
-# | 1 | v9 baseline     | -          | -      | off   | Control (SN+TR)    |
-# | 2 | ARC             | 0.1        | 2.0    | off   | Low regularization |
-# | 3 | ARC             | 1.0        | 2.0    | off   | Default            |
-# | 4 | ARC             | 10.0       | 2.0    | off   | High regularization|
-# | 5 | ARC             | 1.0        | 3.0    | off   | Aggressive sigma   |
-# | 6 | ARC + GDIIS-8   | 1.0        | 2.0    | 8     | Oscillation damp   |
-# | 7 | ARC + GDIIS-12  | 1.0        | 2.0    | 12    | Larger buffer      |
+# | # | Algorithm            | sigma_init | gamma1 | GDIIS | Notes              |
+# |---|---------------------|------------|--------|-------|--------------------|
+# | 1 | v9 baseline         | -          | -      | off   | Control (SN+TR)    |
+# | 2 | ARC                 | 0.1        | 2.0    | off   | Low regularization |
+# | 3 | ARC                 | 1.0        | 2.0    | off   | Default            |
+# | 4 | ARC                 | 10.0       | 2.0    | off   | High regularization|
+# | 5 | ARC                 | 1.0        | 3.0    | off   | Aggressive sigma   |
+# | 6 | ARC + GDIIS-8       | 1.0        | 2.0    | 8     | Oscillation damp   |
+# | 7 | ARC + GDIIS-12      | 1.0        | 2.0    | 12    | Larger buffer      |
+# | 8 | RFO + TR            | -          | -      | off   | Chemistry standard |
+# | 9 | RFO + Schlegel TR   | -          | -      | off   | RFO + fixed TR     |
+# |10 | RFO + SchlTR + GDIIS| -          | -      | 8+late| Full RFO           |
+# |11 | ARC + GDIIS-late    | 1.0        | 2.0    | 8+late| ARC late accel     |
+# |12 | v9 + Schlegel TR    | -          | -      | off   | TR fix only        |
 #
 # =============================================================================
 
@@ -127,7 +131,7 @@ echo "  MAX_SAMPLES:        $MAX_SAMPLES"
 echo "  FORCE_CONVERGED:    $FORCE_CONVERGED"
 echo "  LOG_SPECTRUM_K:     $LOG_SPECTRUM_K"
 echo "  RELAXED_THRESHOLD:  $RELAXED_EVAL_THRESHOLD"
-echo "Configs:  28 (7 configs x 4 noise levels)"
+echo "Configs:  48 (12 configs x 4 noise levels)"
 echo "=============================================="
 
 export PYTHONPATH="$PROJECT_DIR:$PYTHONPATH"
@@ -232,7 +236,163 @@ run_arc() {
 }
 
 # =============================================================================
-# Grid: 7 configs x 4 noise levels = 28 combos
+# Helper: run RFO config
+# Usage: run_rfo <noise_level> <tag> <gdiis_buffer> <gdiis_late_force> <schlegel_tr>
+# =============================================================================
+run_rfo() {
+    local noise_level="$1"
+    local tag="$2"
+    local gdiis_buffer="$3"
+    local gdiis_late_force="$4"
+    local schlegel_tr="$5"
+
+    local start_from="midpoint_rt_noise${noise_level}A"
+    local run_out="${OUT_DIR}/${tag}"
+    mkdir -p "$run_out"
+
+    COMBO=$((COMBO + 1))
+    echo "[combo ${COMBO}]  ${tag}  (noise=${noise_level}A, seed=${NOISE_SEED})"
+
+    local extra_flags=""
+    if [ "$gdiis_buffer" -gt 0 ]; then
+        extra_flags="--gdiis-buffer-size $gdiis_buffer --gdiis-every 5"
+    fi
+    if [ "$gdiis_late_force" != "0" ]; then
+        extra_flags="$extra_flags --gdiis-late-force-threshold $gdiis_late_force"
+    fi
+    if [ "$schlegel_tr" = "1" ]; then
+        extra_flags="$extra_flags --schlegel-trust-update"
+    fi
+
+    if python "$PROJECT_DIR/src/noisy/v2_tests/runners/run_minimization_parallel.py" \
+            --h5-path "$H5_PATH" \
+            --out-dir "$run_out" \
+            --scine-functional "$SCINE_FUNCTIONAL" \
+            --n-steps "$N_STEPS" \
+            --max-samples "$MAX_SAMPLES" \
+            --start-from "$start_from" \
+            --noise-seed "$NOISE_SEED" \
+            --n-workers "$N_WORKERS" \
+            --threads-per-worker "$THREADS_PER_WORKER" \
+            --method newton_raphson \
+            --max-atom-disp "$MAD" \
+            --force-converged "$FORCE_CONVERGED" \
+            --min-interatomic-dist "$MIN_INTERATOMIC_DIST" \
+            --project-gradient-and-v \
+            --log-spectrum-k "$LOG_SPECTRUM_K" \
+            --optimizer-mode rfo \
+            --relaxed-eval-threshold "$RELAXED_EVAL_THRESHOLD" \
+            --accept-relaxed \
+            $extra_flags; then
+        echo "  -> OK"
+    else
+        echo "  -> FAILED (exit $?)"
+        FAILED=$((FAILED + 1))
+    fi
+    echo ""
+}
+
+# =============================================================================
+# Helper: run v9 baseline with Schlegel TR fix
+# Usage: run_v9_schlegel <noise_level> <tag>
+# =============================================================================
+run_v9_schlegel() {
+    local noise_level="$1"
+    local tag="$2"
+
+    local start_from="midpoint_rt_noise${noise_level}A"
+    local run_out="${OUT_DIR}/${tag}"
+    mkdir -p "$run_out"
+
+    COMBO=$((COMBO + 1))
+    echo "[combo ${COMBO}]  ${tag}  (noise=${noise_level}A, seed=${NOISE_SEED})"
+
+    if python "$PROJECT_DIR/src/noisy/v2_tests/runners/run_minimization_parallel.py" \
+            --h5-path "$H5_PATH" \
+            --out-dir "$run_out" \
+            --scine-functional "$SCINE_FUNCTIONAL" \
+            --n-steps "$N_STEPS" \
+            --max-samples "$MAX_SAMPLES" \
+            --start-from "$start_from" \
+            --noise-seed "$NOISE_SEED" \
+            --n-workers "$N_WORKERS" \
+            --threads-per-worker "$THREADS_PER_WORKER" \
+            --method newton_raphson \
+            --max-atom-disp "$MAD" \
+            --force-converged "$FORCE_CONVERGED" \
+            --min-interatomic-dist "$MIN_INTERATOMIC_DIST" \
+            --project-gradient-and-v \
+            --log-spectrum-k "$LOG_SPECTRUM_K" \
+            --shift-epsilon "1e-3" \
+            --step-control trust_region \
+            --schlegel-trust-update \
+            --relaxed-eval-threshold "$RELAXED_EVAL_THRESHOLD" \
+            --accept-relaxed; then
+        echo "  -> OK"
+    else
+        echo "  -> FAILED (exit $?)"
+        FAILED=$((FAILED + 1))
+    fi
+    echo ""
+}
+
+# =============================================================================
+# Helper: run ARC with late-stage GDIIS
+# Usage: run_arc_late <noise_level> <tag> <sigma_init> <gamma1> <gdiis_buffer> <gdiis_late_force>
+# =============================================================================
+run_arc_late() {
+    local noise_level="$1"
+    local tag="$2"
+    local sigma_init="$3"
+    local gamma1="$4"
+    local gdiis_buffer="$5"
+    local gdiis_late_force="$6"
+
+    local start_from="midpoint_rt_noise${noise_level}A"
+    local run_out="${OUT_DIR}/${tag}"
+    mkdir -p "$run_out"
+
+    COMBO=$((COMBO + 1))
+    echo "[combo ${COMBO}]  ${tag}  (noise=${noise_level}A, seed=${NOISE_SEED})"
+
+    local gdiis_flags=""
+    if [ "$gdiis_buffer" -gt 0 ]; then
+        gdiis_flags="--gdiis-buffer-size $gdiis_buffer --gdiis-every 5"
+    fi
+
+    if python "$PROJECT_DIR/src/noisy/v2_tests/runners/run_minimization_parallel.py" \
+            --h5-path "$H5_PATH" \
+            --out-dir "$run_out" \
+            --scine-functional "$SCINE_FUNCTIONAL" \
+            --n-steps "$N_STEPS" \
+            --max-samples "$MAX_SAMPLES" \
+            --start-from "$start_from" \
+            --noise-seed "$NOISE_SEED" \
+            --n-workers "$N_WORKERS" \
+            --threads-per-worker "$THREADS_PER_WORKER" \
+            --method newton_raphson \
+            --max-atom-disp "$MAD" \
+            --force-converged "$FORCE_CONVERGED" \
+            --min-interatomic-dist "$MIN_INTERATOMIC_DIST" \
+            --project-gradient-and-v \
+            --log-spectrum-k "$LOG_SPECTRUM_K" \
+            --optimizer-mode arc \
+            --arc-sigma-init "$sigma_init" \
+            --arc-gamma1 "$gamma1" \
+            --gdiis-late-force-threshold "$gdiis_late_force" \
+            --relaxed-eval-threshold "$RELAXED_EVAL_THRESHOLD" \
+            --accept-relaxed \
+            $gdiis_flags; then
+        echo "  -> OK"
+    else
+        echo "  -> FAILED (exit $?)"
+        FAILED=$((FAILED + 1))
+    fi
+    echo ""
+}
+
+# =============================================================================
+# Grid: 12 configs x 4 noise levels = 48 combos
 # =============================================================================
 
 for NOISE in "0.5" "1.0" "1.5" "2.0"; do
@@ -264,6 +424,25 @@ for NOISE in "0.5" "1.0" "1.5" "2.0"; do
     run_arc "$NOISE" "n${NOISE}_arc_si1.0_g12.0_gd12_re${RELAXED_EVAL_THRESHOLD}_ar1_pgtrue_phfalse" \
         "1.0" "2.0" "12"
 
+    # Config 8: RFO + trust region (chemistry standard, no GDIIS)
+    run_rfo "$NOISE" "n${NOISE}_rfo_re${RELAXED_EVAL_THRESHOLD}_ar1_pgtrue_phfalse" \
+        "0" "0" "0"
+
+    # Config 9: RFO + Schlegel trust region (RFO + corrected TR rules)
+    run_rfo "$NOISE" "n${NOISE}_rfo_str_re${RELAXED_EVAL_THRESHOLD}_ar1_pgtrue_phfalse" \
+        "0" "0" "1"
+
+    # Config 10: RFO + Schlegel TR + GDIIS-8 late-stage (full RFO)
+    run_rfo "$NOISE" "n${NOISE}_rfo_gd8_glf0.01_str_re${RELAXED_EVAL_THRESHOLD}_ar1_pgtrue_phfalse" \
+        "8" "0.01" "1"
+
+    # Config 11: ARC + GDIIS-8 late-stage (ARC with late acceleration, force < 0.01)
+    run_arc_late "$NOISE" "n${NOISE}_arc_si1.0_g12.0_gd8_glf0.01_re${RELAXED_EVAL_THRESHOLD}_ar1_pgtrue_phfalse" \
+        "1.0" "2.0" "8" "0.01"
+
+    # Config 12: v9 baseline + Schlegel TR fix (control for TR fix)
+    run_v9_schlegel "$NOISE" "n${NOISE}_mad${MAD}_se1e-3_sctr_str_re${RELAXED_EVAL_THRESHOLD}_ar1_pgtrue_phfalse"
+
 done
 
 # =============================================================================
@@ -289,7 +468,7 @@ python "$PROJECT_DIR/src/noisy/v2_tests/scripts/analyze_minimization_nr_grid.py"
     --grid-dir "$OUT_DIR" \
     --result-glob "*/minimization_newton_raphson_*_results.json" \
     --output-dir "$ANALYSIS_DIR" \
-    --top-k 28 > "${ANALYSIS_DIR}/report.txt" 2>&1 || true
+    --top-k 48 > "${ANALYSIS_DIR}/report.txt" 2>&1 || true
 
 echo "Running failure autopsy ..."
 AUTOPSY_DIR="${OUT_DIR}/autopsy"
