@@ -1,0 +1,72 @@
+Loaded 28 configurations.
+Ranking metric: Convergence Rate (desc) → Total Converged (desc) → Mean Steps (asc) → Wall Time (asc)
+
+🏆 Best overall configuration by convergence, then speed:
+  n0.5_mad1.3_se1e-3_sctr_re0.01_ar1_pgtrue_phfalse | converged 234/287 (0.82), mean steps 924.2, mean wall 42.45s
+
+=================================================================
+🥇 Top 28 Configurations (Best First):
+=================================================================
+  n0.5_mad1.3_se1e-3_sctr_re0.01_ar1_pgtrue_phfalse: conv=234/287 (0.82), steps=924.2, wall=42.45s, errors=6 noise=0.5
+  n1.0_mad1.3_se1e-3_sctr_re0.01_ar1_pgtrue_phfalse: conv=159/287 (0.55), steps=2442.1, wall=113.88s, errors=4 noise=1
+  n1.5_mad1.3_se1e-3_sctr_re0.01_ar1_pgtrue_phfalse: conv=134/287 (0.47), steps=3441.3, wall=143.07s, errors=1 noise=1.5
+  n2.0_mad1.3_se1e-3_sctr_re0.01_ar1_pgtrue_phfalse: conv=105/287 (0.37), steps=3508.9, wall=158.43s, errors=2 noise=2
+  n0.5_arc_si1.0_g12.0_re0.01_ar1_pgtrue_phfalse: conv=65/287 (0.23), steps=110.8, wall=47.91s, errors=0 noise=0.5 cnr=0 cfr=0
+  n0.5_arc_si1.0_g12.0_gd8_re0.01_ar1_pgtrue_phfalse: conv=65/287 (0.23), steps=110.8, wall=48.69s, errors=0 noise=0.5 cnr=0 cfr=0
+  n0.5_arc_si1.0_g12.0_gd12_re0.01_ar1_pgtrue_phfalse: conv=65/287 (0.23), steps=110.8, wall=48.73s, errors=0 noise=0.5 cnr=0 cfr=0
+  n0.5_arc_si1.0_g13.0_re0.01_ar1_pgtrue_phfalse: conv=64/287 (0.22), steps=99.9, wall=48.25s, errors=0 noise=0.5 cnr=0 cfr=0
+  n0.5_arc_si0.1_g12.0_re0.01_ar1_pgtrue_phfalse: conv=64/287 (0.22), steps=106.3, wall=48.50s, errors=0 noise=0.5 cnr=0 cfr=0
+  n0.5_arc_si10.0_g12.0_re0.01_ar1_pgtrue_phfalse: conv=56/287 (0.20), steps=98.4, wall=51.09s, errors=0 noise=0.5 cnr=0 cfr=0
+  n1.0_arc_si1.0_g13.0_re0.01_ar1_pgtrue_phfalse: conv=6/287 (0.02), steps=134.5, wall=61.01s, errors=0 noise=1 cnr=0 cfr=0
+  n1.0_arc_si1.0_g12.0_re0.01_ar1_pgtrue_phfalse: conv=5/287 (0.02), steps=134.2, wall=60.67s, errors=0 noise=1 cnr=0 cfr=0
+  n1.0_arc_si1.0_g12.0_gd8_re0.01_ar1_pgtrue_phfalse: conv=5/287 (0.02), steps=134.2, wall=61.46s, errors=0 noise=1 cnr=0 cfr=0
+  n1.0_arc_si1.0_g12.0_gd12_re0.01_ar1_pgtrue_phfalse: conv=5/287 (0.02), steps=134.2, wall=62.91s, errors=0 noise=1 cnr=0 cfr=0
+  n1.0_arc_si0.1_g12.0_re0.01_ar1_pgtrue_phfalse: conv=5/287 (0.02), steps=218.6, wall=62.27s, errors=0 noise=1 cnr=0 cfr=0
+  n1.0_arc_si10.0_g12.0_re0.01_ar1_pgtrue_phfalse: conv=4/287 (0.01), steps=150.5, wall=60.90s, errors=0 noise=1 cnr=0 cfr=0
+  n2.0_arc_si0.1_g12.0_re0.01_ar1_pgtrue_phfalse: conv=1/287 (0.00), steps=111.0, wall=59.64s, errors=0 noise=2 cnr=0 cfr=0
+  n2.0_arc_si1.0_g12.0_re0.01_ar1_pgtrue_phfalse: conv=1/287 (0.00), steps=125.0, wall=60.67s, errors=0 noise=2 cnr=0 cfr=0
+  n2.0_arc_si1.0_g12.0_gd8_re0.01_ar1_pgtrue_phfalse: conv=1/287 (0.00), steps=125.0, wall=60.87s, errors=0 noise=2 cnr=0 cfr=0
+  n2.0_arc_si1.0_g12.0_gd12_re0.01_ar1_pgtrue_phfalse: conv=1/287 (0.00), steps=125.0, wall=61.40s, errors=0 noise=2 cnr=0 cfr=0
+  n2.0_arc_si10.0_g12.0_re0.01_ar1_pgtrue_phfalse: conv=0/287 (0.00), steps=nan, wall=60.39s, errors=0 noise=2 cnr=0 cfr=0
+  n2.0_arc_si1.0_g13.0_re0.01_ar1_pgtrue_phfalse: conv=0/287 (0.00), steps=nan, wall=60.93s, errors=0 noise=2 cnr=0 cfr=0
+  n1.5_arc_si1.0_g12.0_gd8_re0.01_ar1_pgtrue_phfalse: conv=0/287 (0.00), steps=nan, wall=61.35s, errors=0 noise=1.5 cnr=0 cfr=0
+  n1.5_arc_si1.0_g12.0_re0.01_ar1_pgtrue_phfalse: conv=0/287 (0.00), steps=nan, wall=61.54s, errors=0 noise=1.5 cnr=0 cfr=0
+  n1.5_arc_si10.0_g12.0_re0.01_ar1_pgtrue_phfalse: conv=0/287 (0.00), steps=nan, wall=61.67s, errors=0 noise=1.5 cnr=0 cfr=0
+  n1.5_arc_si0.1_g12.0_re0.01_ar1_pgtrue_phfalse: conv=0/287 (0.00), steps=nan, wall=61.72s, errors=0 noise=1.5 cnr=0 cfr=0
+  n1.5_arc_si1.0_g12.0_gd12_re0.01_ar1_pgtrue_phfalse: conv=0/287 (0.00), steps=nan, wall=62.08s, errors=0 noise=1.5 cnr=0 cfr=0
+  n1.5_arc_si1.0_g13.0_re0.01_ar1_pgtrue_phfalse: conv=0/287 (0.00), steps=nan, wall=62.19s, errors=0 noise=1.5 cnr=0 cfr=0
+
+--- Main effect: optimizer_mode ---
+  : mean_conv_rate=0.551, mean_n_converged=158.00, mean_steps=2579.1, mean_wall=114.46s
+  arc: mean_conv_rate=0.060, mean_n_converged=17.21, mean_steps=126.8, mean_wall=58.20s
+
+--- Main effect: noise_level ---
+  0.5: mean_conv_rate=0.305, mean_n_converged=87.57, mean_steps=223.0, mean_wall=47.95s
+  1.0: mean_conv_rate=0.094, mean_n_converged=27.00, mean_steps=478.3, mean_wall=69.01s
+  1.5: mean_conv_rate=0.067, mean_n_converged=19.14, mean_steps=3441.3, mean_wall=73.37s
+  2.0: mean_conv_rate=0.054, mean_n_converged=15.57, mean_steps=799.0, mean_wall=74.62s
+
+=================================================================
+Hardest samples (lowest convergence across configs):
+=================================================================
+  sample_041: 0/28 (0.00), best_step=None, best_combo=None
+  sample_070: 0/28 (0.00), best_step=None, best_combo=None
+  sample_082: 0/28 (0.00), best_step=None, best_combo=None
+  sample_128: 0/28 (0.00), best_step=None, best_combo=None
+  sample_131: 0/28 (0.00), best_step=None, best_combo=None
+  sample_132: 0/28 (0.00), best_step=None, best_combo=None
+  sample_140: 0/28 (0.00), best_step=None, best_combo=None
+  sample_204: 0/28 (0.00), best_step=None, best_combo=None
+  sample_230: 0/28 (0.00), best_step=None, best_combo=None
+  sample_263: 0/28 (0.00), best_step=None, best_combo=None
+
+=================================================================
+📊 Cascade Evaluation Table (optimizer filter × eval threshold)
+=================================================================
+  (no cascade data — need results from run_minimization_parallel.py v2)
+
+Wrote analysis artifacts to: /scratch/memoozd/ts-tools-scratch/runs/min_nr_v10_1102349/analysis
+  nr_grid_summary.json         — full summary (JSON)
+  nr_grid_ranked.csv           — ranked configurations
+  nr_grid_sample_hardness.csv  — per-sample convergence rates
+  nr_grid_cascade_table.csv    — 2D cascade diagnostic table

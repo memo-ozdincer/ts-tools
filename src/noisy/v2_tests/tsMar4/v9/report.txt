@@ -1,0 +1,56 @@
+Loaded 16 configurations.
+Ranking metric: Convergence Rate (desc) → Total Converged (desc) → Mean Steps (asc) → Wall Time (asc)
+
+🏆 Best overall configuration by convergence, then speed:
+  n0.5_mad1.3_se1e-3_sctr_re0.005_ar1_pgtrue_phfalse | converged 231/287 (0.80), mean steps 962.5, mean wall 47.37s
+
+=================================================================
+🥇 Top 16 Configurations (Best First):
+=================================================================
+  n0.5_mad1.3_se1e-3_sctr_re0.005_ar1_pgtrue_phfalse: conv=231/287 (0.80), steps=962.5, wall=47.37s, errors=5 noise=0.5
+  n0.5_mad1.3_se1e-3_sctr_re0.01_ar1_pgtrue_phfalse: conv=231/287 (0.80), steps=962.5, wall=47.37s, errors=5 noise=0.5
+  n0.5_mad1.3_se1e-3_sctr_re0.001_ar1_pgtrue_phfalse: conv=231/287 (0.80), steps=962.5, wall=47.75s, errors=5 noise=0.5
+  n0.5_mad1.3_se1e-3_sctr_re0_ar0_pgtrue_phfalse: conv=231/287 (0.80), steps=962.5, wall=47.93s, errors=5 noise=0.5
+  n1.0_mad1.3_se1e-3_sctr_re0.001_ar1_pgtrue_phfalse: conv=172/287 (0.60), steps=1791.4, wall=102.57s, errors=1 noise=1
+  n1.0_mad1.3_se1e-3_sctr_re0_ar0_pgtrue_phfalse: conv=172/287 (0.60), steps=1791.4, wall=103.85s, errors=1 noise=1
+  n1.0_mad1.3_se1e-3_sctr_re0.01_ar1_pgtrue_phfalse: conv=172/287 (0.60), steps=1791.4, wall=107.09s, errors=1 noise=1
+  n1.0_mad1.3_se1e-3_sctr_re0.005_ar1_pgtrue_phfalse: conv=172/287 (0.60), steps=1791.4, wall=108.08s, errors=1 noise=1
+  n1.5_mad1.3_se1e-3_sctr_re0_ar0_pgtrue_phfalse: conv=133/287 (0.46), steps=3041.2, wall=145.84s, errors=0 noise=1.5
+  n1.5_mad1.3_se1e-3_sctr_re0.001_ar1_pgtrue_phfalse: conv=133/287 (0.46), steps=3041.2, wall=148.33s, errors=0 noise=1.5
+  n1.5_mad1.3_se1e-3_sctr_re0.01_ar1_pgtrue_phfalse: conv=133/287 (0.46), steps=3041.2, wall=152.75s, errors=0 noise=1.5
+  n1.5_mad1.3_se1e-3_sctr_re0.005_ar1_pgtrue_phfalse: conv=133/287 (0.46), steps=3041.2, wall=163.55s, errors=0 noise=1.5
+  n2.0_mad1.3_se1e-3_sctr_re0.005_ar1_pgtrue_phfalse: conv=84/287 (0.29), steps=3044.4, wall=170.72s, errors=0 noise=2
+  n2.0_mad1.3_se1e-3_sctr_re0.01_ar1_pgtrue_phfalse: conv=84/287 (0.29), steps=3044.4, wall=177.51s, errors=0 noise=2
+  n2.0_mad1.3_se1e-3_sctr_re0_ar0_pgtrue_phfalse: conv=84/287 (0.29), steps=3044.4, wall=181.94s, errors=0 noise=2
+  n2.0_mad1.3_se1e-3_sctr_re0.001_ar1_pgtrue_phfalse: conv=84/287 (0.29), steps=3044.4, wall=187.54s, errors=0 noise=2
+
+--- Main effect: noise_level ---
+  0.5: mean_conv_rate=0.805, mean_n_converged=231.00, mean_steps=962.5, mean_wall=47.61s
+  1.0: mean_conv_rate=0.599, mean_n_converged=172.00, mean_steps=1791.4, mean_wall=105.40s
+  1.5: mean_conv_rate=0.463, mean_n_converged=133.00, mean_steps=3041.2, mean_wall=152.62s
+  2.0: mean_conv_rate=0.293, mean_n_converged=84.00, mean_steps=3044.4, mean_wall=179.43s
+
+=================================================================
+Hardest samples (lowest convergence across configs):
+=================================================================
+  sample_091: 0/16 (0.00), best_step=None, best_combo=None
+  sample_110: 0/16 (0.00), best_step=None, best_combo=None
+  sample_117: 0/16 (0.00), best_step=None, best_combo=None
+  sample_124: 0/16 (0.00), best_step=None, best_combo=None
+  sample_127: 0/16 (0.00), best_step=None, best_combo=None
+  sample_129: 0/16 (0.00), best_step=None, best_combo=None
+  sample_130: 0/16 (0.00), best_step=None, best_combo=None
+  sample_131: 0/16 (0.00), best_step=None, best_combo=None
+  sample_139: 0/16 (0.00), best_step=None, best_combo=None
+  sample_159: 0/16 (0.00), best_step=None, best_combo=None
+
+=================================================================
+📊 Cascade Evaluation Table (optimizer filter × eval threshold)
+=================================================================
+  (no cascade data — need results from run_minimization_parallel.py v2)
+
+Wrote analysis artifacts to: /scratch/memoozd/ts-tools-scratch/runs/min_nr_v9_1101131/analysis
+  nr_grid_summary.json         — full summary (JSON)
+  nr_grid_ranked.csv           — ranked configurations
+  nr_grid_sample_hardness.csv  — per-sample convergence rates
+  nr_grid_cascade_table.csv    — 2D cascade diagnostic table

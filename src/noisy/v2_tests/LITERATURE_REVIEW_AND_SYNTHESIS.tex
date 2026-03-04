@@ -27,7 +27,7 @@
   Newton--Raphson Minimization on the DFTB0 PES\\
   from Displaced Transition-State Geometries}
 \author{M.\ Dincer}
-\date{March 2026 --- v10b}
+\date{March 2026 --- v10c}
 
 \begin{document}
 \maketitle
@@ -42,7 +42,7 @@
 
 This document synthesizes insights from two rounds of literature review
 (approximately 20 papers) and maps them explicitly to our experimental
-findings from versions~1 through~10 of the minimization code.
+findings from versions~1 through~10c of the minimization code.
 The goal is to create a permanent, self-contained record of:
 \begin{enumerate}[nosep]
   \item what the literature says about our problem class,
@@ -638,32 +638,188 @@ v6 & Back to basics: SN + TR & 76--79\% at 0.5\,\AA\ (300 samples) & Confirmed \
 v7 & Line search vs.\ trust region & LS worse at all noise & TR wins \\
 v8 & iHiSD crossover (GD$\to$NR) & Crossover hurts & Pure SN best \\
 PIC-ARC & First-order + cubic reg & 0\% convergence & First-order dead \\
-v9 & Relaxed convergence & $\sim$80/60/46/35\% strict & Criterion problem \\
-v10 & ARC + GDIIS & Pending & --- \\
+v9 & Relaxed convergence & 80/60/46/29\% strict & Criterion problem \\
+v10 & ARC + GDIIS & ARC catastrophic (23/2/0/0\%) & \textbf{ARC dead} \\
+v10.2 & +RFO, +Schlegel TR, +GDIIS-late & RFO 67/48/32/12\%; GDIIS zero effect & GDIIS dead \\
+v10c & +Polynomial line search & \textbf{89/78/63/42\%} (RFO+Schlegel+PLS) & \textbf{PLS breakthrough} \\
 \bottomrule
 \end{longtable}
 
-\subsection{Best Convergence Rates}
-\label{tab:cascade}
+\subsection{Best Convergence Rates (v10c)}
+\label{sec:best-rates}
 
 \begin{table}[h]
 \centering
 \begin{tabular}{ccccc}
 \toprule
-Noise & Strict ($n_\text{neg}=0$) & $\lambda\geq-10^{-3}$ & $\lambda\geq-10^{-2}$ & Gap \\
+Noise & v9 GQT & v10c GQT+PLS & v10c RFO+Schl+PLS & $\Delta$ (best) \\
 \midrule
-0.5\,\AA & 72.8\% & 78.7\% & \textbf{90.9\%} & 18\,pts \\
-1.0\,\AA & 50.2\% & 61.3\% & \textbf{90.2\%} & 40\,pts \\
-1.5\,\AA & 30.7\% & 45.6\% & \textbf{87.5\%} & 57\,pts \\
-2.0\,\AA & 19.5\% & 48.1\% & \textbf{92.7\%} & 73\,pts \\
+0.5\,\AA & 80\% & 83\% & \textbf{89\%} & +9\,pts \\
+1.0\,\AA & 60\% & 67\% & \textbf{78\%} & +18\,pts \\
+1.5\,\AA & 46\% & 56\% & \textbf{63\%} & +17\,pts \\
+2.0\,\AA & 29\% & \textbf{45\%} & 42\% & +16\,pts \\
 \bottomrule
 \end{tabular}
-\caption{Cascade convergence rates (v8 SN+LS baseline, 287--300 samples).}
-\label{tab:cascade}
+\caption{Best convergence rates across versions (287 samples, strict $n_\text{neg}=0$).
+  RFO+Schlegel+PLS is champion at 0.5--1.5\,\AA; GQT+PLS wins at 2.0\,\AA.
+  PLS contributes +7 to +18 points across all configurations.}
+\label{tab:best-rates}
 \end{table}
 
+\subsection{v10/v10c Comprehensive Results}
+\label{sec:v10-results}
+
+Four experimental runs were conducted (287 samples each, 10k steps, DFTB0):
+
+\paragraph{v9 (re-run, 16 configs).}
+Baseline shifted Newton with $\varepsilon=10^{-3}$, trust region,
+relaxed eigenvalue thresholds varied.
+Convergence: 80/60/46/29\% at 0.5/1.0/1.5/2.0\,\AA.
+\textbf{All relaxed thresholds} ($-10^{-3}$, $-5\times10^{-3}$, $-10^{-2}$)
+\textbf{give identical counts}---the relaxed criterion does not separate
+any additional population.
+
+\paragraph{v10 (28 configs).}
+First ARC test with $\sigma_0 \in \{0.1, 1.0, 10.0\}$,
+$\gamma_1 \in \{2.0, 3.0\}$, GDIIS buffer $\in \{8, 12\}$.
+GQT baseline: 82/55/47/37\%.
+\textbf{ARC catastrophic}: best 23/2/0/0\% at $n=0.5$.
+Failure autopsy: \textbf{80.3\% of all trajectories classified as
+\texttt{energy\_plateau}}---$\sigma$ over-regularizes, steps become
+too small, energy stalls.
+
+\paragraph{v10.2 (48 configs).}
+Added RFO, Schlegel trust radius fixes, GDIIS late-stage trigger.
+GQT: 75/53/44/27\%.
+RFO: 67/48/32/12\%.
+Schlegel TR: mixed ($\pm$2--5\,pts depending on noise level).
+\textbf{GDIIS zero effect}: RFO+Schlegel+GDIIS = RFO+Schlegel exactly
+(same convergence count, same oscillating failure count).
+
+\paragraph{v10c (56 configs).}
+Added polynomial line search (PLS) to GQT and RFO configs.
+\textbf{RFO+Schlegel+PLS: 89/78/63/42\%} (new champion at 0.5--1.5\,\AA).
+GQT+PLS: 83/67/56/45\% (wins at 2.0\,\AA).
+
+\begin{table}[h]
+\centering
+\caption{Full convergence comparison across v10c configurations (287 samples).}
+\label{tab:v10c-full}
+\begin{tabular}{lcccc}
+\toprule
+Configuration & 0.5\,\AA & 1.0\,\AA & 1.5\,\AA & 2.0\,\AA \\
+\midrule
+GQT (v9 baseline) & 76\% & 55\% & 49\% & 27\% \\
+GQT + Schlegel TR & 78\% & 57\% & 47\% & 29\% \\
+GQT + PLS & \textbf{83\%} & \textbf{67\%} & \textbf{56\%} & \textbf{45\%} \\
+GQT + Schlegel TR + PLS (inferred) & --- & --- & --- & --- \\
+\midrule
+RFO & 65\% & 46\% & 32\% & 13\% \\
+RFO + Schlegel TR & 67\% & 44\% & 31\% & 14\% \\
+RFO + Schlegel TR + PLS & \textbf{89\%} & \textbf{78\%} & \textbf{63\%} & \textbf{42\%} \\
+RFO + Schlegel TR + GDIIS & 67\% & 44\% & 31\% & 14\% \\
+\midrule
+ARC ($\sigma_0=1$, $\gamma_1=2$) & 18\% & 2\% & 0\% & 0\% \\
+ARC ($\sigma_0=1$, $\gamma_1=3$) & 20\% & 2\% & 0\% & 0\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsubsection{Factor Analysis}
+
+\paragraph{Polynomial line search: the breakthrough.}
+PLS is the single most impactful intervention across all versions:
+\begin{itemize}[nosep]
+  \item GQT $\to$ GQT+PLS: +7/+12/+7/+18 points
+  \item RFO+Schlegel $\to$ RFO+Schlegel+PLS: +22/+34/+32/+28 points
+  \item PLS halves oscillating failures (autopsy): e.g., at $n=0.5$,
+    GQT oscillating 32$\to$12; RFO oscillating 61$\to$18.
+  \item Mechanism: cubic interpolation using energy+gradient at current
+    and previous geometry; zero extra evaluations; stabilizes
+    eigenvalue-crossing regime.
+\end{itemize}
+
+\paragraph{ARC: catastrophic failure.}
+Across all $\sigma_0$, $\gamma_1$ combinations:
+\begin{itemize}[nosep]
+  \item Energy plateau is the dominant failure mode (80\% of all ARC
+    trajectories in v10).
+  \item $\sigma$ grows without bound, steps shrink to near-zero,
+    energy stalls.
+  \item No $\sigma_0$/$\gamma_1$ combination recovers useful performance.
+  \item GDIIS does not rescue ARC (same counts with/without).
+\end{itemize}
+Root cause: ARC's $\sigma$-adaptation formula was designed for smooth
+optimization problems.  On the DFTB0 PES with Hessian noise, even good
+steps can have poor $\rho$ values, causing $\sigma$ to ratchet upward.
+
+\paragraph{GDIIS: zero effect.}
+Across all configurations (buffer 8, 12; oscillation-triggered;
+late-stage threshold 0.01):
+\begin{itemize}[nosep]
+  \item Convergence counts identical with/without GDIIS.
+  \item Failure mode counts identical with/without GDIIS.
+  \item Neither oscillation detection nor late-stage trigger produces
+    any benefit.
+\end{itemize}
+Hypothesis: GDIIS extrapolation requires the error vectors to lie in a
+low-dimensional subspace.  In our high-dimensional problem ($\sim$60
+DOF), the oscillation involves too many coupled modes for 8--12
+history vectors to capture.
+
+\paragraph{Schlegel trust radius: mixed.}
+Boundary-check growth + step-anchored shrink produces $\pm$2--5\,pts
+depending on noise level.  Not a consistent improvement on its own,
+but combines well with PLS (RFO+Schlegel+PLS is champion).
+
+\paragraph{RFO vs.\ GQT: crossover at high noise.}
+RFO+PLS wins at 0.5--1.5\,\AA\ but GQT+PLS wins at 2.0\,\AA\ (45\%
+vs.\ 42\%).  At large displacements, RFO's augmented Hessian shift may
+be too aggressive, while GQT's fixed $\varepsilon$ provides a more
+conservative regularization floor.
+
+\subsubsection{Failure Autopsy Summary (v10c)}
+
+\begin{table}[h]
+\centering
+\caption{Failure classification across v10c (16,023 trajectories).}
+\label{tab:autopsy-v10c}
+\begin{tabular}{lrr}
+\toprule
+Classification & Count & Fraction \\
+\midrule
+converged & 4,446 & 27.7\% \\
+energy\_plateau (ARC) & 7,595 & 47.4\% \\
+oscillating & 2,710 & 16.9\% \\
+almost\_converged & 1,000 & 6.2\% \\
+ghost\_modes & 241 & 1.5\% \\
+slow\_convergence & 26 & 0.2\% \\
+drifting & 5 & 0.0\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Excluding ARC configs, the remaining failure landscape is:
+oscillating ($\sim$50\% of non-ARC failures),
+almost\_converged ($\sim$30\%),
+ghost\_modes ($\sim$10\%).
+PLS halves the oscillating population; the almost\_converged and
+ghost\_mode populations are unaffected by any v10 intervention.
+
+\subsection{Transition1x Frequency Verification (v10c)}
+\label{sec:transition1x-verification}
+
+DFTB0 frequency analysis on all 287 DFT-labeled endpoints:
+\begin{itemize}[nosep]
+  \item Reactants: 29/287 (10.1\%) are genuine minima ($n_\text{neg}=0$).
+  \item Products: 30/287 (10.5\%) are genuine minima ($n_\text{neg}=0$).
+  \item Correlation with optimizer failure: Pearson $r=0.22$ (weak).
+\end{itemize}
+The weak correlation confirms that optimizer failure is not primarily
+driven by the starting-point PES character.
+
 \subsection{Direction Quality}
-\label{tab:direction-quality}
+\label{sec:direction-quality}
 
 \begin{table}[h]
 \centering
@@ -708,26 +864,36 @@ True min & $1.55\times10^3$ & 3.2 & Well-conditioned \\
 
 Three distinct failure populations identified from trajectory analysis:
 
-\paragraph{Population A: ``Blind Modes'' (49.6\% of failures).}
+\paragraph{Population A: ``Blind Modes'' (49.6\% of pre-v10c failures).}
 $\lambda_\text{min} \in [-10^{-3}, -2\times10^{-4}]$, forces 0.03--0.09\,eV/\AA,
 gradient overlap with negative modes $<0.1$.  Trust radius at floor.
 The optimizer ``sees'' the negative eigenvalue but the gradient has no
 component in that direction---it cannot flip the mode.
+\emph{v10c update}: Corresponds to the \texttt{almost\_converged} and
+\texttt{ghost\_modes} populations in the autopsy.
+\textbf{Unaffected by PLS, GDIIS, or any v10 intervention.}
 
-\paragraph{Population B: ``Oscillation--Collapse'' (44.2\% of failures).}
+\paragraph{Population B: ``Oscillation--Collapse'' (44.2\% of pre-v10c failures).}
 $\lambda_\text{min} \in [-10^{-2}, -10^{-3}]$, forces 0.1--0.37\,eV/\AA.
-Period-$\sim$8 oscillation cycle detected by FFT.  This is the population
-most likely to benefit from GDIIS.
+Period-$\sim$8 oscillation cycle detected by FFT.
+\emph{v10c update}: \textbf{PLS halves this population} (e.g., GQT at
+$n=0.5$: 32$\to$12 oscillating; RFO at $n=0.5$: 61$\to$18).
+GDIIS had zero effect despite being designed for exactly this case.
 
 \paragraph{Population C: ``Stagnation Zombies'' (subset).}
 Stagnation $>50\%$ of trajectory.  Example: sample~098 frozen 99.6\% of steps.
+
+\paragraph{Population D: ``Energy Plateau'' (ARC-specific).}
+$\sigma$ over-regularization causes near-zero steps; energy stalls.
+80\% of all ARC trajectories.  This population does not exist for
+GQT or RFO configurations.
 
 %=============================================================================
 \section{What We Incorporated in v10/v10b}
 \label{sec:incorporated}
 %=============================================================================
 
-\subsection{ARC Full-Spectrum Step Builder (v10)}
+\subsection{ARC Full-Spectrum Step Builder (v10) --- FAILED}
 
 Replaces both the shifted Newton shift and trust region with cubic
 regularization (Section~\ref{sec:arc}).  Implementation:
@@ -744,7 +910,15 @@ shrink arbitrarily small (aggressive), without a hard floor.
 $\sigma_0 \in \{0.1, 1.0, 10.0\}$,
 $\gamma_1 \in \{2.0, 3.0\}$.
 
-\subsection{GDIIS Oscillation Breaking (v10, corrected v10b)}
+\textbf{Result}: \textcolor{red}{\textbf{Catastrophic failure.}}  Best ARC
+config: 23\% at $n=0.5$, 2\% at $n=1.0$, 0\% at $n\geq 1.5$.
+80\% of all ARC trajectories classified as \texttt{energy\_plateau}:
+$\sigma$ ratchets upward on noisy PES (even good steps can have poor
+$\rho$), steps shrink to near-zero, energy stalls.
+No $\sigma_0$/$\gamma_1$ combination recovers.  GDIIS does not rescue.
+\textbf{ARC should not be used for noisy PES minimization.}
+
+\subsection{GDIIS Oscillation Breaking (v10, corrected v10b) --- FAILED}
 
 \texttt{\_GDIISExtrapolator} stores geometry--gradient--step history and
 attempts interpolation every $N$ steps when oscillation is detected.
@@ -755,6 +929,14 @@ formulation~\eqref{eq:gdiis-B}.
 
 \textbf{Grid parameters}: buffer sizes $\{8, 12\}$.
 
+\textbf{Result}: \textcolor{red}{\textbf{Zero effect.}}  Across all
+configurations (buffer 8/12, oscillation-triggered, late-stage threshold
+0.01), convergence counts and failure mode distributions are identical
+with and without GDIIS.  Hypothesis: GDIIS extrapolation requires
+error vectors to span a low-dimensional subspace; in $\sim$60-DOF
+molecules, oscillation involves too many coupled modes for 8--12
+history vectors to capture.
+
 \subsection{RFO Step Builder (v10b)}
 
 Augmented Hessian method (Section~\ref{sec:rfo}).
@@ -764,6 +946,12 @@ Uses the same trust-region step-control as v9 baseline.
 \textbf{Rationale}: RFO is the standard in production codes (Gaussian, ORCA,
 Sella).  It provides adaptive shift determination without the hyperparameter
 $\varepsilon$.  Never tested in our codebase before.
+
+\textbf{Result}: Without PLS, RFO underperforms GQT (67/48/32/12\% vs.\
+75/55/44/27\%).  \textbf{With PLS, RFO becomes champion}
+(89/78/63/42\%), a +22/+34/+32/+28\,pt improvement over bare RFO.
+Interpretation: RFO provides better step \emph{directions} than GQT
+but worse step \emph{lengths}; PLS fixes the length.
 
 \subsection{Schlegel Trust Radius Fixes (v10b)}
 
@@ -776,7 +964,11 @@ actual step size, wasting recovery.  The boundary check prevents
 unnecessary growth.  Both are well-established in the
 literature~\citep{schlegel2011}.
 
-\subsection{Late-Stage GDIIS Acceleration (v10b)}
+\textbf{Result}: Mixed.  Alone: $\pm$2--5\,pts depending on noise level
+(slightly helps GQT at $n=1.0$, slightly hurts at $n=0.5$).
+\textbf{Combines well with PLS}: RFO+Schlegel+PLS is champion.
+
+\subsection{Late-Stage GDIIS Acceleration (v10b) --- FAILED}
 
 Parameter \texttt{gdiis\_late\_force\_threshold}: triggers GDIIS
 when \texttt{force\_norm} drops below threshold, regardless of oscillation
@@ -786,6 +978,28 @@ detection.
 accelerating final convergence routinely.  Population~A failures (blind
 modes) have moderate forces but no oscillation---late-stage GDIIS could
 help where oscillation-triggered GDIIS does not.
+
+\textbf{Result}: Zero effect, same as oscillation-triggered GDIIS
+(Section~\ref{sec:incorporated}, GDIIS subsection).
+
+\subsection{Polynomial Line Search (v10c) --- BREAKTHROUGH}
+\label{sec:pls}
+
+Cubic interpolation using energy and gradient at current and previous
+geometry.  Zero extra evaluations.  Fits $p(t) = at^3 + bt^2 + ct + d$
+satisfying $p(0) = E_k$, $p'(0) = \nabla E_k \cdot d$,
+$p(1) = E_{k+1}$, $p'(1) = \nabla E_{k+1} \cdot d$.  Steps to the
+cubic minimizer if it lies in $[0, 1]$ and reduces energy.
+
+\textbf{Rationale}: Schlegel~\citep{schlegel2011} describes cubic/quartic
+energy fitting near inflection points.  We expected modest gains for
+the eigenvalue-crossing regime.
+
+\textbf{Result}: \textcolor{blue}{\textbf{The single most impactful
+intervention across all versions.}}  +7 to +34 points depending on
+configuration and noise level.  Halves the oscillating failure population.
+Transforms RFO from underperformer (67/48/32/12\%) to champion
+(89/78/63/42\%).
 
 %=============================================================================
 \section{What We Did NOT Incorporate and Why}
@@ -819,13 +1033,10 @@ augmented-Hessian mechanism without the coordinate transformation machinery.
 
 \subsection{Polynomial Line Search Near Inflection Points}
 
-Schlegel~\citep{schlegel2011} describes cubic/quartic energy fitting using
-energy and gradient at current and previous geometry.  Zero extra evaluations.
-Could stabilize the eigenvalue-crossing regime where the quadratic model is
-particularly poor.
-
-\textbf{Why not}: Requires careful implementation to detect inflection
-proximity.  Documented as future work.
+\textbf{Status}: \textcolor{blue}{\textbf{Implemented in v10c}} and
+proved to be the most impactful intervention.  See
+Section~\ref{sec:pls}.  Originally deferred as future work in v10b;
+implemented by another agent based on the v10b plan.
 
 \subsection{Model-Hessian Preconditioning}
 
@@ -877,6 +1088,9 @@ they should not be revisited.
 
   \item \textbf{Line search} (v7): TR wins at all noise levels.  Theory:
     commits to poor direction~\citep{schlegel2011}.
+    \emph{Note}: The polynomial line search (v10c) \emph{is} a line search,
+    but within the trust region step---it refines step \emph{length}, not
+    direction.  This distinction is critical.
 
   \item \textbf{LM damping} (v2): SN better.  Theory: over-regularizes
     positive eigenvalues.
@@ -892,54 +1106,55 @@ they should not be revisited.
 
   \item \textbf{PIC-ARC} (first-order + cubic reg): 0\% convergence.
     First-order methods cannot navigate this PES~\citep{packwood2018}.
+
+  \item \textbf{ARC} (v10): Catastrophic.  $\sigma$-adaptation fails on
+    noisy PES---even good steps produce poor $\rho$, causing $\sigma$ to
+    ratchet upward.  80\% energy plateau.  All $\sigma_0$/$\gamma_1$
+    combinations tested.
+
+  \item \textbf{GDIIS} (v10/v10b): Zero effect.  Tested oscillation-triggered
+    (buffer 8, 12) and late-stage (force threshold 0.01).  Convergence and
+    failure distributions identical with/without.
 \end{enumerate}
 
 %=============================================================================
-\section{v10/v10b Grid Design}
+\section{Grid Design and Results}
 \label{sec:grid}
 %=============================================================================
 
-The v10 grid tests 12 configurations $\times$ 4 noise levels = 48
-combinations, each with 300 samples:
+\subsection{v10/v10b Grid (48 configs)}
 
-\begin{center}
-\begin{tabular}{clccl}
-\toprule
-\# & Algorithm & $\sigma_0$ / $\gamma_1$ & GDIIS & Notes \\
-\midrule
-1  & v9 baseline (SN+TR) & --- & off & Control \\
-2  & ARC & 0.1 / 2.0 & off & Low reg \\
-3  & ARC & 1.0 / 2.0 & off & Default \\
-4  & ARC & 10.0 / 2.0 & off & High reg \\
-5  & ARC & 1.0 / 3.0 & off & Aggressive $\sigma$ \\
-6  & ARC + GDIIS-8 & 1.0 / 2.0 & 8 & Oscillation \\
-7  & ARC + GDIIS-12 & 1.0 / 2.0 & 12 & Larger buffer \\
-8  & RFO + TR & --- & off & Chemistry standard \\
-9  & RFO + Schlegel TR & --- & off & RFO + fixed TR \\
-10 & RFO + Schlegel TR + GDIIS & --- & 8+late & Full RFO \\
-11 & ARC + GDIIS-late & 1.0 / 2.0 & 8+late & Late accel \\
-12 & v9 + Schlegel TR & --- & off & TR fix only \\
-\bottomrule
-\end{tabular}
-\end{center}
+The v10 grid tested 12 configurations $\times$ 4 noise levels = 48
+combinations, each with 287 samples.  See Table~\ref{tab:v10c-full}
+for results.
 
-All configurations use relaxed convergence ($\lambda_\text{min} \geq -0.01$,
-\texttt{accept\_relaxed=True}).
-
-\textbf{Key comparisons}:
+\textbf{Key findings}:
 \begin{itemize}[nosep]
-  \item \textbf{ARC vs.\ RFO vs.\ GQT}: Configs 1 (GQT baseline) vs.\ 3
-    (ARC default) vs.\ 8 (RFO).  Tests whether adaptive regularization
-    helps over fixed $\varepsilon$.
-  \item \textbf{Schlegel TR fix}: Configs 1 vs.\ 12 (same optimizer,
-    different TR rules).
-  \item \textbf{GDIIS oscillation vs.\ late-stage}: Configs 6 (oscillation
-    only) vs.\ 11 (late-stage).
-  \item \textbf{ARC $\sigma$ sensitivity}: Configs 2--5 span $\sigma_0$
-    and $\gamma_1$.
-  \item \textbf{Full RFO}: Config 10 combines RFO + Schlegel TR + late-stage
-    GDIIS---the ``standard chemistry stack.''
+  \item ARC: catastrophic across all $\sigma_0$, $\gamma_1$ (best 23\%).
+  \item GDIIS: zero effect on all configurations.
+  \item RFO: underperforms GQT without PLS.
+  \item Schlegel TR: mixed $\pm$5\,pts.
 \end{itemize}
+
+\subsection{v10c Grid (+PLS, 56 configs)}
+
+Added polynomial line search (PLS) to GQT and RFO+Schlegel configs:
+14 configs $\times$ 4 noise = 56 total.
+
+\textbf{Key findings}:
+\begin{itemize}[nosep]
+  \item PLS: +7 to +34\,pts across all configs.
+  \item RFO+Schlegel+PLS: new champion (89/78/63/42\%).
+  \item GQT+PLS: competitive, wins at 2.0\,\AA\ (45\% vs.\ 42\%).
+\end{itemize}
+
+\subsection{Recommended Configuration for Future Work}
+
+Based on all evidence, the recommended baseline is:
+\begin{center}
+\fbox{\textbf{RFO + Schlegel TR + PLS}}
+\end{center}
+With GQT+PLS as an alternative at high noise ($\geq 2.0$\,\AA).
 
 %=============================================================================
 \section{Open Questions}
@@ -947,31 +1162,36 @@ All configurations use relaxed convergence ($\lambda_\text{min} \geq -0.01$,
 %=============================================================================
 
 \begin{enumerate}
-  \item \textbf{Persistently hard samples}: Samples 004, 008, 009, 020, 022,
-    024, 027, 044, 047, 048 fail across all versions and seeds.  Structural
-    analysis needed: are these multi-fragment dissociation, ring-opening, or
-    electronically unusual reactions?
+  \item \textbf{Persistently hard samples}: In v10c, samples 184, 210, 251
+    are hardest (4--5/56 configs converge).  Structural analysis needed:
+    are these multi-fragment dissociation, ring-opening, or electronically
+    unusual reactions?
 
-  \item \textbf{$\sim$90\% relaxed ceiling}: Even at $\lambda_\text{min}
-    \geq -0.01$, 7--13\% fail.  Hypothesis: bond-breaking/forming creates
-    disconnected fragments or radical-like electronic states where DFTB0 is
-    qualitatively wrong.
+  \item \textbf{Why does PLS help RFO so much more than GQT?}
+    RFO+Schlegel+PLS gains +22--34\,pts over bare RFO, while GQT+PLS gains
+    only +7--18\,pts.  Hypothesis: RFO's augmented Hessian gives better
+    \emph{directions} but worse \emph{step lengths}; PLS fixes the length.
+    Testing: compare step-length distributions with/without PLS.
 
-  \item \textbf{Transition1x frequency verification}: No frequency checks
-    performed on minima in the original dataset.  Some ``minima'' may be
-    saddle points even at the DFT level.
+  \item \textbf{Population~A (blind modes) unresolved}: Almost\_converged
+    and ghost\_mode failures are unaffected by any v10 intervention.
+    These have $\lambda_\text{min} \in [-10^{-3}, -2\times10^{-4}]$ with
+    gradient overlap $<0.1$ in the negative-eigenvalue direction.
+    Possible approaches: random perturbation, mode-following, internal
+    coordinate rotation.
+
+  \item \textbf{GQT vs.\ RFO crossover at 2.0\,\AA}: GQT+PLS (45\%)
+    beats RFO+Schlegel+PLS (42\%) at highest noise.  Should a
+    noise-adaptive algorithm selection be considered?
 
   \item \textbf{SCINE SCF convergence}: Could tighter SCF thresholds reduce
-    the Hessian noise floor ($\sim8\times10^{-3}$)?
+    the Hessian noise floor ($\sim8\times10^{-3}$)?  Investigation script
+    written but crashed (\texttt{NameError}: \texttt{defaultdict}).
 
-  \item \textbf{Sella-style RS-RFO}: Full internal-coordinate framework with
-    geodesic back-transformation.  Major refactor for potentially marginal
-    benefit on small molecules.
-
-  \item \textbf{$n_\text{neg}=1$ for escape mechanisms}: When mode-following
-    or GAD-type methods are used, accepting first-order saddle points as
-    valid endpoints.  Relevant if we characterize the PES rather than
-    strictly minimize.
+  \item \textbf{Transition1x frequency verification}: Completed in v10c.
+    Only 10\% of DFT-labeled minima are true minima under DFTB0.
+    Weak correlation ($r=0.22$) with optimizer failure.
+    \emph{Resolved}: not a primary driver of failure.
 \end{enumerate}
 
 %=============================================================================
@@ -996,13 +1216,14 @@ run_minimization_parallel.py   (CLI + SLURM interface)
                     |     _nr_step_lm_damping()      (v2, inferior)
                     |     _nr_step_hard_filter()      (v1, inferior)
                     |-> Step control:
-                    |     ARC sigma-adaptation  (v10)
+                    |     ARC sigma-adaptation  (v10, FAILED)
                     |     Trust region           (v1-v9, RFO)
+                    |     Polynomial line search (v10c, BEST)
                     |     Line search            (v7, inferior)
                     |-> GDIIS:
-                    |     _GDIISExtrapolator    (v10/v10b)
-                    |     Oscillation detection  (v10)
-                    |     Late-stage trigger      (v10b)
+                    |     _GDIISExtrapolator    (v10/v10b, ZERO EFFECT)
+                    |     Oscillation detection  (v10, no benefit)
+                    |     Late-stage trigger      (v10b, no benefit)
                     |-> Convergence:
                           Cascade evaluation at 8 thresholds
                           Strict / Relaxed / Stalled classification

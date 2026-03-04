@@ -97,6 +97,8 @@ COMBO_RE_RELAXED_V9 = re.compile(
     r"n(?P<noise>[^_]+)_mad(?P<mad>[^_]+)_se(?P<se>[^_]+)"
     r"_sc(?P<sc>tr|ls)"
     r"(?:_str(?P<str>))?"
+    r"(?:_trf(?P<trf>[^_]+))?"
+    r"(?:_20k(?P<n20k>))?"
     r"_re(?P<re>[^_]+)_ar(?P<ar>[01])"
     r"(?:_pls(?P<pls>))?"
     r"_pg(?P<pg>true|false)_ph(?P<ph>true|false)$"
@@ -109,12 +111,14 @@ COMBO_RE_ARC_V10 = re.compile(
     r"_re(?P<re>[^_]+)_ar(?P<ar>[01])"
     r"_pg(?P<pg>true|false)_ph(?P<ph>true|false)$"
 )
-# v10b RFO: n<noise>_rfo[_gd<gdiis>][_glf<force>][_str]_re<threshold>_ar<0|1>[_pls]_pg<bool>_ph<bool>
+# v10b/v11 RFO: n<noise>_rfo[_gd<gdiis>][_glf<force>][_str][_trf<v>][_20k]_re<threshold>_ar<0|1>[_pls]_pg<bool>_ph<bool>
 COMBO_RE_RFO_V10 = re.compile(
     r"n(?P<noise>[^_]+)_rfo"
     r"(?:_gd(?P<gd>[^_]+))?"
     r"(?:_glf(?P<glf>[^_]+))?"
     r"(?:_str(?P<str>))?"
+    r"(?:_trf(?P<trf>[^_]+))?"
+    r"(?:_20k(?P<n20k>))?"
     r"_re(?P<re>[^_]+)_ar(?P<ar>[01])"
     r"(?:_pls(?P<pls>))?"
     r"_pg(?P<pg>true|false)_ph(?P<ph>true|false)$"
@@ -365,6 +369,8 @@ def _parse_combo_tag(combo_tag: str) -> Optional[Dict[str, Any]]:
             "gdiis_buffer_size": int(_safe_float(m.group("gd") or "0", 0)),
             "gdiis_late_force_threshold": _safe_float(m.group("glf") or "0", 0),
             "schlegel_trust_update": m.group("str") is not None,
+            "trust_radius_floor": _safe_float(m.group("trf") or "0.01", 0.01),
+            "n_steps_20k": m.group("n20k") is not None,
             "relaxed_eval_threshold": _safe_float(m.group("re")),
             "accept_relaxed": m.group("ar") == "1",
             "polynomial_linesearch": m.group("pls") is not None,
@@ -392,6 +398,8 @@ def _parse_combo_tag(combo_tag: str) -> Optional[Dict[str, Any]]:
             "relaxed_eval_threshold": _safe_float(m.group("re")),
             "accept_relaxed": m.group("ar") == "1",
             "schlegel_trust_update": m.group("str") is not None,
+            "trust_radius_floor": _safe_float(m.group("trf") or "0.01", 0.01),
+            "n_steps_20k": m.group("n20k") is not None,
             **_v3_defaults,
             **_v4_defaults,
             "polynomial_linesearch": m.group("pls") is not None,

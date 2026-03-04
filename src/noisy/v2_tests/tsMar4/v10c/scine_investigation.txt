@@ -1,0 +1,15 @@
+========================================================================
+SCINE convergence investigation
+========================================================================
+Samples: 10
+Functional: DFTB0
+Detected settings: 9
+Profiles: ['default']
+========================================================================
+Traceback (most recent call last):
+  File "/project/rrg-aspuru/memoozd/ts-tools/src/noisy/v2_tests/scripts/investigate_scine_convergence.py", line 459, in <module>
+    main()
+  File "/project/rrg-aspuru/memoozd/ts-tools/src/noisy/v2_tests/scripts/investigate_scine_convergence.py", line 349, in main
+    per_profile_errors: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+                                                          ^^^^^^^^^^^
+NameError: name 'defaultdict' is not defined
