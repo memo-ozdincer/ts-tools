@@ -43,6 +43,8 @@ v10 flags:
                   Attempt GDIIS when force_norm < this (0 = off, default)
 - --schlegel-trust-update
                   Use Schlegel trust radius rules (boundary-check growth, step-anchored shrink)
+- --polynomial-linesearch
+                  v10c: cubic interpolation refinement on accepted trust-region steps
 
 Cascade evaluation:
   Every trajectory step now contains "n_neg_at_<threshold>" fields for
@@ -215,6 +217,7 @@ def run_single_sample(
                 gdiis_every=params.get("gdiis_every", 5),
                 gdiis_late_force_threshold=params.get("gdiis_late_force_threshold", 0.0),
                 schlegel_trust_update=params.get("schlegel_trust_update", False),
+                polynomial_linesearch=params.get("polynomial_linesearch", False),
             )
         elif method == "pic_arc":
             result, trajectory = run_pic_arc(
@@ -708,6 +711,10 @@ def main() -> None:
         "--schlegel-trust-update", action="store_true", default=False,
         help="Use Schlegel trust radius rules: boundary-check growth + step-anchored shrink.",
     )
+    parser.add_argument(
+        "--polynomial-linesearch", action="store_true", default=False,
+        help="v10c: cubic interpolation refinement on accepted trust-region steps.",
+    )
 
     # --- PIC-ARC flags ---
     parser.add_argument(
@@ -860,6 +867,7 @@ def main() -> None:
         "gdiis_every": args.gdiis_every,
         "gdiis_late_force_threshold": args.gdiis_late_force_threshold,
         "schlegel_trust_update": args.schlegel_trust_update,
+        "polynomial_linesearch": args.polynomial_linesearch,
         # PIC-ARC additions
         "trust_radius_init": args.trust_radius_init,
         "sigma_init": args.sigma_init,

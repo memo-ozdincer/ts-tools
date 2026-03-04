@@ -210,6 +210,77 @@ def _force_mean(forces: torch.Tensor) -> float:
     return float(f.norm(dim=1).mean().item())
 
 
+def _cubic_interval_minimum(
+    energy_prev: float,
+    energy_curr: float,
+    deriv_prev: float,
+    deriv_curr: float,
+    *,
+    t_lo: float = 0.1,
+    t_hi: float = 0.9,
+) -> Optional[Dict[str, float]]:
+    """Fit cubic p(t) on [0,1] and return an interior local minimum.
+
+    Constraints:
+      p(0)=E_prev, p(1)=E_curr, p'(0)=deriv_prev, p'(1)=deriv_curr.
+
+    `deriv_prev/deriv_curr` are directional derivatives with respect to the
+    unitless interpolation coordinate t in x(t)=x_prev+t*(x_curr-x_prev).
+    """
+    if not (0.0 < t_lo < t_hi < 1.0):
+        return None
+
+    # p(t)=a t^3 + b t^2 + c t + d
+    d = energy_prev
+    c = deriv_prev
+    y1 = energy_curr - energy_prev - deriv_prev
+    y2 = deriv_curr - deriv_prev
+    a = y2 - 2.0 * y1
+    b = 3.0 * y1 - y2
+
+    candidates: List[float] = []
+    eps = 1e-14
+
+    # p'(t)=3 a t^2 + 2 b t + c
+    if abs(a) < eps:
+        if abs(b) > eps:
+            t = -c / (2.0 * b)
+            candidates.append(t)
+    else:
+        disc = 4.0 * b * b - 12.0 * a * c
+        if disc >= 0.0:
+            sqrt_disc = disc ** 0.5
+            denom = 6.0 * a
+            if abs(denom) > eps:
+                candidates.append((-2.0 * b - sqrt_disc) / denom)
+                candidates.append((-2.0 * b + sqrt_disc) / denom)
+
+    best_t: Optional[float] = None
+    best_e = float("inf")
+    for t in candidates:
+        if not (t_lo < t < t_hi):
+            continue
+        second = 6.0 * a * t + 2.0 * b
+        if second <= 0.0:
+            continue
+        e_t = ((a * t + b) * t + c) * t + d
+        if e_t < best_e:
+            best_t = t
+            best_e = e_t
+
+    if best_t is None or not (best_e < energy_curr):
+        return None
+
+    return {
+        "t_star": float(best_t),
+        "predicted_energy": float(best_e),
+        "a": float(a),
+        "b": float(b),
+        "c": float(c),
+        "d": float(d),
+    }
+
+
 def _min_interatomic_distance(coords: torch.Tensor) -> float:
     if coords.dim() == 3 and coords.shape[0] == 1:
         coords = coords[0]
@@ -1716,6 +1787,8 @@ def run_newton_raphson(
     gdiis_late_force_threshold: float = 0.0,  # 0 = off; >0 = attempt GDIIS when force < threshold
     # --- v10b Schlegel trust radius fix ---
     schlegel_trust_update: bool = False,  # True = boundary-check growth + step-anchored shrink
+    # --- v10c polynomial refinement ---
+    polynomial_linesearch: bool = False,  # cubic interpolation on accepted TR steps
 ) -> Tuple[Dict[str, Any], list]:
     """Newton-Raphson optimization to find energy minimum.
 
@@ -2561,8 +2634,87 @@ def run_newton_raphson(
                 if actual_dE <= 1e-5:
                     accepted = True
 
+                    accepted_disp = capped_disp
+                    accepted_coords = new_coords.detach()
+                    accepted_out = out_new
+                    accepted_energy = energy_new
+                    pred_dE_used = pred_dE
+
+                    if polynomial_linesearch:
+                        pls_info: Dict[str, Any] = {
+                            "enabled": True,
+                            "attempted": False,
+                            "applied": False,
+                        }
+                        if step > 0:
+                            pls_info["attempted"] = True
+                            step_vec = capped_disp.reshape(-1).to(work_dtype)
+                            step_norm = float(step_vec.norm().item())
+                            pls_info["step_norm"] = step_norm
+
+                            if step_norm > 1e-12:
+                                grad_prev_raw = -forces.reshape(-1).to(work_dtype)
+                                forces_new = out_new["forces"]
+                                if forces_new.dim() == 3 and forces_new.shape[0] == 1:
+                                    forces_new = forces_new[0]
+                                grad_curr_raw = -forces_new.reshape(-1).to(work_dtype)
+
+                                deriv_prev = float(grad_prev_raw.dot(step_vec).item())
+                                deriv_curr = float(grad_curr_raw.dot(step_vec).item())
+                                pls_info["deriv_prev"] = deriv_prev
+                                pls_info["deriv_curr"] = deriv_curr
+
+                                cubic_min = _cubic_interval_minimum(
+                                    energy, energy_new, deriv_prev, deriv_curr,
+                                )
+                                if cubic_min is not None:
+                                    t_star = cubic_min["t_star"]
+                                    pls_info.update(cubic_min)
+                                    refined_disp = capped_disp * t_star
+                                    refined_coords = coords + refined_disp
+
+                                    if _min_interatomic_distance(refined_coords) >= min_interatomic_dist:
+                                        out_refined = predict_fn(
+                                            refined_coords,
+                                            atomic_nums,
+                                            do_hessian=True,
+                                            require_grad=False,
+                                        )
+                                        refined_energy = _to_float(out_refined["energy"])
+                                        pls_info["refined_energy"] = refined_energy
+
+                                        if refined_energy < accepted_energy - 1e-8:
+                                            accepted_disp = refined_disp
+                                            accepted_coords = refined_coords.detach()
+                                            accepted_out = out_refined
+                                            accepted_energy = refined_energy
+                                            dx_ref = accepted_disp.reshape(-1).to(work_dtype)
+                                            dx_ref_red = V.T @ dx_ref
+                                            pred_dE_used = float(
+                                                (
+                                                    grad.dot(dx_ref)
+                                                    + 0.5 * (lam * dx_ref_red * dx_ref_red).sum()
+                                                ).item()
+                                            )
+                                            pls_info["applied"] = True
+                                        else:
+                                            pls_info["reject_reason"] = "not_lower_than_accepted"
+                                    else:
+                                        pls_info["reject_reason"] = "min_dist_violation"
+                                else:
+                                    pls_info["reject_reason"] = "no_interior_cubic_min"
+                            else:
+                                pls_info["reject_reason"] = "tiny_step"
+                        else:
+                            pls_info["reject_reason"] = "first_step"
+                        step_record["polynomial_linesearch"] = pls_info
+
+                    capped_disp = accepted_disp
+                    step_max_disp = float(capped_disp.reshape(-1, 3).norm(dim=1).max().item())
+                    actual_dE = accepted_energy - energy
+
                     # Update trust radius based on rho
-                    rho = actual_dE / pred_dE if pred_dE < -1e-8 else 0.0
+                    rho = actual_dE / pred_dE_used if pred_dE_used < -1e-8 else 0.0
 
                     if schlegel_trust_update:
                         # Schlegel (2011): only grow if step was near boundary
@@ -2585,8 +2737,8 @@ def run_newton_raphson(
                             else:
                                 current_trust_radius = max(current_trust_radius * 0.25, trust_radius_floor)
 
-                    coords = new_coords.detach()
-                    out = out_new
+                    coords = accepted_coords
+                    out = accepted_out
                 else:
                     if schlegel_trust_update:
                         # Schlegel: shrink to fraction of actual step

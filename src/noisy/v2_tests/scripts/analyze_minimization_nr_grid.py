@@ -92,12 +92,13 @@ COMBO_RE_CROSSOVER_V8 = re.compile(
     r"(?:_mw(?P<mw>[^_]+))?"
     r"_pg(?P<pg>true|false)_ph(?P<ph>true|false)$"
 )
-# v9: n<noise>_mad<v>_se<v>_sc<tr|ls>[_str]_re<threshold>_ar<0|1>_pg<bool>_ph<bool>
+# v9: n<noise>_mad<v>_se<v>_sc<tr|ls>[_str]_re<threshold>_ar<0|1>[_pls]_pg<bool>_ph<bool>
 COMBO_RE_RELAXED_V9 = re.compile(
     r"n(?P<noise>[^_]+)_mad(?P<mad>[^_]+)_se(?P<se>[^_]+)"
     r"_sc(?P<sc>tr|ls)"
     r"(?:_str(?P<str>))?"
     r"_re(?P<re>[^_]+)_ar(?P<ar>[01])"
+    r"(?:_pls(?P<pls>))?"
     r"_pg(?P<pg>true|false)_ph(?P<ph>true|false)$"
 )
 # v10 ARC: n<noise>_arc_si<σ_init>_g1<γ1>[_gd<gdiis>][_glf<force>]_re<threshold>_ar<0|1>_pg<bool>_ph<bool>
@@ -108,20 +109,22 @@ COMBO_RE_ARC_V10 = re.compile(
     r"_re(?P<re>[^_]+)_ar(?P<ar>[01])"
     r"_pg(?P<pg>true|false)_ph(?P<ph>true|false)$"
 )
-# v10b RFO: n<noise>_rfo[_gd<gdiis>][_glf<force>][_str]_re<threshold>_ar<0|1>_pg<bool>_ph<bool>
+# v10b RFO: n<noise>_rfo[_gd<gdiis>][_glf<force>][_str]_re<threshold>_ar<0|1>[_pls]_pg<bool>_ph<bool>
 COMBO_RE_RFO_V10 = re.compile(
     r"n(?P<noise>[^_]+)_rfo"
     r"(?:_gd(?P<gd>[^_]+))?"
     r"(?:_glf(?P<glf>[^_]+))?"
     r"(?:_str(?P<str>))?"
     r"_re(?P<re>[^_]+)_ar(?P<ar>[01])"
+    r"(?:_pls(?P<pls>))?"
     r"_pg(?P<pg>true|false)_ph(?P<ph>true|false)$"
 )
-# v7: n<noise>_mad<v>_se<v>_sc<tr|ls>[_mw<v>]_pg<bool>_ph<bool>
+# v7: n<noise>_mad<v>_se<v>_sc<tr|ls>[_mw<v>][_pls]_pg<bool>_ph<bool>
 COMBO_RE_SHIFTED_V7 = re.compile(
     r"n(?P<noise>[^_]+)_mad(?P<mad>[^_]+)_se(?P<se>[^_]+)"
     r"_sc(?P<sc>tr|ls)"
     r"(?:_mw(?P<mw>[^_]+))?"
+    r"(?:_pls(?P<pls>))?"
     r"_pg(?P<pg>true|false)_ph(?P<ph>true|false)$"
 )
 COMBO_RE_SPDN = re.compile(
@@ -200,6 +203,8 @@ class ComboRecord:
     # v10b fields
     gdiis_late_force_threshold: float = 0.0
     schlegel_trust_update: bool = False
+    # v10c fields
+    polynomial_linesearch: bool = False
     # PIC-ARC fields
     sigma_init: float = 1.0
     kappa_threshold: float = 1e6
@@ -264,6 +269,7 @@ def _parse_combo_tag(combo_tag: str) -> Optional[Dict[str, Any]]:
         "escape_alpha": 0.0,
         "lm_mu_anneal_factor": 0.0,
         "neg_mode_line_search": False,
+        "polynomial_linesearch": False,
     }
     # Default v4 fields
     _v4_defaults = {
@@ -361,6 +367,7 @@ def _parse_combo_tag(combo_tag: str) -> Optional[Dict[str, Any]]:
             "schlegel_trust_update": m.group("str") is not None,
             "relaxed_eval_threshold": _safe_float(m.group("re")),
             "accept_relaxed": m.group("ar") == "1",
+            "polynomial_linesearch": m.group("pls") is not None,
         }
 
     # v9 relaxed convergence (has _re/_ar fields, try before v8/v7)
@@ -387,6 +394,7 @@ def _parse_combo_tag(combo_tag: str) -> Optional[Dict[str, Any]]:
             "schlegel_trust_update": m.group("str") is not None,
             **_v3_defaults,
             **_v4_defaults,
+            "polynomial_linesearch": m.group("pls") is not None,
         }
 
     # v8 crossover (most specific — has _cm field, so try before v7)
@@ -432,6 +440,7 @@ def _parse_combo_tag(combo_tag: str) -> Optional[Dict[str, Any]]:
             "step_control": sc,
             "max_nr_weight": _safe_float(m.group("mw") or "0.0", 0.0),
             "noise_level": _safe_float(m.group("noise")),
+            "polynomial_linesearch": m.group("pls") is not None,
             **_v4_defaults,
         }
 
@@ -665,6 +674,16 @@ def load_records(grid_dir: Path, result_glob: str) -> List[ComboRecord]:
                 gdiis_buffer_size=int(parsed.get("gdiis_buffer_size", 0)),
                 arc_gdiis_attempts=sum(r.get("arc_gdiis_attempts", 0) for r in per_sample_results),
                 arc_gdiis_accepts=sum(r.get("arc_gdiis_accepts", 0) for r in per_sample_results),
+                # v10b fields
+                gdiis_late_force_threshold=parsed.get("gdiis_late_force_threshold", 0.0),
+                schlegel_trust_update=bool(parsed.get("schlegel_trust_update", False)),
+                # v10c fields
+                polynomial_linesearch=bool(
+                    parsed.get(
+                        "polynomial_linesearch",
+                        payload.get("params", {}).get("polynomial_linesearch", False),
+                    )
+                ),
                 # PIC-ARC fields
                 sigma_init=parsed.get("sigma_init", 1.0),
                 kappa_threshold=parsed.get("kappa_threshold", 1e6),
@@ -981,6 +1000,8 @@ def print_report(
             extras.append("LS")
         if row.max_nr_weight > 0:
             extras.append(f"mw={row.max_nr_weight:g}")
+        if row.polynomial_linesearch:
+            extras.append("pls")
         if row.noise_level > 0:
             extras.append(f"noise={row.noise_level:g}")
         if row.crossover_mu_max > 0:
@@ -1129,6 +1150,7 @@ def main() -> None:
         "purify_hessian": summarize_main_effect(records, "purify_hessian"),
         "step_control": summarize_main_effect(records, "step_control"),
         "max_nr_weight": summarize_main_effect(records, "max_nr_weight"),
+        "polynomial_linesearch": summarize_main_effect(records, "polynomial_linesearch"),
         "noise_level": summarize_main_effect(records, "noise_level"),
         "crossover_mu_max": summarize_main_effect(records, "crossover_mu_max"),
     }
@@ -1198,6 +1220,7 @@ def main() -> None:
                 "total_mode_follows": r.total_mode_follows,
                 "step_control": r.step_control,
                 "max_nr_weight": r.max_nr_weight,
+                "polynomial_linesearch": r.polynomial_linesearch,
                 "noise_level": r.noise_level,
                 "crossover_mu_max": r.crossover_mu_max,
                 "crossover_n_neg_ref": r.crossover_n_neg_ref,
@@ -1222,7 +1245,7 @@ def main() -> None:
                 "mean_steps_when_converged", "mean_wall_time", "total_wall_time",
                 "total_escapes", "total_line_searches",
                 "total_mode_follows",
-                "step_control", "max_nr_weight", "noise_level",
+                "step_control", "max_nr_weight", "polynomial_linesearch", "noise_level",
                 "crossover_mu_max", "crossover_n_neg_ref", "crossover_force_ref",
                 "path",
             ],
