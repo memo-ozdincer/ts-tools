@@ -1,0 +1,105 @@
+Loaded 56 configurations.
+Ranking metric: Convergence Rate (desc) → Total Converged (desc) → Mean Steps (asc) → Wall Time (asc)
+
+🏆 Best overall configuration by convergence, then speed:
+  n0.5_rfo_str_re0.01_ar1_pls_pgtrue_phfalse | converged 254/287 (0.89), mean steps 1467.3, mean wall 58.98s
+
+=================================================================
+🥇 Top 56 Configurations (Best First):
+=================================================================
+  n0.5_rfo_str_re0.01_ar1_pls_pgtrue_phfalse: conv=254/287 (0.89), steps=1467.3, wall=58.98s, errors=2 pls noise=0.5 cnr=0 cfr=0
+  n0.5_mad1.3_se1e-3_sctr_re0.01_ar1_pls_pgtrue_phfalse: conv=239/287 (0.83), steps=1535.7, wall=53.72s, errors=8 pls noise=0.5
+  n0.5_mad1.3_se1e-3_sctr_str_re0.01_ar1_pgtrue_phfalse: conv=223/287 (0.78), steps=1569.4, wall=57.35s, errors=8 noise=0.5
+  n1.0_rfo_str_re0.01_ar1_pls_pgtrue_phfalse: conv=223/287 (0.78), steps=2642.8, wall=104.47s, errors=1 pls noise=1 cnr=0 cfr=0
+  n0.5_mad1.3_se1e-3_sctr_re0.01_ar1_pgtrue_phfalse: conv=218/287 (0.76), steps=1247.8, wall=52.82s, errors=8 noise=0.5
+  n0.5_rfo_str_re0.01_ar1_pgtrue_phfalse: conv=193/287 (0.67), steps=1095.1, wall=86.41s, errors=2 noise=0.5 cnr=0 cfr=0
+  n0.5_rfo_gd8_glf0.01_str_re0.01_ar1_pgtrue_phfalse: conv=193/287 (0.67), steps=1095.1, wall=86.74s, errors=2 noise=0.5 cnr=0 cfr=0
+  n1.0_mad1.3_se1e-3_sctr_re0.01_ar1_pls_pgtrue_phfalse: conv=191/287 (0.67), steps=2543.8, wall=113.10s, errors=2 pls noise=1
+  n0.5_rfo_re0.01_ar1_pgtrue_phfalse: conv=187/287 (0.65), steps=1083.1, wall=89.12s, errors=2 noise=0.5 cnr=0 cfr=0
+  n1.5_rfo_str_re0.01_ar1_pls_pgtrue_phfalse: conv=182/287 (0.63), steps=3402.1, wall=136.38s, errors=1 pls noise=1.5 cnr=0 cfr=0
+  n1.0_mad1.3_se1e-3_sctr_str_re0.01_ar1_pgtrue_phfalse: conv=163/287 (0.57), steps=2292.7, wall=113.20s, errors=2 noise=1
+  n1.5_mad1.3_se1e-3_sctr_re0.01_ar1_pls_pgtrue_phfalse: conv=161/287 (0.56), steps=3304.8, wall=144.11s, errors=1 pls noise=1.5
+  n1.0_mad1.3_se1e-3_sctr_re0.01_ar1_pgtrue_phfalse: conv=159/287 (0.55), steps=2163.9, wall=115.39s, errors=2 noise=1
+  n1.5_mad1.3_se1e-3_sctr_re0.01_ar1_pgtrue_phfalse: conv=141/287 (0.49), steps=2754.5, wall=129.97s, errors=1 noise=1.5
+  n1.5_mad1.3_se1e-3_sctr_str_re0.01_ar1_pgtrue_phfalse: conv=135/287 (0.47), steps=3264.5, wall=144.59s, errors=1 noise=1.5
+  n1.0_rfo_re0.01_ar1_pgtrue_phfalse: conv=131/287 (0.46), steps=2380.6, wall=141.75s, errors=1 noise=1 cnr=0 cfr=0
+  n2.0_mad1.3_se1e-3_sctr_re0.01_ar1_pls_pgtrue_phfalse: conv=128/287 (0.45), steps=4095.4, wall=171.69s, errors=0 pls noise=2
+  n1.0_rfo_str_re0.01_ar1_pgtrue_phfalse: conv=125/287 (0.44), steps=2687.9, wall=146.06s, errors=1 noise=1 cnr=0 cfr=0
+  n1.0_rfo_gd8_glf0.01_str_re0.01_ar1_pgtrue_phfalse: conv=125/287 (0.44), steps=2687.9, wall=146.83s, errors=1 noise=1 cnr=0 cfr=0
+  n2.0_rfo_str_re0.01_ar1_pls_pgtrue_phfalse: conv=120/287 (0.42), steps=3773.3, wall=179.74s, errors=0 pls noise=2 cnr=0 cfr=0
+  n1.5_rfo_re0.01_ar1_pgtrue_phfalse: conv=92/287 (0.32), steps=3276.9, wall=161.06s, errors=1 noise=1.5 cnr=0 cfr=0
+  n1.5_rfo_str_re0.01_ar1_pgtrue_phfalse: conv=90/287 (0.31), steps=3504.3, wall=164.36s, errors=1 noise=1.5 cnr=0 cfr=0
+  n1.5_rfo_gd8_glf0.01_str_re0.01_ar1_pgtrue_phfalse: conv=90/287 (0.31), steps=3504.3, wall=170.34s, errors=1 noise=1.5 cnr=0 cfr=0
+  n2.0_mad1.3_se1e-3_sctr_str_re0.01_ar1_pgtrue_phfalse: conv=83/287 (0.29), steps=3842.6, wall=177.36s, errors=0 noise=2
+  n2.0_mad1.3_se1e-3_sctr_re0.01_ar1_pgtrue_phfalse: conv=78/287 (0.27), steps=4229.9, wall=182.27s, errors=0 noise=2
+  n0.5_arc_si1.0_g13.0_re0.01_ar1_pgtrue_phfalse: conv=57/287 (0.20), steps=97.6, wall=49.59s, errors=0 noise=0.5 cnr=0 cfr=0
+  n0.5_arc_si10.0_g12.0_re0.01_ar1_pgtrue_phfalse: conv=55/287 (0.19), steps=117.3, wall=51.23s, errors=0 noise=0.5 cnr=0 cfr=0
+  n0.5_arc_si1.0_g12.0_re0.01_ar1_pgtrue_phfalse: conv=51/287 (0.18), steps=99.9, wall=51.52s, errors=0 noise=0.5 cnr=0 cfr=0
+  n0.5_arc_si1.0_g12.0_gd8_re0.01_ar1_pgtrue_phfalse: conv=51/287 (0.18), steps=99.9, wall=52.01s, errors=0 noise=0.5 cnr=0 cfr=0
+  n0.5_arc_si1.0_g12.0_gd12_re0.01_ar1_pgtrue_phfalse: conv=51/287 (0.18), steps=99.9, wall=52.11s, errors=0 noise=0.5 cnr=0 cfr=0
+  n0.5_arc_si1.0_g12.0_gd8_glf0.01_re0.01_ar1_pgtrue_phfalse: conv=51/287 (0.18), steps=99.9, wall=52.19s, errors=0 noise=0.5 cnr=0 cfr=0
+  n0.5_arc_si0.1_g12.0_re0.01_ar1_pgtrue_phfalse: conv=48/287 (0.17), steps=104.0, wall=51.68s, errors=0 noise=0.5 cnr=0 cfr=0
+  n2.0_rfo_gd8_glf0.01_str_re0.01_ar1_pgtrue_phfalse: conv=39/287 (0.14), steps=4147.5, wall=185.70s, errors=0 noise=2 cnr=0 cfr=0
+  n2.0_rfo_str_re0.01_ar1_pgtrue_phfalse: conv=39/287 (0.14), steps=4147.5, wall=186.77s, errors=0 noise=2 cnr=0 cfr=0
+  n2.0_rfo_re0.01_ar1_pgtrue_phfalse: conv=36/287 (0.13), steps=3721.1, wall=191.88s, errors=0 noise=2 cnr=0 cfr=0
+  n1.0_arc_si1.0_g13.0_re0.01_ar1_pgtrue_phfalse: conv=7/287 (0.02), steps=207.4, wall=62.05s, errors=0 noise=1 cnr=0 cfr=0
+  n1.0_arc_si1.0_g12.0_re0.01_ar1_pgtrue_phfalse: conv=5/287 (0.02), steps=184.8, wall=61.24s, errors=0 noise=1 cnr=0 cfr=0
+  n1.0_arc_si1.0_g12.0_gd8_re0.01_ar1_pgtrue_phfalse: conv=5/287 (0.02), steps=184.8, wall=61.45s, errors=0 noise=1 cnr=0 cfr=0
+  n1.0_arc_si1.0_g12.0_gd12_re0.01_ar1_pgtrue_phfalse: conv=5/287 (0.02), steps=184.8, wall=61.96s, errors=0 noise=1 cnr=0 cfr=0
+  n1.0_arc_si1.0_g12.0_gd8_glf0.01_re0.01_ar1_pgtrue_phfalse: conv=5/287 (0.02), steps=184.8, wall=62.00s, errors=0 noise=1 cnr=0 cfr=0
+  n1.0_arc_si0.1_g12.0_re0.01_ar1_pgtrue_phfalse: conv=5/287 (0.02), steps=227.8, wall=61.78s, errors=0 noise=1 cnr=0 cfr=0
+  n1.0_arc_si10.0_g12.0_re0.01_ar1_pgtrue_phfalse: conv=4/287 (0.01), steps=112.0, wall=61.22s, errors=0 noise=1 cnr=0 cfr=0
+  n1.5_arc_si0.1_g12.0_re0.01_ar1_pgtrue_phfalse: conv=2/287 (0.01), steps=225.5, wall=60.23s, errors=0 noise=1.5 cnr=0 cfr=0
+  n1.5_arc_si1.0_g13.0_re0.01_ar1_pgtrue_phfalse: conv=1/287 (0.00), steps=80.0, wall=61.42s, errors=0 noise=1.5 cnr=0 cfr=0
+  n1.5_arc_si1.0_g12.0_gd12_re0.01_ar1_pgtrue_phfalse: conv=1/287 (0.00), steps=82.0, wall=61.40s, errors=0 noise=1.5 cnr=0 cfr=0
+  n1.5_arc_si1.0_g12.0_re0.01_ar1_pgtrue_phfalse: conv=1/287 (0.00), steps=82.0, wall=61.53s, errors=0 noise=1.5 cnr=0 cfr=0
+  n1.5_arc_si1.0_g12.0_gd8_glf0.01_re0.01_ar1_pgtrue_phfalse: conv=1/287 (0.00), steps=82.0, wall=62.07s, errors=0 noise=1.5 cnr=0 cfr=0
+  n1.5_arc_si1.0_g12.0_gd8_re0.01_ar1_pgtrue_phfalse: conv=1/287 (0.00), steps=82.0, wall=62.51s, errors=0 noise=1.5 cnr=0 cfr=0
+  n1.5_arc_si10.0_g12.0_re0.01_ar1_pgtrue_phfalse: conv=1/287 (0.00), steps=85.0, wall=60.57s, errors=0 noise=1.5 cnr=0 cfr=0
+  n2.0_arc_si10.0_g12.0_re0.01_ar1_pgtrue_phfalse: conv=1/287 (0.00), steps=154.0, wall=62.44s, errors=0 noise=2 cnr=0 cfr=0
+  n2.0_arc_si1.0_g12.0_gd8_re0.01_ar1_pgtrue_phfalse: conv=0/287 (0.00), steps=nan, wall=62.78s, errors=0 noise=2 cnr=0 cfr=0
+  n2.0_arc_si1.0_g13.0_re0.01_ar1_pgtrue_phfalse: conv=0/287 (0.00), steps=nan, wall=62.83s, errors=0 noise=2 cnr=0 cfr=0
+  n2.0_arc_si0.1_g12.0_re0.01_ar1_pgtrue_phfalse: conv=0/287 (0.00), steps=nan, wall=62.91s, errors=0 noise=2 cnr=0 cfr=0
+  n2.0_arc_si1.0_g12.0_gd8_glf0.01_re0.01_ar1_pgtrue_phfalse: conv=0/287 (0.00), steps=nan, wall=63.30s, errors=0 noise=2 cnr=0 cfr=0
+  n2.0_arc_si1.0_g12.0_gd12_re0.01_ar1_pgtrue_phfalse: conv=0/287 (0.00), steps=nan, wall=63.62s, errors=0 noise=2 cnr=0 cfr=0
+  n2.0_arc_si1.0_g12.0_re0.01_ar1_pgtrue_phfalse: conv=0/287 (0.00), steps=nan, wall=63.78s, errors=0 noise=2 cnr=0 cfr=0
+
+--- Main effect: optimizer_mode ---
+  : mean_conv_rate=0.557, mean_n_converged=159.92, mean_steps=2737.1, mean_wall=121.30s
+  arc: mean_conv_rate=0.051, mean_n_converged=14.61, mean_steps=130.8, mean_wall=59.41s
+  rfo: mean_conv_rate=0.461, mean_n_converged=132.44, mean_steps=2788.6, mean_wall=139.79s
+
+--- Main effect: polynomial_linesearch ---
+  False: mean_conv_rate=0.214, mean_n_converged=61.44, mean_steps=1370.8, mean_wall=91.53s
+  True: mean_conv_rate=0.652, mean_n_converged=187.25, mean_steps=2845.6, mean_wall=120.28s
+
+--- Main effect: noise_level ---
+  0.5: mean_conv_rate=0.466, mean_n_converged=133.64, mean_steps=700.8, mean_wall=60.39s
+  1.0: mean_conv_rate=0.287, mean_n_converged=82.36, mean_steps=1334.7, mean_wall=93.75s
+  1.5: mean_conv_rate=0.224, mean_n_converged=64.21, mean_steps=1695.0, mean_wall=105.75s
+  2.0: mean_conv_rate=0.130, mean_n_converged=37.43, mean_steps=3513.9, mean_wall=122.65s
+
+=================================================================
+Hardest samples (lowest convergence across configs):
+=================================================================
+  sample_184: 4/56 (0.07), best_step=3332, best_combo=n0.5_mad1.3_se1e-3_sctr_re0.01_ar1_pls_pgtrue_phfalse
+  sample_210: 4/56 (0.07), best_step=821, best_combo=n1.5_rfo_str_re0.01_ar1_pls_pgtrue_phfalse
+  sample_251: 5/56 (0.09), best_step=204, best_combo=n0.5_rfo_re0.01_ar1_pgtrue_phfalse
+  sample_078: 6/56 (0.11), best_step=19, best_combo=n1.0_mad1.3_se1e-3_sctr_re0.01_ar1_pgtrue_phfalse
+  sample_183: 6/56 (0.11), best_step=2951, best_combo=n1.0_rfo_str_re0.01_ar1_pls_pgtrue_phfalse
+  sample_016: 7/56 (0.12), best_step=29, best_combo=n0.5_mad1.3_se1e-3_sctr_re0.01_ar1_pls_pgtrue_phfalse
+  sample_113: 7/56 (0.12), best_step=14, best_combo=n0.5_mad1.3_se1e-3_sctr_str_re0.01_ar1_pgtrue_phfalse
+  sample_133: 7/56 (0.12), best_step=48, best_combo=n1.5_mad1.3_se1e-3_sctr_re0.01_ar1_pls_pgtrue_phfalse
+  sample_173: 7/56 (0.12), best_step=3088, best_combo=n0.5_rfo_re0.01_ar1_pgtrue_phfalse
+  sample_176: 7/56 (0.12), best_step=262, best_combo=n0.5_mad1.3_se1e-3_sctr_str_re0.01_ar1_pgtrue_phfalse
+
+=================================================================
+📊 Cascade Evaluation Table (optimizer filter × eval threshold)
+=================================================================
+  (no cascade data — need results from run_minimization_parallel.py v2)
+
+Wrote analysis artifacts to: /scratch/memoozd/ts-tools-scratch/runs/min_nr_v10c_1104386/analysis
+  nr_grid_summary.json         — full summary (JSON)
+  nr_grid_ranked.csv           — ranked configurations
+  nr_grid_sample_hardness.csv  — per-sample convergence rates
+  nr_grid_cascade_table.csv    — 2D cascade diagnostic table

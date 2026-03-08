@@ -1,0 +1,681 @@
+{
+  "n_trajectories": 13731,
+  "n_converged": 2958,
+  "n_failed": 10773,
+  "classification_counts": {
+    "energy_plateau": 7532,
+    "converged": 2958,
+    "almost_converged": 771,
+    "ghost_modes": 180,
+    "oscillating": 2254,
+    "drifting": 5,
+    "slow_convergence": 31
+  },
+  "per_combo_summary": {
+    "n0.5_arc_si0.1_g12.0_re0.01_ar1_pgtrue_phfalse": {
+      "n_total": 287,
+      "n_converged": 54,
+      "classifications": {
+        "energy_plateau": 1,
+        "converged": 1,
+        "almost_converged": 1
+      }
+    },
+    "n0.5_arc_si1.0_g12.0_gd12_re0.01_ar1_pgtrue_phfalse": {
+      "n_total": 287,
+      "n_converged": 55,
+      "classifications": {
+        "energy_plateau": 1,
+        "converged": 1,
+        "almost_converged": 1,
+        "ghost_modes": 1
+      }
+    },
+    "n0.5_arc_si1.0_g12.0_gd8_glf0.01_re0.01_ar1_pgtrue_phfalse": {
+      "n_total": 287,
+      "n_converged": 55,
+      "classifications": {
+        "energy_plateau": 1,
+        "converged": 1,
+        "almost_converged": 1,
+        "ghost_modes": 1
+      }
+    },
+    "n0.5_arc_si1.0_g12.0_gd8_re0.01_ar1_pgtrue_phfalse": {
+      "n_total": 287,
+      "n_converged": 55,
+      "classifications": {
+        "energy_plateau": 1,
+        "converged": 1,
+        "almost_converged": 1,
+        "ghost_modes": 1
+      }
+    },
+    "n0.5_arc_si1.0_g12.0_re0.01_ar1_pgtrue_phfalse": {
+      "n_total": 287,
+      "n_converged": 55,
+      "classifications": {
+        "energy_plateau": 1,
+        "converged": 1,
+        "almost_converged": 1,
+        "ghost_modes": 1
+      }
+    },
+    "n0.5_arc_si1.0_g13.0_re0.01_ar1_pgtrue_phfalse": {
+      "n_total": 287,
+      "n_converged": 58,
+      "classifications": {
+        "energy_plateau": 1,
+        "converged": 1,
+        "almost_converged": 1
+      }
+    },
+    "n0.5_arc_si10.0_g12.0_re0.01_ar1_pgtrue_phfalse": {
+      "n_total": 287,
+      "n_converged": 55,
+      "classifications": {
+        "energy_plateau": 1,
+        "converged": 1
+      }
+    },
+    "n0.5_mad1.3_se1e-3_sctr_re0.01_ar1_pgtrue_phfalse": {
+      "n_total": 280,
+      "n_converged": 216,
+      "classifications": {
+        "converged": 1,
+        "oscillating": 1,
+        "ghost_modes": 1,
+        "almost_converged": 1
+      }
+    },
+    "n0.5_mad1.3_se1e-3_sctr_str_re0.01_ar1_pgtrue_phfalse": {
+      "n_total": 280,
+      "n_converged": 211,
+      "classifications": {
+        "converged": 1,
+        "almost_converged": 1,
+        "oscillating": 1,
+        "ghost_modes": 1,
+        "drifting": 1
+      }
+    },
+    "n0.5_rfo_gd8_glf0.01_str_re0.01_ar1_pgtrue_phfalse": {
+      "n_total": 281,
+      "n_converged": 187,
+      "classifications": {
+        "oscillating": 1,
+        "converged": 1,
+        "almost_converged": 1,
+        "ghost_modes": 1
+      }
+    },
+    "n0.5_rfo_re0.01_ar1_pgtrue_phfalse": {
+      "n_total": 281,
+      "n_converged": 191,
+      "classifications": {
+        "oscillating": 1,
+        "converged": 1,
+        "almost_converged": 1,
+        "ghost_modes": 1
+      }
+    },
+    "n0.5_rfo_str_re0.01_ar1_pgtrue_phfalse": {
+      "n_total": 281,
+      "n_converged": 187,
+      "classifications": {
+        "oscillating": 1,
+        "converged": 1,
+        "almost_converged": 1,
+        "ghost_modes": 1
+      }
+    },
+    "n1.0_arc_si0.1_g12.0_re0.01_ar1_pgtrue_phfalse": {
+      "n_total": 287,
+      "n_converged": 8,
+      "classifications": {
+        "energy_plateau": 1,
+        "converged": 1,
+        "almost_converged": 1
+      }
+    },
+    "n1.0_arc_si1.0_g12.0_gd12_re0.01_ar1_pgtrue_phfalse": {
+      "n_total": 287,
+      "n_converged": 11,
+      "classifications": {
+        "energy_plateau": 1,
+        "converged": 1,
+        "almost_converged": 1
+      }
+    },
+    "n1.0_arc_si1.0_g12.0_gd8_glf0.01_re0.01_ar1_pgtrue_phfalse": {
+      "n_total": 287,
+      "n_converged": 11,
+      "classifications": {
+        "energy_plateau": 1,
+        "converged": 1,
+        "almost_converged": 1
+      }
+    },
+    "n1.0_arc_si1.0_g12.0_gd8_re0.01_ar1_pgtrue_phfalse": {
+      "n_total": 287,
+      "n_converged": 11,
+      "classifications": {
+        "energy_plateau": 1,
+        "converged": 1,
+        "almost_converged": 1
+      }
+    },
+    "n1.0_arc_si1.0_g12.0_re0.01_ar1_pgtrue_phfalse": {
+      "n_total": 287,
+      "n_converged": 11,
+      "classifications": {
+        "energy_plateau": 1,
+        "converged": 1,
+        "almost_converged": 1
+      }
+    },
+    "n1.0_arc_si1.0_g13.0_re0.01_ar1_pgtrue_phfalse": {
+      "n_total": 287,
+      "n_converged": 9,
+      "classifications": {
+        "energy_plateau": 1,
+        "converged": 1,
+        "almost_converged": 1
+      }
+    },
+    "n1.0_arc_si10.0_g12.0_re0.01_ar1_pgtrue_phfalse": {
+      "n_total": 287,
+      "n_converged": 12,
+      "classifications": {
+        "energy_plateau": 1,
+        "converged": 1,
+        "almost_converged": 1
+      }
+    },
+    "n1.0_mad1.3_se1e-3_sctr_re0.01_ar1_pgtrue_phfalse": {
+      "n_total": 285,
+      "n_converged": 151,
+      "classifications": {
+        "almost_converged": 1,
+        "oscillating": 1,
+        "converged": 1,
+        "ghost_modes": 1
+      }
+    },
+    "n1.0_mad1.3_se1e-3_sctr_str_re0.01_ar1_pgtrue_phfalse": {
+      "n_total": 285,
+      "n_converged": 158,
+      "classifications": {
+        "almost_converged": 1,
+        "oscillating": 1,
+        "converged": 1,
+        "drifting": 1,
+        "ghost_modes": 1
+      }
+    },
+    "n1.0_rfo_gd8_glf0.01_str_re0.01_ar1_pgtrue_phfalse": {
+      "n_total": 284,
+      "n_converged": 131,
+      "classifications": {
+        "converged": 1,
+        "oscillating": 1,
+        "almost_converged": 1,
+        "ghost_modes": 1
+      }
+    },
+    "n1.0_rfo_re0.01_ar1_pgtrue_phfalse": {
+      "n_total": 284,
+      "n_converged": 139,
+      "classifications": {
+        "converged": 1,
+        "oscillating": 1,
+        "almost_converged": 1,
+        "ghost_modes": 1
+      }
+    },
+    "n1.0_rfo_str_re0.01_ar1_pgtrue_phfalse": {
+      "n_total": 284,
+      "n_converged": 131,
+      "classifications": {
+        "converged": 1,
+        "oscillating": 1,
+        "almost_converged": 1,
+        "ghost_modes": 1
+      }
+    },
+    "n1.5_arc_si0.1_g12.0_re0.01_ar1_pgtrue_phfalse": {
+      "n_total": 287,
+      "n_converged": 0,
+      "classifications": {
+        "energy_plateau": 1
+      }
+    },
+    "n1.5_arc_si1.0_g12.0_gd12_re0.01_ar1_pgtrue_phfalse": {
+      "n_total": 287,
+      "n_converged": 1,
+      "classifications": {
+        "energy_plateau": 1,
+        "converged": 1
+      }
+    },
+    "n1.5_arc_si1.0_g12.0_gd8_glf0.01_re0.01_ar1_pgtrue_phfalse": {
+      "n_total": 287,
+      "n_converged": 1,
+      "classifications": {
+        "energy_plateau": 1,
+        "converged": 1
+      }
+    },
+    "n1.5_arc_si1.0_g12.0_gd8_re0.01_ar1_pgtrue_phfalse": {
+      "n_total": 287,
+      "n_converged": 1,
+      "classifications": {
+        "energy_plateau": 1,
+        "converged": 1
+      }
+    },
+    "n1.5_arc_si1.0_g12.0_re0.01_ar1_pgtrue_phfalse": {
+      "n_total": 287,
+      "n_converged": 1,
+      "classifications": {
+        "energy_plateau": 1,
+        "converged": 1
+      }
+    },
+    "n1.5_arc_si1.0_g13.0_re0.01_ar1_pgtrue_phfalse": {
+      "n_total": 287,
+      "n_converged": 1,
+      "classifications": {
+        "energy_plateau": 1,
+        "converged": 1
+      }
+    },
+    "n1.5_arc_si10.0_g12.0_re0.01_ar1_pgtrue_phfalse": {
+      "n_total": 287,
+      "n_converged": 1,
+      "classifications": {
+        "energy_plateau": 1,
+        "converged": 1
+      }
+    },
+    "n1.5_mad1.3_se1e-3_sctr_re0.01_ar1_pgtrue_phfalse": {
+      "n_total": 287,
+      "n_converged": 125,
+      "classifications": {
+        "oscillating": 1,
+        "converged": 1,
+        "almost_converged": 1,
+        "ghost_modes": 1,
+        "slow_convergence": 1
+      }
+    },
+    "n1.5_mad1.3_se1e-3_sctr_str_re0.01_ar1_pgtrue_phfalse": {
+      "n_total": 287,
+      "n_converged": 136,
+      "classifications": {
+        "converged": 1,
+        "almost_converged": 1,
+        "oscillating": 1,
+        "ghost_modes": 1,
+        "slow_convergence": 1
+      }
+    },
+    "n1.5_rfo_gd8_glf0.01_str_re0.01_ar1_pgtrue_phfalse": {
+      "n_total": 287,
+      "n_converged": 83,
+      "classifications": {
+        "oscillating": 1,
+        "almost_converged": 1,
+        "converged": 1,
+        "ghost_modes": 1,
+        "slow_convergence": 1
+      }
+    },
+    "n1.5_rfo_re0.01_ar1_pgtrue_phfalse": {
+      "n_total": 287,
+      "n_converged": 92,
+      "classifications": {
+        "oscillating": 1,
+        "slow_convergence": 1,
+        "converged": 1,
+        "almost_converged": 1,
+        "ghost_modes": 1
+      }
+    },
+    "n1.5_rfo_str_re0.01_ar1_pgtrue_phfalse": {
+      "n_total": 287,
+      "n_converged": 83,
+      "classifications": {
+        "oscillating": 1,
+        "almost_converged": 1,
+        "converged": 1,
+        "ghost_modes": 1,
+        "slow_convergence": 1
+      }
+    },
+    "n2.0_arc_si0.1_g12.0_re0.01_ar1_pgtrue_phfalse": {
+      "n_total": 287,
+      "n_converged": 0,
+      "classifications": {
+        "energy_plateau": 1,
+        "almost_converged": 1
+      }
+    },
+    "n2.0_arc_si1.0_g12.0_gd12_re0.01_ar1_pgtrue_phfalse": {
+      "n_total": 287,
+      "n_converged": 0,
+      "classifications": {
+        "energy_plateau": 1,
+        "almost_converged": 1
+      }
+    },
+    "n2.0_arc_si1.0_g12.0_gd8_glf0.01_re0.01_ar1_pgtrue_phfalse": {
+      "n_total": 287,
+      "n_converged": 0,
+      "classifications": {
+        "energy_plateau": 1,
+        "almost_converged": 1
+      }
+    },
+    "n2.0_arc_si1.0_g12.0_gd8_re0.01_ar1_pgtrue_phfalse": {
+      "n_total": 287,
+      "n_converged": 0,
+      "classifications": {
+        "energy_plateau": 1,
+        "almost_converged": 1
+      }
+    },
+    "n2.0_arc_si1.0_g12.0_re0.01_ar1_pgtrue_phfalse": {
+      "n_total": 287,
+      "n_converged": 0,
+      "classifications": {
+        "energy_plateau": 1,
+        "almost_converged": 1
+      }
+    },
+    "n2.0_arc_si1.0_g13.0_re0.01_ar1_pgtrue_phfalse": {
+      "n_total": 287,
+      "n_converged": 0,
+      "classifications": {
+        "energy_plateau": 1,
+        "almost_converged": 1
+      }
+    },
+    "n2.0_arc_si10.0_g12.0_re0.01_ar1_pgtrue_phfalse": {
+      "n_total": 287,
+      "n_converged": 0,
+      "classifications": {
+        "energy_plateau": 1,
+        "almost_converged": 1
+      }
+    },
+    "n2.0_mad1.3_se1e-3_sctr_re0.01_ar1_pgtrue_phfalse": {
+      "n_total": 287,
+      "n_converged": 77,
+      "classifications": {
+        "converged": 1,
+        "slow_convergence": 1,
+        "oscillating": 1,
+        "almost_converged": 1,
+        "ghost_modes": 1
+      }
+    },
+    "n2.0_mad1.3_se1e-3_sctr_str_re0.01_ar1_pgtrue_phfalse": {
+      "n_total": 287,
+      "n_converged": 88,
+      "classifications": {
+        "oscillating": 1,
+        "slow_convergence": 1,
+        "converged": 1,
+        "ghost_modes": 1,
+        "almost_converged": 1
+      }
+    },
+    "n2.0_rfo_gd8_glf0.01_str_re0.01_ar1_pgtrue_phfalse": {
+      "n_total": 287,
+      "n_converged": 36,
+      "classifications": {
+        "oscillating": 1,
+        "almost_converged": 1,
+        "converged": 1,
+        "ghost_modes": 1,
+        "slow_convergence": 1,
+        "drifting": 1
+      }
+    },
+    "n2.0_rfo_re0.01_ar1_pgtrue_phfalse": {
+      "n_total": 287,
+      "n_converged": 34,
+      "classifications": {
+        "almost_converged": 1,
+        "oscillating": 1,
+        "converged": 1,
+        "slow_convergence": 1,
+        "drifting": 1,
+        "ghost_modes": 1
+      }
+    },
+    "n2.0_rfo_str_re0.01_ar1_pgtrue_phfalse": {
+      "n_total": 287,
+      "n_converged": 36,
+      "classifications": {
+        "oscillating": 1,
+        "almost_converged": 1,
+        "converged": 1,
+        "ghost_modes": 1,
+        "slow_convergence": 1,
+        "drifting": 1
+      }
+    }
+  },
+  "hardest_samples": [
+    {
+      "sample_id": "sample_074",
+      "n_failures": 47,
+      "classifications": [
+        "almost_converged",
+        "ghost_modes",
+        "oscillating",
+        "energy_plateau"
+      ],
+      "best_min_eval": 6.774817576814742e-05
+    },
+    {
+      "sample_id": "sample_179",
+      "n_failures": 47,
+      "classifications": [
+        "almost_converged",
+        "slow_convergence",
+        "oscillating",
+        "energy_plateau"
+      ],
+      "best_min_eval": 0.0001296953044547257
+    },
+    {
+      "sample_id": "sample_185",
+      "n_failures": 47,
+      "classifications": [
+        "almost_converged",
+        "oscillating",
+        "energy_plateau"
+      ],
+      "best_min_eval": 0.00012226475498548995
+    },
+    {
+      "sample_id": "sample_191",
+      "n_failures": 47,
+      "classifications": [
+        "almost_converged",
+        "oscillating",
+        "energy_plateau"
+      ],
+      "best_min_eval": 0.0003360747130701856
+    },
+    {
+      "sample_id": "sample_042",
+      "n_failures": 46,
+      "classifications": [
+        "ghost_modes",
+        "energy_plateau",
+        "slow_convergence",
+        "almost_converged",
+        "oscillating"
+      ],
+      "best_min_eval": 6.441238766878511e-05
+    },
+    {
+      "sample_id": "sample_096",
+      "n_failures": 46,
+      "classifications": [
+        "almost_converged",
+        "oscillating",
+        "energy_plateau"
+      ],
+      "best_min_eval": 0.00034697264552196837
+    },
+    {
+      "sample_id": "sample_182",
+      "n_failures": 46,
+      "classifications": [
+        "almost_converged",
+        "ghost_modes",
+        "oscillating",
+        "energy_plateau"
+      ],
+      "best_min_eval": 7.596321138620324e-05
+    },
+    {
+      "sample_id": "sample_240",
+      "n_failures": 46,
+      "classifications": [
+        "almost_converged",
+        "oscillating",
+        "energy_plateau"
+      ],
+      "best_min_eval": 0.00019730738052491805
+    },
+    {
+      "sample_id": "sample_078",
+      "n_failures": 45,
+      "classifications": [
+        "almost_converged",
+        "ghost_modes",
+        "oscillating",
+        "energy_plateau"
+      ],
+      "best_min_eval": 1.3100581974676136e-05
+    },
+    {
+      "sample_id": "sample_082",
+      "n_failures": 45,
+      "classifications": [
+        "almost_converged",
+        "oscillating",
+        "energy_plateau"
+      ],
+      "best_min_eval": 0.00021876902874349031
+    },
+    {
+      "sample_id": "sample_122",
+      "n_failures": 45,
+      "classifications": [
+        "almost_converged",
+        "oscillating",
+        "energy_plateau"
+      ],
+      "best_min_eval": 0.0002544299377581617
+    },
+    {
+      "sample_id": "sample_171",
+      "n_failures": 45,
+      "classifications": [
+        "almost_converged",
+        "oscillating",
+        "energy_plateau"
+      ],
+      "best_min_eval": 0.0019891181111296704
+    },
+    {
+      "sample_id": "sample_180",
+      "n_failures": 45,
+      "classifications": [
+        "almost_converged",
+        "ghost_modes",
+        "oscillating",
+        "energy_plateau"
+      ],
+      "best_min_eval": 4.309188690808109e-05
+    },
+    {
+      "sample_id": "sample_215",
+      "n_failures": 45,
+      "classifications": [
+        "almost_converged",
+        "oscillating",
+        "energy_plateau"
+      ],
+      "best_min_eval": 0.00012067592737686954
+    },
+    {
+      "sample_id": "sample_021",
+      "n_failures": 44,
+      "classifications": [
+        "almost_converged",
+        "oscillating",
+        "energy_plateau"
+      ],
+      "best_min_eval": 0.00014910376887142336
+    },
+    {
+      "sample_id": "sample_026",
+      "n_failures": 44,
+      "classifications": [
+        "almost_converged",
+        "oscillating",
+        "energy_plateau"
+      ],
+      "best_min_eval": 0.00020881856430349718
+    },
+    {
+      "sample_id": "sample_045",
+      "n_failures": 44,
+      "classifications": [
+        "almost_converged",
+        "oscillating",
+        "energy_plateau"
+      ],
+      "best_min_eval": 0.0016157041214075077
+    },
+    {
+      "sample_id": "sample_047",
+      "n_failures": 44,
+      "classifications": [
+        "almost_converged",
+        "oscillating",
+        "energy_plateau"
+      ],
+      "best_min_eval": 0.001191044704612048
+    },
+    {
+      "sample_id": "sample_072",
+      "n_failures": 44,
+      "classifications": [
+        "almost_converged",
+        "slow_convergence",
+        "oscillating",
+        "energy_plateau"
+      ],
+      "best_min_eval": 0.0004423487533142617
+    },
+    {
+      "sample_id": "sample_090",
+      "n_failures": 44,
+      "classifications": [
+        "almost_converged",
+        "oscillating",
+        "energy_plateau"
+      ],
+      "best_min_eval": 0.00019759853141028083
+    }
+  ]
+}

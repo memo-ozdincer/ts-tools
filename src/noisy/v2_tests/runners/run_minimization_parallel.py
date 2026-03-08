@@ -218,6 +218,17 @@ def run_single_sample(
                 gdiis_late_force_threshold=params.get("gdiis_late_force_threshold", 0.0),
                 schlegel_trust_update=params.get("schlegel_trust_update", False),
                 polynomial_linesearch=params.get("polynomial_linesearch", False),
+                # v12 kicks
+                osc_kick=params.get("osc_kick", False),
+                osc_kick_scale=params.get("osc_kick_scale", 0.1),
+                osc_kick_patience=params.get("osc_kick_patience", 3),
+                osc_kick_cooldown=params.get("osc_kick_cooldown", 50),
+                blind_kick=params.get("blind_kick", False),
+                blind_kick_scale=params.get("blind_kick_scale", 0.5),
+                blind_kick_overlap_thresh=params.get("blind_kick_overlap_thresh", 0.1),
+                blind_kick_force_thresh=params.get("blind_kick_force_thresh", 0.1),
+                blind_kick_patience=params.get("blind_kick_patience", 100),
+                kick_eigvec_index=params.get("kick_eigvec_index", 0),
             )
         elif method == "pic_arc":
             result, trajectory = run_pic_arc(
@@ -295,6 +306,8 @@ def run_single_sample(
                         "final_arc_sigma": result.get("final_arc_sigma"),
                         "arc_gdiis_attempts": result.get("arc_gdiis_attempts", 0),
                         "arc_gdiis_accepts": result.get("arc_gdiis_accepts", 0),
+                        "total_osc_kicks": result.get("total_osc_kicks", 0),
+                        "total_blind_kicks": result.get("total_blind_kicks", 0),
                         "trajectory": trajectory,
                     },
                     f,
@@ -716,6 +729,51 @@ def main() -> None:
         help="v10c: cubic interpolation refinement on accepted trust-region steps.",
     )
 
+    # --- v12 kick flags ---
+    parser.add_argument(
+        "--osc-kick", action="store_true", default=False,
+        help="v12: enable oscillation kick. Perturbs along longest-stuck negative mode "
+             "when oscillation persists at trust-radius floor.",
+    )
+    parser.add_argument(
+        "--osc-kick-scale", type=float, default=0.1,
+        help="v12: oscillation kick magnitude as fraction of trust_radius_floor (default 0.1).",
+    )
+    parser.add_argument(
+        "--osc-kick-patience", type=int, default=3,
+        help="v12: consecutive oscillation detections before kicking (default 3).",
+    )
+    parser.add_argument(
+        "--osc-kick-cooldown", type=int, default=50,
+        help="v12: steps between oscillation kicks (default 50).",
+    )
+    parser.add_argument(
+        "--blind-kick", action="store_true", default=False,
+        help="v12: enable blind-mode kick. Perturbs along gradient-orthogonal negative mode "
+             "when force is low and blind-mode persists.",
+    )
+    parser.add_argument(
+        "--blind-kick-scale", type=float, default=0.5,
+        help="v12: blind-mode kick magnitude as fraction of trust_radius_floor (default 0.5).",
+    )
+    parser.add_argument(
+        "--blind-kick-overlap-thresh", type=float, default=0.1,
+        help="v12: gradient overlap threshold for blind mode detection (default 0.1).",
+    )
+    parser.add_argument(
+        "--blind-kick-force-thresh", type=float, default=0.1,
+        help="v12: force norm threshold to enable blind-mode kick (default 0.1 eV/A).",
+    )
+    parser.add_argument(
+        "--blind-kick-patience", type=int, default=100,
+        help="v12: consecutive steps with blind mode before kicking (default 100).",
+    )
+    parser.add_argument(
+        "--kick-eigvec-index", type=int, default=0,
+        help="v12: eigenvector to kick along. 0=longest-stuck/blind (default), "
+             "1=second-longest (ablation).",
+    )
+
     # --- PIC-ARC flags ---
     parser.add_argument(
         "--trust-radius-init", type=float, default=0.5,
@@ -868,6 +926,17 @@ def main() -> None:
         "gdiis_late_force_threshold": args.gdiis_late_force_threshold,
         "schlegel_trust_update": args.schlegel_trust_update,
         "polynomial_linesearch": args.polynomial_linesearch,
+        # v12 kick additions
+        "osc_kick": args.osc_kick,
+        "osc_kick_scale": args.osc_kick_scale,
+        "osc_kick_patience": args.osc_kick_patience,
+        "osc_kick_cooldown": args.osc_kick_cooldown,
+        "blind_kick": args.blind_kick,
+        "blind_kick_scale": args.blind_kick_scale,
+        "blind_kick_overlap_thresh": args.blind_kick_overlap_thresh,
+        "blind_kick_force_thresh": args.blind_kick_force_thresh,
+        "blind_kick_patience": args.blind_kick_patience,
+        "kick_eigvec_index": args.kick_eigvec_index,
         # PIC-ARC additions
         "trust_radius_init": args.trust_radius_init,
         "sigma_init": args.sigma_init,

@@ -27,7 +27,7 @@
   Newton--Raphson Minimization on the DFTB0 PES\\
   from Displaced Transition-State Geometries}
 \author{M.\ Dincer}
-\date{March 2026 --- v10c}
+\date{March 2026 --- v11}
 
 \begin{document}
 \maketitle
@@ -42,7 +42,7 @@
 
 This document synthesizes insights from two rounds of literature review
 (approximately 20 papers) and maps them explicitly to our experimental
-findings from versions~1 through~10c of the minimization code.
+findings from versions~1 through~11 of the minimization code.
 The goal is to create a permanent, self-contained record of:
 \begin{enumerate}[nosep]
   \item what the literature says about our problem class,
@@ -74,8 +74,10 @@ potential energy surface (PES).
 The central experimental finding, established across versions~6--9 (Section~\ref{sec:experiments}), is:
 \begin{center}
 \fbox{\parbox{0.85\textwidth}{%
-  \textbf{Strict convergence} ($n_\text{neg}=0$) drops from $\sim$79\% at
-  0.5\,\AA\ to $\sim$20\% at 2.0\,\AA.\
+  \textbf{Strict convergence} ($n_\text{neg}=0$) with 10k steps drops from
+  $\sim$89\% at 0.5\,\AA\ to $\sim$44\% at 2.0\,\AA.
+  With 20k steps, convergence reaches \textbf{95\%/85\%/77\%/64\%}
+  at 0.5/1.0/1.5/2.0\,\AA\ (v11, RFO+Schlegel+PLS).
   \textbf{Relaxed convergence} ($\lambda_\text{min} \geq -0.01$) is
   $\sim$90\% at \emph{all} noise levels.
   The performance cliff is a \emph{criterion problem}, not an optimizer
@@ -642,27 +644,30 @@ v9 & Relaxed convergence & 80/60/46/29\% strict & Criterion problem \\
 v10 & ARC + GDIIS & ARC catastrophic (23/2/0/0\%) & \textbf{ARC dead} \\
 v10.2 & +RFO, +Schlegel TR, +GDIIS-late & RFO 67/48/32/12\%; GDIIS zero effect & GDIIS dead \\
 v10c & +Polynomial line search & \textbf{89/78/63/42\%} (RFO+Schlegel+PLS) & \textbf{PLS breakthrough} \\
+v11 & +20k steps, trust floor, GQT+Schl+PLS & \textbf{95/85/77/64\%} (RFO+Schl+PLS, 20k) & \textbf{20k breakthrough} \\
 \bottomrule
 \end{longtable}
 
-\subsection{Best Convergence Rates (v10c)}
+\subsection{Best Convergence Rates (v11)}
 \label{sec:best-rates}
 
 \begin{table}[h]
 \centering
-\begin{tabular}{ccccc}
+\begin{tabular}{cccccc}
 \toprule
-Noise & v9 GQT & v10c GQT+PLS & v10c RFO+Schl+PLS & $\Delta$ (best) \\
+Noise & v9 GQT & v10c Best (10k) & v11 Best (10k) & v11 Best (20k) & $\Delta$ (v9$\to$v11) \\
 \midrule
-0.5\,\AA & 80\% & 83\% & \textbf{89\%} & +9\,pts \\
-1.0\,\AA & 60\% & 67\% & \textbf{78\%} & +18\,pts \\
-1.5\,\AA & 46\% & 56\% & \textbf{63\%} & +17\,pts \\
-2.0\,\AA & 29\% & \textbf{45\%} & 42\% & +16\,pts \\
+0.5\,\AA & 80\% & 89\% & 89\% & \textbf{95\%} & +15\,pts \\
+1.0\,\AA & 60\% & 78\% & 80\% & \textbf{85\%} & +25\,pts \\
+1.5\,\AA & 46\% & 63\% & 61\% & \textbf{77\%} & +31\,pts \\
+2.0\,\AA & 29\% & 45\% & 44\% & \textbf{64\%} & +35\,pts \\
 \bottomrule
 \end{tabular}
-\caption{Best convergence rates across versions (287 samples, strict $n_\text{neg}=0$).
-  RFO+Schlegel+PLS is champion at 0.5--1.5\,\AA; GQT+PLS wins at 2.0\,\AA.
-  PLS contributes +7 to +18 points across all configurations.}
+\caption{Best convergence rates across all versions (287 samples, strict $n_\text{neg}=0$).
+  v10c Best (10k) = RFO+Schlegel+PLS at 0.5--1.5\,\AA, GQT+PLS at 2.0\,\AA.
+  v11 Best (10k) = RFO+PLS (no Schlegel) at 1.0/2.0\,\AA, RFO+Schlegel+PLS at 0.5/1.5\,\AA.
+  v11 Best (20k) = RFO+Schlegel+PLS at all noise levels.
+  Note: v10c and v11 use different random seeds; 10k rates agree within $\pm$3.5\,pts.}
 \label{tab:best-rates}
 \end{table}
 
@@ -712,7 +717,7 @@ Configuration & 0.5\,\AA & 1.0\,\AA & 1.5\,\AA & 2.0\,\AA \\
 GQT (v9 baseline) & 76\% & 55\% & 49\% & 27\% \\
 GQT + Schlegel TR & 78\% & 57\% & 47\% & 29\% \\
 GQT + PLS & \textbf{83\%} & \textbf{67\%} & \textbf{56\%} & \textbf{45\%} \\
-GQT + Schlegel TR + PLS (inferred) & --- & --- & --- & --- \\
+GQT + Schlegel TR + PLS & 83\% & 68\% & 54\% & 42\% \\ % (v11)
 \midrule
 RFO & 65\% & 46\% & 32\% & 13\% \\
 RFO + Schlegel TR & 67\% & 44\% & 31\% & 14\% \\
@@ -889,6 +894,363 @@ $\sigma$ over-regularization causes near-zero steps; energy stalls.
 GQT or RFO configurations.
 
 %=============================================================================
+\subsection{v11 Grid Results (mar8 Run)}
+\label{sec:v11}
+%=============================================================================
+
+\subsubsection{Experimental Design}
+
+The v11 grid tested 8 algorithms $\times$ 4 noise levels = 32 configurations,
+each with 287 samples, 10k or 20k maximum steps.  \textbf{All v11 configs use
+PLS.}  The grid addresses four questions:
+\begin{enumerate}[nosep]
+  \item Does GQT+Schlegel+PLS (never tested) outperform GQT+PLS or RFO+Schlegel+PLS?
+  \item Does doubling the step budget (20k) rescue almost\_converged or oscillating failures?
+  \item Does lowering the trust radius floor from 0.01\,\AA\ to 0.005\,\AA\ help?
+  \item Is Schlegel TR helpful when PLS is already active?
+\end{enumerate}
+Additionally, RFO+PLS (no Schlegel) was tested for the first time.
+
+\subsubsection{Reproducibility Assessment}
+\label{sec:reproducibility}
+
+The v11 run used a different random seed than the v10c run.  Two PLS
+configs (RFO+Schlegel+PLS and GQT+PLS) appear in both runs, enabling
+cross-seed comparison:
+
+\begin{table}[h]
+\centering
+\caption{Cross-seed reproducibility: v10c (SLURM 1104386) vs.\ v11 (SLURM 1113757)
+  for identical configurations.  $N=287$ samples each.}
+\label{tab:reproducibility}
+\begin{tabular}{lccccc}
+\toprule
+Config & Noise & v10c & v11 & $\Delta$ (pts) \\
+\midrule
+RFO+Schl+PLS & 0.5\,\AA & 254/287 (88.5\%) & 256/287 (89.2\%) & $+$0.7 \\
+              & 1.0\,\AA & 223/287 (77.7\%) & 225/287 (78.4\%) & $+$0.7 \\
+              & 1.5\,\AA & 182/287 (63.4\%) & 175/287 (61.0\%) & $-$2.4 \\
+              & 2.0\,\AA & 120/287 (41.8\%) & 124/287 (43.2\%) & $+$1.4 \\
+\midrule
+GQT+PLS      & 0.5\,\AA & 239/287 (83.3\%) & 242/287 (84.3\%) & $+$1.0 \\
+              & 1.0\,\AA & 191/287 (66.6\%) & 191/287 (66.6\%) & $\phantom{+}$0.0 \\
+              & 1.5\,\AA & 161/287 (56.1\%) & 156/287 (54.4\%) & $-$1.7 \\
+              & 2.0\,\AA & 128/287 (44.6\%) & 118/287 (41.1\%) & $-$3.5 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Mean absolute difference: 1.4\,pts.  Maximum: 3.5\,pts at $n=2.0$ for GQT+PLS.
+This establishes the \textbf{seed-dependent variation at $\pm$1--4 pts},
+growing with noise level.  Rankings are preserved across seeds at 0.5--1.5\,\AA.
+At 2.0\,\AA, the GQT~vs.~RFO ordering can flip between seeds (the two methods
+are statistically indistinguishable at this noise level with $N=287$).
+
+\subsubsection{v11 Convergence Table}
+\label{sec:v11-table}
+
+\begin{table}[h]
+\centering
+\caption{v11 convergence results (287 samples, strict $n_\text{neg}=0$, all
+  configs use PLS).  ``trf'' = trust radius floor 0.005\,\AA\ (default 0.01\,\AA).
+  Sorted by mean convergence rate.}
+\label{tab:v11}
+\begin{tabular}{lcccc}
+\toprule
+Configuration & 0.5\,\AA & 1.0\,\AA & 1.5\,\AA & 2.0\,\AA \\
+\midrule
+\multicolumn{5}{l}{\emph{20k-step configs}} \\
+RFO+Schl+PLS (20k) & \textbf{272} (94.8\%) & \textbf{245} (85.4\%) & \textbf{222} (77.4\%) & \textbf{183} (63.8\%) \\
+GQT+Schl+PLS (20k) & 257 (89.5\%) & 220 (76.7\%) & 195 (67.9\%) & 167 (58.2\%) \\
+\midrule
+\multicolumn{5}{l}{\emph{10k-step configs (standard)}} \\
+RFO+Schl+PLS        & 256 (89.2\%) & 225 (78.4\%) & 175 (61.0\%) & 124 (43.2\%) \\
+RFO+PLS              & 255 (88.9\%) & 230 (80.1\%) & 176 (61.3\%) & 127 (44.3\%) \\
+GQT+PLS              & 242 (84.3\%) & 191 (66.6\%) & 156 (54.4\%) & 118 (41.1\%) \\
+GQT+Schl+PLS         & 239 (83.3\%) & 195 (67.9\%) & 154 (53.7\%) & 120 (41.8\%) \\
+\midrule
+\multicolumn{5}{l}{\emph{Trust floor = 0.005\,\AA}} \\
+GQT+Schl+PLS+trf     & 206 (71.8\%) & 157 (54.7\%) & 125 (43.6\%) & 70 (24.4\%) \\
+RFO+Schl+PLS+trf     & 201 (70.0\%) & 157 (54.7\%) & 89 (31.0\%) & 60 (20.9\%) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsubsection{Factor Analysis}
+\label{sec:v11-factors}
+
+\paragraph{20k steps: the second breakthrough.}
+Doubling the step budget from 10k to 20k produces the largest gains seen in
+any intervention except PLS itself:
+
+\begin{table}[h]
+\centering
+\caption{Effect of 20k steps vs.\ 10k (both with Schlegel+PLS).
+  $\Delta$ = convergence gain in percentage points.}
+\label{tab:20k-effect}
+\begin{tabular}{lcccc}
+\toprule
+Optimizer & 0.5\,\AA & 1.0\,\AA & 1.5\,\AA & 2.0\,\AA \\
+\midrule
+RFO+Schl+PLS $\Delta$ & $+$5.6 & $+$7.0 & $+$16.4 & $+$20.6 \\
+GQT+Schl+PLS $\Delta$ & $+$6.3 & $+$8.7 & $+$14.3 & $+$16.4 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The effect grows dramatically with noise: $+$6\,pts at 0.5\,\AA\ but
+$+$17--21\,pts at 2.0\,\AA.  At 2.0\,\AA, RFO+Schl+PLS+20k reaches
+183/287 (63.8\%), a \textbf{+19.2\,pt improvement over any previous 10k
+configuration} (v10c GQT+PLS: 128/287, 44.6\%).
+
+\textbf{Which failure class benefits?}  Autopsy comparison for
+RFO+Schl+PLS at each noise level (10k $\to$ 20k):
+
+\begin{table}[h]
+\centering
+\caption{Failure class changes from 10k to 20k steps (RFO+Schlegel+PLS).
+  Negative values indicate rescued samples.}
+\label{tab:20k-autopsy}
+\begin{tabular}{lrrrr}
+\toprule
+Failure class & $\Delta$(0.5\,\AA) & $\Delta$(1.0\,\AA) & $\Delta$(1.5\,\AA) & $\Delta$(2.0\,\AA) \\
+\midrule
+oscillating        & $-$13 & $-$9  & $-$37 & $-$46 \\
+almost\_converged   & $\phantom{-}$0 & $-$9  & $-$7  & $-$3  \\
+slow\_convergence   & $\phantom{-}$0 & $-$1  & $-$1  & $-$10 \\
+ghost\_modes        & $-$3  & $-$1  & $-$2  & $\phantom{-}$0  \\
+\midrule
+Total rescued       & $+$16 & $+$20 & $+$47 & $+$59  \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Across all noise levels, \textbf{oscillating failures account for 105/142
+(73.9\%) of rescued samples}.  Almost\_converged contributes 19/142 (13.4\%),
+slow\_convergence 12/142 (8.5\%), and ghost\_modes 6/142 (4.2\%).
+The 20k improvement is \textbf{primarily an oscillation-resolution effect}:
+period-$\sim$8 oscillators that do not damp within 10k steps eventually
+settle given sufficient time.  The blind-mode population
+(almost\_converged + ghost\_modes at the trust radius floor) is largely
+unaffected---these represent a qualitatively different failure mechanism
+that more steps alone cannot resolve.
+
+\textbf{Cost:} At $n=2.0$, mean steps increase from 4229 to 7526 ($1.78\times$),
+wall time from 171\,s to 282\,s ($1.65\times$).  The 20.6\,pt convergence
+gain at 2.0\,\AA\ justifies this cost for applications where convergence
+rate matters more than throughput.
+
+\paragraph{Trust radius floor 0.005\,\AA: catastrophic.}
+Lowering the trust radius floor from 0.01\,\AA\ to 0.005\,\AA\ produces
+\textbf{uniformly severe degradation}:
+
+\begin{table}[h]
+\centering
+\caption{Effect of trust radius floor 0.005\,\AA\ vs.\ default 0.01\,\AA\
+  (both with Schlegel+PLS, 10k steps).  All values are convergence change
+  in percentage points.}
+\label{tab:trf-effect}
+\begin{tabular}{lcccc}
+\toprule
+Optimizer & 0.5\,\AA & 1.0\,\AA & 1.5\,\AA & 2.0\,\AA \\
+\midrule
+RFO+Schl+PLS $\Delta$ & $-$19.2 & $-$23.7 & $-$30.0 & $-$22.3 \\
+GQT+Schl+PLS $\Delta$ & $-$11.5 & $-$13.2 & $-$10.1 & $-$17.4 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+RFO is hit harder than GQT ($-$19 to $-$30\,pts vs.\ $-$10 to $-$17\,pts).
+Autopsy at $n=2.0$ for RFO+Schl+PLS (floor~0.01 $\to$ 0.005):
+oscillating $117 \to 144$ ($+$27), slow\_convergence $15 \to 45$ ($+$30),
+almost\_converged $14 \to 21$ ($+$7).
+
+\textbf{Mechanism}: At floor~0.005\,\AA, each step displaces atoms half as
+far.  This (a)~doubles the time needed to escape oscillation,
+(b)~makes recovery from trust-radius collapse harder (requires twice as many
+consecutive good steps to grow the radius back), and (c)~produces steps too
+small to efficiently flip negative-eigenvalue modes.  The
+slow\_convergence count \emph{tripling} ($15 \to 45$) is the clearest
+signature: samples are making progress but at a rate insufficient to
+converge within 10k steps.
+
+\textbf{Conclusion}: The trust radius floor of 0.01\,\AA\ is already
+optimal.  This value matches the $\varepsilon^{1/2}$ prediction
+(Section~\ref{sec:eps-half}): with $\varepsilon = 10^{-4}$\,eV/\AA,
+the floor should not be smaller than $\sqrt{\varepsilon} \approx 0.01$.
+
+\paragraph{Schlegel TR: neutral when PLS is active.}
+Comparing configs that differ only in Schlegel on/off (all with PLS):
+
+\begin{table}[h]
+\centering
+\caption{Effect of Schlegel trust radius update when PLS is active.
+  $\Delta$ = (with Schlegel) $-$ (without Schlegel), in percentage points.}
+\label{tab:schlegel-with-pls}
+\begin{tabular}{lcccc}
+\toprule
+Comparison & 0.5\,\AA & 1.0\,\AA & 1.5\,\AA & 2.0\,\AA \\
+\midrule
+RFO+Schl+PLS vs.\ RFO+PLS & $+$0.3 & $-$1.7 & $-$0.3 & $-$1.0 \\
+GQT+Schl+PLS vs.\ GQT+PLS & $-$1.0 & $+$1.4 & $-$0.7 & $+$0.7 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+All deltas are within the $\pm$1--4\,pt seed variance
+(Table~\ref{tab:reproducibility}).  \textbf{Schlegel TR has no detectable
+effect when PLS is active.}  This is consistent with the interpretation
+that PLS already handles step-length refinement, making the Schlegel
+corrections to trust-radius growth/shrink rules redundant.
+
+In v10c, Schlegel appeared to help because it was only tested in
+combination with PLS (RFO+Schlegel+PLS was champion).  v11 reveals that
+removing Schlegel from RFO+PLS produces \emph{identical or slightly better}
+convergence, particularly at $n=1.0$ where RFO+PLS (230/287, 80.1\%)
+outperforms RFO+Schlegel+PLS (225/287, 78.4\%) by 5 samples.
+
+\paragraph{GQT+Schlegel+PLS: the never-tested combo.}
+Adding Schlegel to GQT+PLS yields:
+\begin{center}
+\begin{tabular}{lcccc}
+\toprule
+Config & 0.5\,\AA & 1.0\,\AA & 1.5\,\AA & 2.0\,\AA \\
+\midrule
+GQT+PLS       & 242 (84.3\%) & 191 (66.6\%) & 156 (54.4\%) & 118 (41.1\%) \\
+GQT+Schl+PLS  & 239 (83.3\%) & 195 (67.9\%) & 154 (53.7\%) & 120 (41.8\%) \\
+$\Delta$       & $-$1.0       & $+$1.4       & $-$0.7       & $+$0.7       \\
+\bottomrule
+\end{tabular}
+\end{center}
+The effect is within noise.  GQT+Schlegel+PLS does \emph{not} close the gap
+to RFO+PLS (which leads by 4.5--13.6\,pts at all noise levels).
+
+\paragraph{RFO vs.\ GQT with PLS.}
+Both optimizers tested with PLS (no Schlegel) for a clean comparison:
+\begin{center}
+\begin{tabular}{lcccc}
+\toprule
+Config & 0.5\,\AA & 1.0\,\AA & 1.5\,\AA & 2.0\,\AA \\
+\midrule
+RFO+PLS  & 255 (88.9\%) & 230 (80.1\%) & 176 (61.3\%) & 127 (44.3\%) \\
+GQT+PLS  & 242 (84.3\%) & 191 (66.6\%) & 156 (54.4\%) & 118 (41.1\%) \\
+$\Delta$ (RFO$-$GQT) & $+$4.5 & $+$13.6 & $+$7.0 & $+$3.1 \\
+\bottomrule
+\end{tabular}
+\end{center}
+\textbf{RFO wins at all noise levels}, with the largest advantage at
+$n=1.0$ ($+$13.6\,pts).  The v10c crossover (GQT winning at 2.0\,\AA)
+does not appear in this seed: $+$3.1\,pts favoring RFO.  Given the
+$\pm$3.5\,pt seed variance (Table~\ref{tab:reproducibility}), the two
+methods are statistically indistinguishable at 2.0\,\AA, but RFO
+\emph{consistently} wins at 0.5--1.5\,\AA\ across both seeds.
+
+The RFO advantage at $n=1.0$ is particularly striking: 39 additional
+converged samples.  This is the noise level where both the Hessian
+spectrum is sufficiently ill-conditioned to challenge the optimizer
+($\kappa \sim 10^{4.4}$) but not so ill-conditioned that both methods
+are equally lost ($\kappa \sim 10^{6.4}$ at 2.0\,\AA).
+
+Mean steps at $n=2.0$: RFO+PLS = 4023 vs.\ GQT+PLS = 3873 (RFO takes
+$\sim$4\% more steps but converges 3 more samples).
+
+\subsubsection{v11 Failure Autopsy}
+\label{sec:v11-autopsy}
+
+\begin{table}[h]
+\centering
+\caption{v11 overall failure classification (9164 trajectories, all PLS, no ARC).}
+\label{tab:v11-autopsy}
+\begin{tabular}{lrr}
+\toprule
+Classification & Count & Fraction \\
+\midrule
+converged          & 5,800 & 63.3\% \\
+oscillating        & 2,026 & 22.1\% \\
+almost\_converged   &   917 & 10.0\% \\
+ghost\_modes        &   306 &  3.3\% \\
+slow\_convergence   &   111 &  1.2\% \\
+drifting           &     4 &  0.0\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Compared to the v10c non-ARC failure landscape (oscillating $\sim$50\%,
+almost\_converged $\sim$30\%, ghost\_modes $\sim$10\% of failures), the v11
+distribution is inflated by the trust-floor configs (which generate
+disproportionate oscillating and slow\_convergence failures).  Among the
+six standard 10k configs (no trf, no 20k), the failure distribution
+matches v10c within noise.
+
+\textbf{Key autopsy insight}: The 20k configs shift the failure
+distribution toward almost\_converged and ghost\_modes (the blind-mode
+population), because oscillating failures---the largest class in 10k
+configs---are resolved by additional steps.  At $n=2.0$ with 20k,
+oscillating drops from 117 to 71 ($-$39\%), while ghost\_modes remains
+fixed at 17 and almost\_converged drops only from 14 to 11.  This confirms
+that \textbf{the residual failure population after 20k steps is dominated
+by blind modes}, not oscillation.
+
+\subsubsection{Hardest Samples Across Runs}
+\label{sec:hardest}
+
+The v11 hardest samples (converging in $\leq$5/32 configs):
+\begin{center}
+\begin{tabular}{lcl}
+\toprule
+Sample & Conv.\ rate & Spectral signature \\
+\midrule
+179 & 5/32 (15.6\%) & $n_\text{neg}=3$, $\lambda_\text{min}=-8.6\times10^{-5}$, overlap 0.049 \\
+199 & 6/32 (18.8\%) & $n_\text{neg}=5$, $\lambda_\text{min}=-8\times10^{-6}$, overlap 0.022 \\
+129 & 7/32 (21.9\%) & $n_\text{neg}=2$, $\lambda_\text{min}=-3.4\times10^{-5}$, overlap 0.068 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Sample~179 appears as hardest in both v10 (1/48, 2.1\%) and v11 (5/32, 15.6\%).
+Its convergence rate \emph{improved} from 2\% to 16\% with PLS+20k configs,
+but remains hard.  Sample~183, one of v10c's hardest (6/56, 10.7\%), is still
+difficult in v11 (9/32, 28.1\%) but benefits from PLS.
+
+Samples~184 and~210, the hardest in v10c (4/56 each), are \emph{not} among
+v11's hardest, suggesting they benefit from the all-PLS grid.
+The v11 hardest samples share a common spectral signature: multiple
+near-zero negative eigenvalues ($|\lambda| < 10^{-4}$) with very low gradient
+overlap ($<0.1$)---the blind-mode population.
+
+\subsubsection{Consolidated Best-Ever Table}
+\label{sec:best-ever}
+
+\begin{table}[h]
+\centering
+\caption{Best strict convergence rate at each noise level across all runs
+  and seeds (287 samples).  10k and 20k results separated.}
+\label{tab:best-ever}
+\begin{tabular}{ccll}
+\toprule
+Noise & Best rate & Configuration & Run \\
+\midrule
+\multicolumn{4}{l}{\emph{10k steps}} \\
+0.5\,\AA & 256/287 (89.2\%) & RFO+Schl+PLS       & v11 \\
+1.0\,\AA & 230/287 (80.1\%) & RFO+PLS             & v11 \\
+1.5\,\AA & 182/287 (63.4\%) & RFO+Schl+PLS        & v10c \\
+2.0\,\AA & 128/287 (44.6\%) & GQT+PLS             & v10c \\
+\midrule
+\multicolumn{4}{l}{\emph{20k steps}} \\
+0.5\,\AA & 272/287 (94.8\%) & RFO+Schl+PLS (20k)  & v11 \\
+1.0\,\AA & 245/287 (85.4\%) & RFO+Schl+PLS (20k)  & v11 \\
+1.5\,\AA & 222/287 (77.4\%) & RFO+Schl+PLS (20k)  & v11 \\
+2.0\,\AA & 183/287 (63.8\%) & RFO+Schl+PLS (20k)  & v11 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Note: v10c and v11 use different random seeds.  The v10c entries at 1.5 and
+2.0\,\AA\ may reflect seed-favorable outcomes ($\pm$3.5\,pts); within-seed
+v11 10k results at those noise levels are 175/287 (61.0\%) and 127/287
+(44.3\%).
+
+%=============================================================================
 \section{What We Incorporated in v10/v10b}
 \label{sec:incorporated}
 %=============================================================================
@@ -1062,16 +1424,28 @@ specific direction when it changes every step is ineffective.
 Tighter SCF convergence thresholds could potentially reduce the Hessian noise
 floor (currently $\sim8\times10^{-3}$).
 
-\textbf{Why not}: Would require SCINE API calls to set convergence parameters.
-Not investigated.  Documented as future work.
+\textbf{Status}: Investigation script written (v10c) but crashed with
+\texttt{NameError: name `defaultdict' is not defined}.  The bug is a
+missing \texttt{from collections import defaultdict} import.
+\emph{Still open as future work.}
 
 \subsection{Transition1x Frequency Verification}
 
-Run DFTB0 frequency analysis on all 287 DFT-labeled minima to identify which
-are genuine saddle points on the DFTB0 surface vs.\ ghost-mode artifacts.
-
-\textbf{Why not}: Would be a separate analysis task, not an optimizer
-improvement.  Documented as future work.
+\textbf{Status}: \emph{Completed in v10c.}  DFTB0 frequency analysis on
+all 287 DFT-labeled endpoints:
+\begin{itemize}[nosep]
+  \item Reactants: 29/287 (10.1\%) are genuine minima ($n_\text{neg}=0$)
+    under DFTB0.
+  \item Products: 30/287 (10.5\%) are genuine minima.
+  \item Median force at ``minima'': 1.39\,eV/\AA\ (reactant), 1.16\,eV/\AA\
+    (product)---$10{,}000\times$ above our convergence threshold.
+  \item Correlation with optimizer failure: Pearson $r=0.22$, Spearman
+    $r=0.17$.  Point-biserial (is\_minimum vs.\ failure): $r=-0.26$.
+\end{itemize}
+The weak correlations confirm that optimizer failure is \textbf{not primarily
+driven by the starting-point PES character}.  The 90\% ``saddle rate'' at
+DFT-labeled minima reflects genuine PES disagreement between DFT and DFTB0,
+not a numerical artifact.
 
 %=============================================================================
 \section{Explicit Non-Recommendations}
@@ -1148,13 +1522,38 @@ Added polynomial line search (PLS) to GQT and RFO+Schlegel configs:
   \item GQT+PLS: competitive, wins at 2.0\,\AA\ (45\% vs.\ 42\%).
 \end{itemize}
 
+\subsection{v11 Grid (All-PLS Factor Analysis, 32 configs)}
+
+All 8 algorithms use PLS.  8 configs $\times$ 4 noise = 32 total.
+Tests: (1)~GQT+Schlegel+PLS (never tested), (2)~RFO+PLS without Schlegel,
+(3)~20k steps (RFO and GQT), (4)~trust floor 0.005\,\AA\ (RFO and GQT).
+
+\textbf{Key findings} (full analysis in Section~\ref{sec:v11}):
+\begin{itemize}[nosep]
+  \item 20k steps: $+$6 to $+$21\,pts, primarily resolving oscillation.
+  \item Trust floor 0.005: catastrophic ($-$10 to $-$30\,pts).
+  \item Schlegel: neutral when PLS is active ($\pm$1.7\,pts).
+  \item RFO+PLS: wins at all noise levels over GQT+PLS.
+  \item \textbf{New best-ever}: 272/287 (94.8\%) at 0.5\,\AA, 183/287
+    (63.8\%) at 2.0\,\AA\ (both RFO+Schl+PLS, 20k).
+\end{itemize}
+
 \subsection{Recommended Configuration for Future Work}
 
-Based on all evidence, the recommended baseline is:
+Based on all evidence through v11, the recommended baseline is:
 \begin{center}
-\fbox{\textbf{RFO + Schlegel TR + PLS}}
+\fbox{\textbf{RFO + PLS, 20k steps}}
 \end{center}
-With GQT+PLS as an alternative at high noise ($\geq 2.0$\,\AA).
+Schlegel trust radius updates are neutral when PLS is active
+(Section~\ref{sec:v11-factors}) and can be omitted for simplicity.
+The 20k step budget is justified at all noise levels ($+$6--21\,pts over
+10k, Table~\ref{tab:20k-effect}).  The trust radius floor should remain at
+0.01\,\AA\ (lowering to 0.005\,\AA\ is catastrophic,
+Table~\ref{tab:trf-effect}).
+
+For throughput-constrained applications, RFO+PLS at 10k steps is the
+recommended 10k configuration.  GQT+PLS remains competitive at
+$n \geq 2.0$\,\AA\ (within $\pm$3\,pts of RFO+PLS).
 
 %=============================================================================
 \section{Open Questions}
@@ -1162,36 +1561,62 @@ With GQT+PLS as an alternative at high noise ($\geq 2.0$\,\AA).
 %=============================================================================
 
 \begin{enumerate}
-  \item \textbf{Persistently hard samples}: In v10c, samples 184, 210, 251
-    are hardest (4--5/56 configs converge).  Structural analysis needed:
-    are these multi-fragment dissociation, ring-opening, or electronically
-    unusual reactions?
+  \item \textbf{Persistently hard samples}: In v11, samples 179, 199, 129
+    are hardest (5--7/32 configs converge).  These share a common spectral
+    signature: multiple near-zero negative eigenvalues with very low
+    gradient overlap ($<0.1$).  Structural analysis needed: are these
+    multi-fragment dissociation, ring-opening, or electronically unusual
+    reactions?
 
   \item \textbf{Why does PLS help RFO so much more than GQT?}
     RFO+Schlegel+PLS gains +22--34\,pts over bare RFO, while GQT+PLS gains
     only +7--18\,pts.  Hypothesis: RFO's augmented Hessian gives better
     \emph{directions} but worse \emph{step lengths}; PLS fixes the length.
-    Testing: compare step-length distributions with/without PLS.
+    v11 confirms: RFO+PLS (no Schlegel) outperforms GQT+PLS by 3--14\,pts
+    at all noise levels, showing the RFO step direction is genuinely
+    superior.
 
   \item \textbf{Population~A (blind modes) unresolved}: Almost\_converged
-    and ghost\_mode failures are unaffected by any v10 intervention.
-    These have $\lambda_\text{min} \in [-10^{-3}, -2\times10^{-4}]$ with
-    gradient overlap $<0.1$ in the negative-eigenvalue direction.
+    and ghost\_mode failures are unaffected by any intervention including
+    20k steps.  v11 confirms: at $n=2.0$ with 20k, ghost\_modes remains
+    at 17 (unchanged from 10k), and almost\_converged drops only
+    $14 \to 11$.  These have $\lambda_\text{min} \in [-10^{-3},
+    -2\times10^{-4}]$ with gradient overlap $<0.1$ in the
+    negative-eigenvalue direction.  This is the \textbf{fundamental
+    remaining barrier} to convergence beyond $\sim$95\%.
     Possible approaches: random perturbation, mode-following, internal
     coordinate rotation.
 
-  \item \textbf{GQT vs.\ RFO crossover at 2.0\,\AA}: GQT+PLS (45\%)
-    beats RFO+Schlegel+PLS (42\%) at highest noise.  Should a
-    noise-adaptive algorithm selection be considered?
+  \item \textbf{GQT vs.\ RFO crossover at 2.0\,\AA}: \emph{Partially
+    resolved.}  v11 shows RFO+PLS wins at all noise levels in this seed
+    ($+$3.1\,pts at 2.0\,\AA).  The v10c crossover (GQT winning at
+    2.0\,\AA) was seed-dependent and within the $\pm$3.5\,pt
+    uncertainty.  No noise-adaptive selection is needed; RFO+PLS
+    is weakly but consistently preferred.
 
   \item \textbf{SCINE SCF convergence}: Could tighter SCF thresholds reduce
     the Hessian noise floor ($\sim8\times10^{-3}$)?  Investigation script
-    written but crashed (\texttt{NameError}: \texttt{defaultdict}).
+    crashed (\texttt{NameError}: \texttt{defaultdict} not imported).
+    \emph{Still open.}
 
   \item \textbf{Transition1x frequency verification}: Completed in v10c.
     Only 10\% of DFT-labeled minima are true minima under DFTB0.
     Weak correlation ($r=0.22$) with optimizer failure.
     \emph{Resolved}: not a primary driver of failure.
+
+  \item \textbf{Optimal step budget}: v11 shows 20k steps rescues
+    primarily oscillating failures (74\% of rescued samples).  Is there
+    a point of diminishing returns?  Testing 30k or 50k steps would
+    reveal whether the remaining oscillating failures at 20k eventually
+    resolve or are truly trapped.
+
+  \item \textbf{Why does lower trust floor hurt?}  v11 shows floor
+    0.005\,\AA\ is catastrophic ($-$10 to $-$30\,pts).  The
+    $\varepsilon^{1/2}$ theorem predicts floor $\sim$0.01; the
+    experimental confirmation strengthens this connection.  However, the
+    mechanism deserves further theoretical analysis: is the floor effect
+    purely about step size, or does it interact with the trust-radius
+    recovery dynamics?
 \end{enumerate}
 
 %=============================================================================

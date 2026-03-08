@@ -1,0 +1,353 @@
+Found 9164 trajectory files
+
+======================================================================
+FAILURE AUTOPSY SUMMARY
+======================================================================
+
+Overall classification distribution:
+  converged                : 5800 ( 63.3%)
+  oscillating              : 2026 ( 22.1%)
+  almost_converged         :  917 ( 10.0%)
+  ghost_modes              :  306 (  3.3%)
+  slow_convergence         :  111 (  1.2%)
+  drifting                 :    4 (  0.0%)
+
+======================================================================
+PER-COMBO FAILURE MODES
+======================================================================
+
+--- n0.5_mad1.3_se1e-3_sctr_re0.01_ar1_pls_pgtrue_phfalse (242/285 converged) ---
+  almost_converged: 25
+  oscillating: 11
+  ghost_modes: 7
+
+--- n0.5_mad1.3_se1e-3_sctr_str_20k_re0.01_ar1_pls_pgtrue_phfalse (257/285 converged) ---
+  almost_converged: 21
+  oscillating: 4
+  ghost_modes: 3
+
+--- n0.5_mad1.3_se1e-3_sctr_str_re0.01_ar1_pls_pgtrue_phfalse (239/285 converged) ---
+  almost_converged: 27
+  oscillating: 16
+  ghost_modes: 3
+
+--- n0.5_mad1.3_se1e-3_sctr_str_trf0.005_re0.01_ar1_pls_pgtrue_phfalse (206/285 converged) ---
+  almost_converged: 43
+  oscillating: 31
+  ghost_modes: 5
+
+--- n0.5_rfo_re0.01_ar1_pls_pgtrue_phfalse (255/286 converged) ---
+  almost_converged: 15
+  oscillating: 15
+  ghost_modes: 1
+
+--- n0.5_rfo_str_20k_re0.01_ar1_pls_pgtrue_phfalse (272/286 converged) ---
+  almost_converged: 9
+  oscillating: 5
+
+--- n0.5_rfo_str_re0.01_ar1_pls_pgtrue_phfalse (256/286 converged) ---
+  oscillating: 18
+  almost_converged: 9
+  ghost_modes: 3
+
+--- n0.5_rfo_str_trf0.005_re0.01_ar1_pls_pgtrue_phfalse (201/286 converged) ---
+  oscillating: 53
+  almost_converged: 26
+  ghost_modes: 5
+  slow_convergence: 1
+
+--- n1.0_mad1.3_se1e-3_sctr_re0.01_ar1_pls_pgtrue_phfalse (191/287 converged) ---
+  almost_converged: 46
+  oscillating: 43
+  ghost_modes: 7
+
+--- n1.0_mad1.3_se1e-3_sctr_str_20k_re0.01_ar1_pls_pgtrue_phfalse (220/287 converged) ---
+  almost_converged: 33
+  oscillating: 28
+  ghost_modes: 6
+
+--- n1.0_mad1.3_se1e-3_sctr_str_re0.01_ar1_pls_pgtrue_phfalse (195/287 converged) ---
+  almost_converged: 43
+  oscillating: 38
+  ghost_modes: 11
+
+--- n1.0_mad1.3_se1e-3_sctr_str_trf0.005_re0.01_ar1_pls_pgtrue_phfalse (157/287 converged) ---
+  oscillating: 70
+  almost_converged: 54
+  ghost_modes: 6
+
+--- n1.0_rfo_re0.01_ar1_pls_pgtrue_phfalse (230/287 converged) ---
+  oscillating: 33
+  almost_converged: 16
+  ghost_modes: 6
+  slow_convergence: 2
+
+--- n1.0_rfo_str_20k_re0.01_ar1_pls_pgtrue_phfalse (245/287 converged) ---
+  oscillating: 26
+  almost_converged: 12
+  ghost_modes: 4
+
+--- n1.0_rfo_str_re0.01_ar1_pls_pgtrue_phfalse (225/287 converged) ---
+  oscillating: 35
+  almost_converged: 21
+  ghost_modes: 5
+  slow_convergence: 1
+
+--- n1.0_rfo_str_trf0.005_re0.01_ar1_pls_pgtrue_phfalse (157/287 converged) ---
+  oscillating: 85
+  almost_converged: 36
+  ghost_modes: 7
+  slow_convergence: 2
+
+--- n1.5_mad1.3_se1e-3_sctr_re0.01_ar1_pls_pgtrue_phfalse (156/286 converged) ---
+  oscillating: 75
+  almost_converged: 45
+  ghost_modes: 10
+
+--- n1.5_mad1.3_se1e-3_sctr_str_20k_re0.01_ar1_pls_pgtrue_phfalse (195/286 converged) ---
+  oscillating: 44
+  almost_converged: 31
+  ghost_modes: 16
+
+--- n1.5_mad1.3_se1e-3_sctr_str_re0.01_ar1_pls_pgtrue_phfalse (154/286 converged) ---
+  oscillating: 78
+  almost_converged: 41
+  ghost_modes: 13
+
+--- n1.5_mad1.3_se1e-3_sctr_str_trf0.005_re0.01_ar1_pls_pgtrue_phfalse (124/286 converged) ---
+  oscillating: 84
+  almost_converged: 64
+  ghost_modes: 13
+  slow_convergence: 1
+
+--- n1.5_rfo_re0.01_ar1_pls_pgtrue_phfalse (176/286 converged) ---
+  oscillating: 81
+  almost_converged: 18
+  ghost_modes: 7
+  slow_convergence: 4
+
+--- n1.5_rfo_str_20k_re0.01_ar1_pls_pgtrue_phfalse (222/286 converged) ---
+  oscillating: 39
+  almost_converged: 16
+  ghost_modes: 7
+  slow_convergence: 2
+
+--- n1.5_rfo_str_re0.01_ar1_pls_pgtrue_phfalse (175/286 converged) ---
+  oscillating: 76
+  almost_converged: 23
+  ghost_modes: 9
+  slow_convergence: 3
+
+--- n1.5_rfo_str_trf0.005_re0.01_ar1_pls_pgtrue_phfalse (89/286 converged) ---
+  oscillating: 125
+  almost_converged: 47
+  slow_convergence: 14
+  ghost_modes: 11
+
+--- n2.0_mad1.3_se1e-3_sctr_re0.01_ar1_pls_pgtrue_phfalse (116/287 converged) ---
+  oscillating: 116
+  almost_converged: 26
+  ghost_modes: 24
+  slow_convergence: 3
+  drifting: 2
+
+--- n2.0_mad1.3_se1e-3_sctr_str_20k_re0.01_ar1_pls_pgtrue_phfalse (166/287 converged) ---
+  oscillating: 79
+  almost_converged: 31
+  ghost_modes: 10
+  slow_convergence: 1
+
+--- n2.0_mad1.3_se1e-3_sctr_str_re0.01_ar1_pls_pgtrue_phfalse (119/287 converged) ---
+  oscillating: 112
+  almost_converged: 32
+  ghost_modes: 22
+  slow_convergence: 2
+
+--- n2.0_mad1.3_se1e-3_sctr_str_trf0.005_re0.01_ar1_pls_pgtrue_phfalse (67/287 converged) ---
+  oscillating: 165
+  almost_converged: 37
+  ghost_modes: 17
+  drifting: 1
+
+--- n2.0_rfo_re0.01_ar1_pls_pgtrue_phfalse (127/287 converged) ---
+  oscillating: 109
+  almost_converged: 24
+  ghost_modes: 17
+  slow_convergence: 10
+
+--- n2.0_rfo_str_20k_re0.01_ar1_pls_pgtrue_phfalse (183/287 converged) ---
+  oscillating: 71
+  ghost_modes: 17
+  almost_converged: 11
+  slow_convergence: 5
+
+--- n2.0_rfo_str_re0.01_ar1_pls_pgtrue_phfalse (124/287 converged) ---
+  oscillating: 117
+  ghost_modes: 17
+  slow_convergence: 15
+  almost_converged: 14
+
+--- n2.0_rfo_str_trf0.005_re0.01_ar1_pls_pgtrue_phfalse (59/287 converged) ---
+  oscillating: 144
+  slow_convergence: 45
+  almost_converged: 21
+  ghost_modes: 17
+  drifting: 1
+
+======================================================================
+DETAILED FAILURE REPORTS (failed trajectories)
+======================================================================
+
+  sample_179: 27 failures across combos
+    Failure modes: almost_converged, ghost_modes, oscillating
+    Best attempt: n2.0_mad1.3_se1e-3_sctr_str_re0.01_ar1_pls_pgtrue_phfalse
+      final_n_neg=3, min_eval=-0.000086, force_norm=0.043897
+      bottom_spectrum: [-0.00009, -0.00006, -0.00000, 0.00000, 0.00001]
+      neg_mode_eigenvalues: [-0.00009, -0.00006, -0.00000]
+      grad_overlaps:        [0.0487, 0.0146, 0.0057]
+      stagnation: 0 steps (0.0%), eval_improving=False, energy_plateau=False
+      trust_radius: final=0.0100, min=0.0100
+
+  sample_199: 26 failures across combos
+    Failure modes: almost_converged, ghost_modes, oscillating, slow_convergence
+    Best attempt: n1.5_mad1.3_se1e-3_sctr_str_re0.01_ar1_pls_pgtrue_phfalse
+      final_n_neg=5, min_eval=-0.000008, force_norm=0.072076
+      bottom_spectrum: [-0.00001, -0.00000, -0.00000, -0.00000, -0.00000]
+      neg_mode_eigenvalues: [-0.00001, -0.00000, -0.00000, -0.00000, -0.00000]
+      grad_overlaps:        [0.0222, 0.0005, 0.0561, 0.0165, 0.0133]
+      stagnation: 0 steps (0.0%), eval_improving=False, energy_plateau=False
+      trust_radius: final=0.0100, min=0.0100
+
+  sample_129: 25 failures across combos
+    Failure modes: almost_converged, ghost_modes, oscillating, slow_convergence
+    Best attempt: n1.0_mad1.3_se1e-3_sctr_str_re0.01_ar1_pls_pgtrue_phfalse
+      final_n_neg=2, min_eval=-0.000034, force_norm=0.053939
+      bottom_spectrum: [-0.00003, -0.00000, 0.00001, 0.00003, 0.00081]
+      neg_mode_eigenvalues: [-0.00003, -0.00000]
+      grad_overlaps:        [0.0682, 0.0115]
+      stagnation: 0 steps (0.0%), eval_improving=False, energy_plateau=False
+      trust_radius: final=0.0100, min=0.0100
+
+  sample_100: 23 failures across combos
+    Failure modes: almost_converged, ghost_modes, oscillating, slow_convergence
+    Best attempt: n0.5_mad1.3_se1e-3_sctr_re0.01_ar1_pls_pgtrue_phfalse
+      final_n_neg=1, min_eval=-0.000004, force_norm=0.052302
+      bottom_spectrum: [-0.00000, 0.00003, 0.00191, 0.00269, 0.00534]
+      neg_mode_eigenvalues: [-0.00000]
+      grad_overlaps:        [0.0225]
+      stagnation: 1 steps (0.0%), eval_improving=False, energy_plateau=False
+      trust_radius: final=0.0100, min=0.0100
+
+  sample_183: 23 failures across combos
+    Failure modes: almost_converged, ghost_modes, oscillating
+    Best attempt: n2.0_rfo_re0.01_ar1_pls_pgtrue_phfalse
+      final_n_neg=2, min_eval=-0.000007, force_norm=0.023632
+      bottom_spectrum: [-0.00001, -0.00000, 0.00000, 0.00007, 0.00009]
+      neg_mode_eigenvalues: [-0.00001, -0.00000]
+      grad_overlaps:        [0.0146, 0.0059]
+      stagnation: 0 steps (0.0%), eval_improving=True, energy_plateau=False
+      trust_radius: final=0.0100, min=0.0100
+
+  sample_147: 23 failures across combos
+    Failure modes: almost_converged, drifting, ghost_modes, oscillating
+    Best attempt: n1.0_rfo_str_trf0.005_re0.01_ar1_pls_pgtrue_phfalse
+      final_n_neg=1, min_eval=-0.000002, force_norm=0.001375
+      bottom_spectrum: [-0.00000, 0.00000, 0.00002, 0.02752, 0.09834]
+      neg_mode_eigenvalues: [-0.00000]
+      grad_overlaps:        [0.0786]
+      stagnation: 59 steps (0.6%), eval_improving=False, energy_plateau=False
+      trust_radius: final=0.0050, min=0.0050
+
+  sample_277: 22 failures across combos
+    Failure modes: almost_converged, ghost_modes, oscillating, slow_convergence
+    Best attempt: n1.5_mad1.3_se1e-3_sctr_str_trf0.005_re0.01_ar1_pls_pgtrue_phfalse
+      final_n_neg=2, min_eval=-0.000001, force_norm=0.007406
+      bottom_spectrum: [-0.00000, -0.00000, 0.00000, 0.00001, 0.00008]
+      neg_mode_eigenvalues: [-0.00000, -0.00000]
+      grad_overlaps:        [0.0400, 0.0000]
+      stagnation: 0 steps (0.0%), eval_improving=False, energy_plateau=False
+      trust_radius: final=0.0050, min=0.0050
+
+  sample_193: 22 failures across combos
+    Failure modes: almost_converged, oscillating, slow_convergence
+    Best attempt: n0.5_mad1.3_se1e-3_sctr_str_20k_re0.01_ar1_pls_pgtrue_phfalse
+      final_n_neg=1, min_eval=-0.000118, force_norm=0.032044
+      bottom_spectrum: [-0.00012, 0.00106, 0.00216, 0.00317, 0.00401]
+      neg_mode_eigenvalues: [-0.00012]
+      grad_overlaps:        [0.0326]
+      stagnation: 2 steps (0.0%), eval_improving=False, energy_plateau=False
+      trust_radius: final=0.0100, min=0.0100
+
+  sample_228: 22 failures across combos
+    Failure modes: almost_converged, oscillating
+    Best attempt: n1.5_mad1.3_se1e-3_sctr_str_trf0.005_re0.01_ar1_pls_pgtrue_phfalse
+      final_n_neg=2, min_eval=-0.000121, force_norm=0.565305
+      bottom_spectrum: [-0.00012, -0.00001, 0.00020, 0.00053, 0.00765]
+      neg_mode_eigenvalues: [-0.00012, -0.00001]
+      grad_overlaps:        [0.0025, 0.0035]
+      stagnation: 0 steps (0.0%), eval_improving=False, energy_plateau=False
+      trust_radius: final=0.0050, min=0.0050
+
+  sample_178: 21 failures across combos
+    Failure modes: almost_converged, ghost_modes, oscillating, slow_convergence
+    Best attempt: n1.0_mad1.3_se1e-3_sctr_str_20k_re0.01_ar1_pls_pgtrue_phfalse
+      final_n_neg=2, min_eval=-0.000019, force_norm=0.024120
+      bottom_spectrum: [-0.00002, -0.00001, 0.00005, 0.00013, 0.00046]
+      neg_mode_eigenvalues: [-0.00002, -0.00001]
+      grad_overlaps:        [0.0010, 0.0052]
+      stagnation: 0 steps (0.0%), eval_improving=False, energy_plateau=False
+      trust_radius: final=0.0100, min=0.0100
+
+  sample_181: 21 failures across combos
+    Failure modes: almost_converged, oscillating, slow_convergence
+    Best attempt: n0.5_mad1.3_se1e-3_sctr_re0.01_ar1_pls_pgtrue_phfalse
+      final_n_neg=1, min_eval=-0.000208, force_norm=0.032572
+      bottom_spectrum: [-0.00021, 0.00054, 0.00113, 0.00136, 0.00569]
+      neg_mode_eigenvalues: [-0.00021]
+      grad_overlaps:        [0.0963]
+      stagnation: 0 steps (0.0%), eval_improving=False, energy_plateau=False
+      trust_radius: final=0.0100, min=0.0100
+
+  sample_083: 21 failures across combos
+    Failure modes: almost_converged, ghost_modes, oscillating
+    Best attempt: n0.5_mad1.3_se1e-3_sctr_str_trf0.005_re0.01_ar1_pls_pgtrue_phfalse
+      final_n_neg=2, min_eval=-0.000070, force_norm=0.027299
+      bottom_spectrum: [-0.00007, -0.00004, 0.00003, 0.00036, 0.00407]
+      neg_mode_eigenvalues: [-0.00007, -0.00004]
+      grad_overlaps:        [0.0317, 0.0606]
+      stagnation: 2 steps (0.0%), eval_improving=False, energy_plateau=False
+      trust_radius: final=0.0050, min=0.0050
+
+  sample_070: 21 failures across combos
+    Failure modes: almost_converged, ghost_modes, oscillating
+    Best attempt: n1.0_mad1.3_se1e-3_sctr_str_20k_re0.01_ar1_pls_pgtrue_phfalse
+      final_n_neg=1, min_eval=-0.000045, force_norm=0.046873
+      bottom_spectrum: [-0.00005, 0.00029, 0.00174, 0.00661, 0.02450]
+      neg_mode_eigenvalues: [-0.00005]
+      grad_overlaps:        [0.1686]
+      stagnation: 8 steps (0.0%), eval_improving=False, energy_plateau=False
+      trust_radius: final=0.0100, min=0.0100
+
+  sample_134: 21 failures across combos
+    Failure modes: almost_converged, oscillating, slow_convergence
+    Best attempt: n2.0_mad1.3_se1e-3_sctr_str_trf0.005_re0.01_ar1_pls_pgtrue_phfalse
+      final_n_neg=8, min_eval=-0.000548, force_norm=0.004699
+      bottom_spectrum: [-0.00055, -0.00044, -0.00001, -0.00000, -0.00000]
+      neg_mode_eigenvalues: [-0.00055, -0.00044, -0.00001, -0.00000, -0.00000, -0.00000, -0.00000, -0.00000]
+      grad_overlaps:        [0.0005, 0.0059, 0.0308, 0.1256, 0.0740, 0.1420, 0.1230, 0.0381]
+      stagnation: 0 steps (0.0%), eval_improving=False, energy_plateau=False
+      trust_radius: final=0.0050, min=0.0050
+
+  sample_041: 20 failures across combos
+    Failure modes: almost_converged, oscillating
+    Best attempt: n2.0_mad1.3_se1e-3_sctr_str_trf0.005_re0.01_ar1_pls_pgtrue_phfalse
+      final_n_neg=4, min_eval=-0.000134, force_norm=0.019755
+      bottom_spectrum: [-0.00013, -0.00004, -0.00000, -0.00000, 0.00000]
+      neg_mode_eigenvalues: [-0.00013, -0.00004, -0.00000, -0.00000]
+      grad_overlaps:        [0.0479, 0.1928, 0.0400, 0.0045]
+      stagnation: 2 steps (0.0%), eval_improving=False, energy_plateau=False
+      trust_radius: final=0.0050, min=0.0050
+
+Wrote autopsy artifacts to: /scratch/memoozd/ts-tools-scratch/runs/min_nr_v11_1113757/autopsy
+  failure_autopsy.csv  — one row per trajectory
+  failure_autopsy.json — structured summary

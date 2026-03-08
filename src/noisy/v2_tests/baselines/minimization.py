@@ -53,6 +53,7 @@ Algorithmic improvements (v3):
 
 from __future__ import annotations
 
+import random
 from typing import Any, Dict, List, Optional, Tuple
 
 import torch
@@ -554,6 +555,178 @@ def _eigenvector_continuity(
         "n_neg_current": n_neg_current,
         "n_neg_previous": n_neg_prev,
     }
+
+
+# ---------------------------------------------------------------------------
+# v12: ModeTracker — track identity of negative Hessian modes across steps
+# ---------------------------------------------------------------------------
+
+class ModeTracker:
+    """Track identity of negative Hessian modes across optimization steps.
+
+    Each tracked mode carries:
+    - eigvec: current eigenvector (updated each step via matching)
+    - eigenvalue: current eigenvalue
+    - age: consecutive steps this mode has been negative
+    - blind_age: consecutive steps with |g · v| / |g| < overlap_thresh
+    - grad_overlap: current |g · v| / |g|
+    """
+
+    def __init__(self, match_threshold: float = 0.5):
+        self.match_threshold = match_threshold
+        self.tracked_modes: List[Dict[str, Any]] = []
+
+    def update(
+        self,
+        evals_vib: torch.Tensor,
+        evecs_vib_3N: torch.Tensor,
+        grad_flat: torch.Tensor,
+        overlap_thresh: float = 0.1,
+    ) -> None:
+        """Call each step. Matches current negative modes to tracked ones."""
+        neg_mask = evals_vib < 0.0
+        n_neg = int(neg_mask.sum().item())
+
+        work_dtype = evecs_vib_3N.dtype
+        grad_w = grad_flat.to(dtype=work_dtype)
+        grad_norm = float(grad_w.norm().item())
+        if grad_norm < 1e-30:
+            grad_norm = 1e-30
+
+        if n_neg == 0:
+            # All modes went positive — clear tracking
+            self.tracked_modes = []
+            return
+
+        neg_evals = evals_vib[neg_mask]
+        neg_evecs = evecs_vib_3N[:, neg_mask]  # (3N, n_neg)
+
+        # Sort by eigenvalue ascending (most negative first)
+        sort_idx = torch.argsort(neg_evals)
+        neg_evals = neg_evals[sort_idx]
+        neg_evecs = neg_evecs[:, sort_idx]
+
+        # Compute grad overlaps for current modes
+        grad_projs = neg_evecs.T @ grad_w  # (n_neg,)
+        cur_overlaps = (grad_projs.abs() / grad_norm).tolist()
+
+        if len(self.tracked_modes) == 0:
+            # First step with negative modes — initialize
+            for i in range(n_neg):
+                g_ov = cur_overlaps[i]
+                self.tracked_modes.append({
+                    "eigvec": neg_evecs[:, i].clone(),
+                    "eigenvalue": float(neg_evals[i].item()),
+                    "age": 1,
+                    "blind_age": 1 if g_ov < overlap_thresh else 0,
+                    "grad_overlap": g_ov,
+                })
+            return
+
+        # Greedy matching: for each tracked mode, find best current mode
+        n_cur = n_neg
+        n_tracked = len(self.tracked_modes)
+        matched_cur = set()
+        matched_tracked = set()
+
+        # Build overlap matrix: tracked_evecs^T @ cur_evecs -> (n_tracked, n_cur)
+        tracked_evecs = torch.stack(
+            [m["eigvec"] for m in self.tracked_modes], dim=1
+        ).to(dtype=work_dtype)  # (3N, n_tracked)
+        overlap_mat = torch.abs(tracked_evecs.T @ neg_evecs)  # (n_tracked, n_cur)
+
+        # Greedy: pick highest overlap pair, assign, repeat
+        for _ in range(min(n_tracked, n_cur)):
+            # Mask already-matched
+            mask = overlap_mat.clone()
+            for ti in matched_tracked:
+                mask[ti, :] = -1.0
+            for ci in matched_cur:
+                mask[:, ci] = -1.0
+
+            best_val = float(mask.max().item())
+            if best_val < self.match_threshold:
+                break
+
+            best_idx = int(mask.argmax().item())
+            ti = best_idx // n_cur
+            ci = best_idx % n_cur
+            matched_tracked.add(ti)
+            matched_cur.add(ci)
+
+            # Update tracked mode
+            g_ov = cur_overlaps[ci]
+            self.tracked_modes[ti]["eigvec"] = neg_evecs[:, ci].clone()
+            self.tracked_modes[ti]["eigenvalue"] = float(neg_evals[ci].item())
+            self.tracked_modes[ti]["age"] += 1
+            self.tracked_modes[ti]["grad_overlap"] = g_ov
+            if g_ov < overlap_thresh:
+                self.tracked_modes[ti]["blind_age"] += 1
+            else:
+                self.tracked_modes[ti]["blind_age"] = 0
+
+        # Unmatched current modes: add as new
+        for ci in range(n_cur):
+            if ci not in matched_cur:
+                g_ov = cur_overlaps[ci]
+                self.tracked_modes.append({
+                    "eigvec": neg_evecs[:, ci].clone(),
+                    "eigenvalue": float(neg_evals[ci].item()),
+                    "age": 1,
+                    "blind_age": 1 if g_ov < overlap_thresh else 0,
+                    "grad_overlap": g_ov,
+                })
+
+        # Remove unmatched tracked modes (they went positive)
+        self.tracked_modes = [
+            m for i, m in enumerate(self.tracked_modes)
+            if i in matched_tracked or i >= n_tracked  # keep newly added
+        ]
+
+    def longest_stuck(self) -> Optional[Dict[str, Any]]:
+        """Mode with highest age (longest continuously negative)."""
+        if not self.tracked_modes:
+            return None
+        return max(self.tracked_modes, key=lambda m: m["age"])
+
+    def second_longest_stuck(self) -> Optional[Dict[str, Any]]:
+        """Mode with second-highest age. Falls back to longest if only one."""
+        if not self.tracked_modes:
+            return None
+        if len(self.tracked_modes) == 1:
+            return self.tracked_modes[0]
+        sorted_modes = sorted(self.tracked_modes, key=lambda m: m["age"], reverse=True)
+        return sorted_modes[1]
+
+    def longest_blind(self, overlap_thresh: float = 0.1) -> Optional[Dict[str, Any]]:
+        """Mode with highest blind_age (longest with low grad overlap)."""
+        blind = [m for m in self.tracked_modes if m["blind_age"] > 0]
+        if not blind:
+            return None
+        return max(blind, key=lambda m: m["blind_age"])
+
+    def second_longest_blind(self, overlap_thresh: float = 0.1) -> Optional[Dict[str, Any]]:
+        """Mode with second-highest blind_age. Falls back to longest if only one."""
+        blind = [m for m in self.tracked_modes if m["blind_age"] > 0]
+        if not blind:
+            return None
+        if len(blind) == 1:
+            return blind[0]
+        sorted_blind = sorted(blind, key=lambda m: m["blind_age"], reverse=True)
+        return sorted_blind[1]
+
+    def summary(self) -> Dict[str, Any]:
+        """Return a JSON-serializable summary for logging."""
+        longest = self.longest_stuck()
+        longest_b = self.longest_blind()
+        return {
+            "n_tracked": len(self.tracked_modes),
+            "longest_stuck_age": longest["age"] if longest else 0,
+            "longest_stuck_eval": longest["eigenvalue"] if longest else float("nan"),
+            "longest_blind_age": longest_b["blind_age"] if longest_b else 0,
+            "longest_blind_eval": longest_b["eigenvalue"] if longest_b else float("nan"),
+            "longest_blind_overlap": longest_b["grad_overlap"] if longest_b else float("nan"),
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -1789,6 +1962,19 @@ def run_newton_raphson(
     schlegel_trust_update: bool = False,  # True = boundary-check growth + step-anchored shrink
     # --- v10c polynomial refinement ---
     polynomial_linesearch: bool = False,  # cubic interpolation on accepted TR steps
+    # --- v12 oscillation kick ---
+    osc_kick: bool = False,
+    osc_kick_scale: float = 0.1,         # fraction of trust_radius_floor
+    osc_kick_patience: int = 3,          # consecutive oscillation detections before kick
+    osc_kick_cooldown: int = 50,         # steps between kicks
+    # --- v12 blind-mode kick ---
+    blind_kick: bool = False,
+    blind_kick_scale: float = 0.5,       # fraction of trust_radius_floor
+    blind_kick_overlap_thresh: float = 0.1,
+    blind_kick_force_thresh: float = 0.1,  # eV/Å
+    blind_kick_patience: int = 100,      # consecutive steps before trigger
+    # --- v12 shared kick options ---
+    kick_eigvec_index: int = 0,          # 0=most negative, 1=second most (ablation)
 ) -> Tuple[Dict[str, Any], list]:
     """Newton-Raphson optimization to find energy minimum.
 
@@ -1930,6 +2116,14 @@ def run_newton_raphson(
     if use_arc and gdiis_buffer_size > 0:
         arc_gdiis = _GDIISExtrapolator(max_size=gdiis_buffer_size, min_size=3)
 
+    # v12 kick state
+    mode_tracker = ModeTracker(match_threshold=0.5) if (osc_kick or blind_kick) else None
+    osc_kick_consec = 0          # consecutive oscillation detections
+    osc_kick_cooldown_counter = 0  # steps since last osc kick
+    blind_kick_cooldown_counter = 0  # steps since last blind kick
+    total_osc_kicks = 0
+    total_blind_kicks = 0
+
     # Evaluate initial state
     out = predict_fn(coords, atomic_nums, do_hessian=True, require_grad=False)
 
@@ -2018,6 +2212,19 @@ def run_newton_raphson(
             prev_neg_evecs = None
             prev_neg_evals = None
 
+        # v12: Update mode tracker (needs grad, computed below for step builder,
+        # but we need a raw version here for overlap computation)
+        if mode_tracker is not None:
+            _grad_for_tracker = -forces.reshape(-1)
+            if project_gradient_and_v:
+                _grad_for_tracker = -project_vector_to_vibrational_torch(
+                    forces.reshape(-1), coords, atomsymbols,
+                )
+            mode_tracker.update(
+                evals_vib, evecs_vib_3N, _grad_for_tracker,
+                overlap_thresh=blind_kick_overlap_thresh,
+            )
+
         # ---------------------------------------------------------------
         # Stagnation tracking
         # ---------------------------------------------------------------
@@ -2065,6 +2272,10 @@ def run_newton_raphson(
             step_record["bottom_spectrum"] = _bottom_k_spectrum(evals_vib, log_spectrum_k)
 
         step_record["eigenvec_continuity"] = evec_cont
+
+        # v12: mode tracker summary
+        if mode_tracker is not None:
+            step_record["mode_tracker"] = mode_tracker.summary()
 
         # v5 SPDN spectral conditioning diagnostics
         if use_spdn:
@@ -2147,6 +2358,9 @@ def run_newton_raphson(
                 result_dict["arc_gdiis_accepts"] = arc_gdiis_accepts
             if use_rfo:
                 result_dict["optimizer_mode"] = "rfo"
+            if osc_kick or blind_kick:
+                result_dict["total_osc_kicks"] = total_osc_kicks
+                result_dict["total_blind_kicks"] = total_blind_kicks
             return result_dict, trajectory
 
         # ---------------------------------------------------------------
@@ -2798,6 +3012,154 @@ def run_newton_raphson(
 
             prev_min_vib_eval_for_trust = min_vib_eval
 
+        # ---------------------------------------------------------------
+        # v12: Oscillation kick
+        # ---------------------------------------------------------------
+        if osc_kick and mode_tracker is not None:
+            osc_kick_cooldown_counter = max(0, osc_kick_cooldown_counter - 1)
+
+            is_oscillating = _detect_oscillation(trajectory, window=8)
+            at_trust_floor = current_trust_radius <= trust_radius_floor * 1.01
+
+            if is_oscillating and at_trust_floor:
+                osc_kick_consec += 1
+            else:
+                osc_kick_consec = 0
+
+            if (osc_kick_consec >= osc_kick_patience
+                    and osc_kick_cooldown_counter == 0):
+                # Select kick mode based on eigvec_index
+                if kick_eigvec_index == 0:
+                    kick_mode = mode_tracker.longest_stuck()
+                else:
+                    kick_mode = mode_tracker.second_longest_stuck()
+
+                if kick_mode is not None:
+                    kick_vec = kick_mode["eigvec"].to(dtype=coords.dtype, device=coords.device)
+                    kick_mag = osc_kick_scale * trust_radius_floor
+
+                    # Sign: follow gradient component direction
+                    _grad_for_kick = -forces.reshape(-1)
+                    if project_gradient_and_v:
+                        _grad_for_kick = -project_vector_to_vibrational_torch(
+                            forces.reshape(-1), coords, atomsymbols,
+                        )
+                    g_dot_v = float((_grad_for_kick.to(dtype=kick_vec.dtype) @ kick_vec).item())
+                    if abs(g_dot_v) < 1e-12:
+                        kick_sign = 1.0 if random.random() < 0.5 else -1.0
+                    else:
+                        kick_sign = 1.0 if g_dot_v > 0 else -1.0
+
+                    kick_disp = (kick_sign * kick_mag * kick_vec).reshape(-1, 3)
+                    kicked_coords = coords + kick_disp
+
+                    if _min_interatomic_distance(kicked_coords) >= min_interatomic_dist:
+                        # Accept unconditionally (we're stuck)
+                        kick_out = predict_fn(
+                            kicked_coords, atomic_nums,
+                            do_hessian=True, require_grad=False,
+                        )
+                        coords = kicked_coords.detach()
+                        out = kick_out
+
+                        # Reset trust radius to 2x floor
+                        current_trust_radius = min(2.0 * trust_radius_floor, max_atom_disp)
+
+                        osc_kick_consec = 0
+                        osc_kick_cooldown_counter = osc_kick_cooldown
+                        total_osc_kicks += 1
+
+                        step_record["osc_kick"] = {
+                            "fired": True,
+                            "kick_mag": kick_mag,
+                            "kick_sign": kick_sign,
+                            "mode_age": kick_mode["age"],
+                            "mode_eval": kick_mode["eigenvalue"],
+                            "eigvec_index": kick_eigvec_index,
+                            "energy_before": energy,
+                            "energy_after": _to_float(kick_out["energy"]),
+                        }
+
+        # ---------------------------------------------------------------
+        # v12: Blind-mode kick
+        # ---------------------------------------------------------------
+        if blind_kick and mode_tracker is not None:
+            blind_kick_cooldown_counter = max(0, blind_kick_cooldown_counter - 1)
+
+            if (force_norm < blind_kick_force_thresh
+                    and n_neg > 0
+                    and blind_kick_cooldown_counter == 0):
+                # Select blind mode
+                if kick_eigvec_index == 0:
+                    blind_mode = mode_tracker.longest_blind(blind_kick_overlap_thresh)
+                else:
+                    blind_mode = mode_tracker.second_longest_blind(blind_kick_overlap_thresh)
+
+                if (blind_mode is not None
+                        and blind_mode["blind_age"] >= blind_kick_patience):
+                    blind_vec = blind_mode["eigvec"].to(dtype=coords.dtype, device=coords.device)
+                    blind_mag = blind_kick_scale * trust_radius_floor
+
+                    # Try both +/- directions, pick lower energy
+                    disp_pos = (blind_mag * blind_vec).reshape(-1, 3)
+                    disp_neg = (-blind_mag * blind_vec).reshape(-1, 3)
+                    coords_pos = coords + disp_pos
+                    coords_neg = coords + disp_neg
+
+                    valid_pos = _min_interatomic_distance(coords_pos) >= min_interatomic_dist
+                    valid_neg = _min_interatomic_distance(coords_neg) >= min_interatomic_dist
+
+                    best_kick_coords = None
+                    best_kick_out = None
+                    best_kick_sign = 0.0
+                    best_kick_energy = float("inf")
+
+                    if valid_pos:
+                        out_pos = predict_fn(
+                            coords_pos, atomic_nums,
+                            do_hessian=True, require_grad=False,
+                        )
+                        e_pos = _to_float(out_pos["energy"])
+                        if e_pos < best_kick_energy:
+                            best_kick_energy = e_pos
+                            best_kick_coords = coords_pos
+                            best_kick_out = out_pos
+                            best_kick_sign = 1.0
+
+                    if valid_neg:
+                        out_neg = predict_fn(
+                            coords_neg, atomic_nums,
+                            do_hessian=True, require_grad=False,
+                        )
+                        e_neg = _to_float(out_neg["energy"])
+                        if e_neg < best_kick_energy:
+                            best_kick_energy = e_neg
+                            best_kick_coords = coords_neg
+                            best_kick_out = out_neg
+                            best_kick_sign = -1.0
+
+                    if best_kick_coords is not None:
+                        coords = best_kick_coords.detach()
+                        out = best_kick_out
+
+                        # Reset trust radius to 2x floor
+                        current_trust_radius = min(2.0 * trust_radius_floor, max_atom_disp)
+
+                        blind_kick_cooldown_counter = 200
+                        total_blind_kicks += 1
+
+                        step_record["blind_kick"] = {
+                            "fired": True,
+                            "kick_mag": blind_mag,
+                            "kick_sign": best_kick_sign,
+                            "mode_blind_age": blind_mode["blind_age"],
+                            "mode_eval": blind_mode["eigenvalue"],
+                            "mode_grad_overlap": blind_mode["grad_overlap"],
+                            "eigvec_index": kick_eigvec_index,
+                            "energy_before": energy,
+                            "energy_after": best_kick_energy,
+                        }
+
         actual_step_disp = float(capped_disp.reshape(-1, 3).norm(dim=1).max().item())
         trajectory[-1]["actual_step_disp"] = actual_step_disp
         trajectory[-1]["hit_trust_radius"] = bool(actual_step_disp >= radius_used_for_step * 0.99)
@@ -2844,4 +3206,7 @@ def run_newton_raphson(
         timeout_result["arc_gdiis_accepts"] = arc_gdiis_accepts
     if use_rfo:
         timeout_result["optimizer_mode"] = "rfo"
+    if osc_kick or blind_kick:
+        timeout_result["total_osc_kicks"] = total_osc_kicks
+        timeout_result["total_blind_kicks"] = total_blind_kicks
     return timeout_result, trajectory
