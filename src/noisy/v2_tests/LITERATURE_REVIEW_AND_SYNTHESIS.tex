@@ -946,6 +946,41 @@ growing with noise level.  Rankings are preserved across seeds at 0.5--1.5\,\AA.
 At 2.0\,\AA, the GQT~vs.~RFO ordering can flip between seeds (the two methods
 are statistically indistinguishable at this noise level with $N=287$).
 
+The failure \emph{distributions} also reproduce across seeds.  For the two
+matching configs (RFO+Schlegel+PLS, GQT+PLS), the per-noise-level autopsy:
+
+\begin{table}[h]
+\centering
+\caption{Cross-seed failure autopsy: v10c vs.\ v11 for matching configs.
+  ``Osc'' = oscillating, ``AC'' = almost\_converged, ``GM'' = ghost\_modes.
+  Total $N$ differs slightly due to SCINE errors (v10c: 285--287; v11: 285--287).}
+\label{tab:autopsy-cross-seed}
+\begin{tabular}{llrrrrrrrr}
+\toprule
+Config & Noise & \multicolumn{2}{c}{Conv} & \multicolumn{2}{c}{Osc} & \multicolumn{2}{c}{AC} & \multicolumn{2}{c}{GM} \\
+       &       & v10c & v11 & v10c & v11 & v10c & v11 & v10c & v11 \\
+\midrule
+RFO+Schl+PLS & 0.5 & 254 & 256 & 18 & 18 & 10 & 9 & 3 & 3 \\
+              & 1.0 & 223 & 225 & 40 & 35 & 22 & 21 & 1 & 5 \\
+              & 1.5 & 182 & 175 & 76 & 76 & 19 & 23 & 5 & 9 \\
+              & 2.0 & 120 & 124 & 121 & 117 & 21 & 14 & 18 & 17 \\
+\midrule
+GQT+PLS      & 0.5 & 239 & 242 & 12 & 11 & 25 & 25 & 3 & 7 \\
+              & 1.0 & 191 & 191 & 32 & 43 & 52 & 46 & 10 & 7 \\
+              & 1.5 & 161 & 156 & 76 & 75 & 41 & 45 & 8 & 10 \\
+              & 2.0 & 128 & 118 & 98 & 116 & 37 & 26 & 23 & 24 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The failure mode counts are remarkably stable across seeds.  The oscillating
+count for RFO+Schl+PLS at $n=0.5$ is identical (18 vs.\ 18); at $n=1.5$
+it is also identical (76 vs.\ 76).  The largest discrepancy is GQT+PLS
+oscillating at $n=2.0$ (98 vs.\ 116), which tracks the convergence
+difference ($-$10 samples).  This confirms that the failure classification
+is \textbf{reproducible across random seeds}, not an artifact of a
+particular displacement realization.
+
 \subsubsection{v11 Convergence Table}
 \label{sec:v11-table}
 
@@ -1040,6 +1075,52 @@ wall time from 171\,s to 282\,s ($1.65\times$).  The 20.6\,pt convergence
 gain at 2.0\,\AA\ justifies this cost for applications where convergence
 rate matters more than throughput.
 
+\paragraph{Step count distributions.}
+The distribution of converged\_step reveals the convergence dynamics:
+
+\begin{table}[h]
+\centering
+\caption{Step count statistics for converged samples (RFO+Schlegel+PLS).
+  P90 = 90th percentile.  The median is much lower than the mean because
+  most samples converge quickly; the mean is inflated by a long tail of
+  slow oscillators.}
+\label{tab:step-distributions}
+\begin{tabular}{ccrrrr}
+\toprule
+Config & Noise & $N_\text{conv}$ & Mean & Median & P90 \\
+\midrule
+10k & 0.5\,\AA & 256 & 1{,}533 & 514 & 4{,}525 \\
+    & 1.0\,\AA & 225 & 2{,}522 & 1{,}683 & 6{,}673 \\
+    & 1.5\,\AA & 175 & 3{,}760 & 3{,}725 & 7{,}677 \\
+    & 2.0\,\AA & 124 & 4{,}229 & 3{,}992 & 8{,}521 \\
+\midrule
+20k & 0.5\,\AA & 272 & 2{,}250 & 623 & 6{,}657 \\
+    & 1.0\,\AA & 245 & 3{,}428 & 1{,}853 & 8{,}526 \\
+    & 1.5\,\AA & 222 & 5{,}972 & 4{,}834 & 14{,}723 \\
+    & 2.0\,\AA & 183 & 7{,}526 & 6{,}078 & 17{,}211 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Of the 20k-converged samples, the fraction converging \emph{after} step
+10{,}000 grows with noise: 5.9\% at $n=0.5$, 8.2\% at $n=1.0$, 21.2\%
+at $n=1.5$, and 32.2\% at $n=2.0$.  At $n=2.0$, 59 samples converge
+between steps 10k and 20k, with median convergence step 13{,}677 and maximum
+19{,}908.  The converged-step distribution for these late convergers is roughly
+uniform over the 10k--20k interval, \emph{not} concentrated near 10k.
+This suggests many would benefit from even longer runs.
+
+\textbf{Failure wall}: Nearly all non-converging samples in the 20k configs
+hit the 20k step limit: 104/104 at $n=2.0$, 64/65 at $n=1.5$, 42/42 at
+$n=1.0$.  No samples stopped early due to internal stagnation detection,
+confirming these trajectories are actively evolving, not stuck.
+
+\textbf{Mean step scaling}: Across the four standard 10k algorithms, mean
+converged step scales approximately linearly with noise: $\sim$1{,}500 at
+0.5\,\AA, $\sim$2{,}500 at 1.0\,\AA, $\sim$3{,}500 at 1.5\,\AA,
+$\sim$4{,}000 at 2.0\,\AA.  RFO and GQT have similar mean steps at matched
+noise levels ($\pm$10\%).
+
 \paragraph{Trust radius floor 0.005\,\AA: catastrophic.}
 Lowering the trust radius floor from 0.01\,\AA\ to 0.005\,\AA\ produces
 \textbf{uniformly severe degradation}:
@@ -1108,6 +1189,36 @@ combination with PLS (RFO+Schlegel+PLS was champion).  v11 reveals that
 removing Schlegel from RFO+PLS produces \emph{identical or slightly better}
 convergence, particularly at $n=1.0$ where RFO+PLS (230/287, 80.1\%)
 outperforms RFO+Schlegel+PLS (225/287, 78.4\%) by 5 samples.
+
+\paragraph{Interaction effects.}
+Two-way interactions between the three factors (optimizer, 20k steps,
+trust floor), computed as $\Delta(\text{A+B}) - \Delta(\text{A}) -
+\Delta(\text{B})$:
+
+\begin{table}[h]
+\centering
+\caption{Interaction terms (percentage points).  Positive = synergistic,
+  negative = antagonistic.  All interactions measured with Schlegel+PLS fixed.}
+\label{tab:interactions}
+\begin{tabular}{lccccc}
+\toprule
+Interaction & 0.5\,\AA & 1.0\,\AA & 1.5\,\AA & 2.0\,\AA & Interpretation \\
+\midrule
+20k $\times$ optimizer  & $-$0.7 & $-$1.7 & $+$2.1 & $+$4.2 & 20k helps RFO slightly more at high noise \\
+trf $\times$ optimizer  & $-$7.7 & $-$10.5 & $-$19.9 & $-$4.9 & trf hurts RFO much more than GQT \\
+Schl $\times$ optimizer & $+$1.4 & $-$3.1 & $+$0.3 & $-$1.7 & No consistent interaction \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The trf$\times$optimizer interaction is the strongest: lowering the trust
+floor hurts RFO 8--20\,pts more than GQT.  This is consistent with RFO's
+augmented-Hessian shift producing larger step \emph{directions} that the
+trust radius must clip; at a lower floor, the clipping is more aggressive,
+disproportionately penalizing RFO.  The 20k$\times$optimizer interaction
+is weak ($\pm$4\,pts), confirming that the 20k benefit is optimizer-independent.
+The Schlegel$\times$optimizer interaction is negligible, as expected given
+Schlegel's overall neutrality.
 
 \paragraph{GQT+Schlegel+PLS: the never-tested combo.}
 Adding Schlegel to GQT+PLS yields:
@@ -1191,32 +1302,226 @@ fixed at 17 and almost\_converged drops only from 14 to 11.  This confirms
 that \textbf{the residual failure population after 20k steps is dominated
 by blind modes}, not oscillation.
 
+\paragraph{Per-configuration failure breakdown.}
+Grouping the 32 v11 configs by algorithm family, the per-noise failure
+counts (Table~\ref{tab:per-config-autopsy}) show clear patterns:
+(1)~trf configs have 2--3$\times$ more oscillating failures than their
+default-floor counterparts; (2)~20k configs have 30--40\% fewer oscillating
+failures; (3)~GQT has relatively more almost\_converged failures while
+RFO has relatively more oscillating failures at matched noise/features.
+
+\begin{table}[h]
+\centering
+\caption{Per-config autopsy summary for v11.  Columns: Conv = converged,
+  Osc = oscillating, AC = almost\_converged, GM = ghost\_modes,
+  SC = slow\_convergence.  Drifting ($\leq$4 total) omitted.
+  $N \approx 286$ per config (varies by $\pm$2 due to SCINE errors).}
+\label{tab:per-config-autopsy}
+\begin{tabular}{llrrrrr}
+\toprule
+Algorithm & Noise & Conv & Osc & AC & GM & SC \\
+\midrule
+\multicolumn{7}{l}{\emph{RFO+Schlegel+PLS (20k)}} \\
+ & 0.5 & 272 & 5 & 9 & 0 & 0 \\
+ & 1.0 & 245 & 26 & 12 & 4 & 0 \\
+ & 1.5 & 222 & 39 & 16 & 7 & 2 \\
+ & 2.0 & 183 & 71 & 11 & 17 & 5 \\
+\midrule
+\multicolumn{7}{l}{\emph{GQT+Schlegel+PLS (20k)}} \\
+ & 0.5 & 257 & 4 & 21 & 3 & 0 \\
+ & 1.0 & 220 & 28 & 33 & 6 & 0 \\
+ & 1.5 & 195 & 44 & 31 & 16 & 0 \\
+ & 2.0 & 167 & 79 & 31 & 10 & 0 \\
+\midrule
+\multicolumn{7}{l}{\emph{RFO+Schlegel+PLS (10k)}} \\
+ & 0.5 & 256 & 18 & 9 & 3 & 0 \\
+ & 1.0 & 225 & 35 & 21 & 5 & 1 \\
+ & 1.5 & 175 & 76 & 23 & 9 & 3 \\
+ & 2.0 & 124 & 117 & 14 & 17 & 15 \\
+\midrule
+\multicolumn{7}{l}{\emph{RFO+PLS (10k)}} \\
+ & 0.5 & 255 & 15 & 15 & 1 & 0 \\
+ & 1.0 & 230 & 33 & 16 & 6 & 2 \\
+ & 1.5 & 176 & 81 & 18 & 7 & 4 \\
+ & 2.0 & 127 & 109 & 24 & 17 & 10 \\
+\midrule
+\multicolumn{7}{l}{\emph{GQT+PLS (10k)}} \\
+ & 0.5 & 242 & 11 & 25 & 7 & 0 \\
+ & 1.0 & 191 & 43 & 46 & 7 & 0 \\
+ & 1.5 & 156 & 75 & 45 & 10 & 0 \\
+ & 2.0 & 118 & 116 & 26 & 24 & 3 \\
+\midrule
+\multicolumn{7}{l}{\emph{GQT+Schlegel+PLS (10k)}} \\
+ & 0.5 & 239 & 16 & 27 & 3 & 0 \\
+ & 1.0 & 195 & 38 & 43 & 11 & 0 \\
+ & 1.5 & 154 & 78 & 41 & 13 & 0 \\
+ & 2.0 & 120 & 112 & 32 & 22 & 2 \\
+\midrule
+\multicolumn{7}{l}{\emph{RFO+Schlegel+PLS+trf (10k)}} \\
+ & 0.5 & 201 & 53 & 26 & 5 & 1 \\
+ & 1.0 & 157 & 85 & 36 & 7 & 2 \\
+ & 1.5 & 89 & 125 & 47 & 11 & 14 \\
+ & 2.0 & 60 & 144 & 21 & 17 & 45 \\
+\midrule
+\multicolumn{7}{l}{\emph{GQT+Schlegel+PLS+trf (10k)}} \\
+ & 0.5 & 206 & 31 & 43 & 5 & 0 \\
+ & 1.0 & 157 & 70 & 54 & 6 & 0 \\
+ & 1.5 & 125 & 84 & 64 & 13 & 0 \\
+ & 2.0 & 70 & 165 & 37 & 17 & 0 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{SCINE error analysis.}
+Three samples crash with \texttt{UnboundLocalError: cannot access local
+variable `out\_new'} --- a SCINE/Sparrow internal error during the PLS
+step evaluation:
+\begin{itemize}[nosep]
+  \item Sample~16: crashes in all 8 configs at $n=0.5$ (both GQT and RFO).
+    Converges at $n \geq 1.0$ in RFO configs.
+  \item Sample~173: crashes in 4 GQT configs at $n=0.5$ only.
+  \item Sample~236: crashes in all 8 configs at $n=1.5$ only.
+\end{itemize}
+The crash is deterministic, noise-level-specific, and affects the same
+sample regardless of optimizer or step budget.  It appears to be triggered
+by a specific molecular geometry encountered during the PLS evaluation
+at those noise levels.  Total impact: 16 missing trajectories out of
+9{,}184 ($<0.2\%$), negligible for aggregate statistics.
+
 \subsubsection{Hardest Samples Across Runs}
 \label{sec:hardest}
 
-The v11 hardest samples (converging in $\leq$5/32 configs):
-\begin{center}
-\begin{tabular}{lcl}
+\begin{table}[h]
+\centering
+\caption{Top 10 hardest samples in v11 (converging in $\leq$10/32 configs).
+  $n_\text{neg}^*$ and $\lambda_\text{min}^*$ are from the best failing attempt
+  (highest $\lambda_\text{min}$ among failures).  v10c rate is out of 56 configs
+  (includes non-PLS and ARC).  All share the blind-mode spectral signature:
+  $|\lambda| < 10^{-3}$, gradient overlap $<0.1$.}
+\label{tab:hardest-10}
+\begin{tabular}{clccccc}
 \toprule
-Sample & Conv.\ rate & Spectral signature \\
+Sample & Formula & v11 & v10c & $n_\text{neg}^*$ & $\lambda_\text{min}^*$ & Overlap$^*$ \\
 \midrule
-179 & 5/32 (15.6\%) & $n_\text{neg}=3$, $\lambda_\text{min}=-8.6\times10^{-5}$, overlap 0.049 \\
-199 & 6/32 (18.8\%) & $n_\text{neg}=5$, $\lambda_\text{min}=-8\times10^{-6}$, overlap 0.022 \\
-129 & 7/32 (21.9\%) & $n_\text{neg}=2$, $\lambda_\text{min}=-3.4\times10^{-5}$, overlap 0.068 \\
+179 & C$_3$H$_8$N$_2$O & 5/32 (16\%) & 8/56 (14\%) & 3 & $-8.6\times10^{-5}$ & 0.049 \\
+199 & C$_5$H$_5$NO      & 6/32 (19\%) & 16/56 (29\%) & 5 & $-8\times10^{-6}$ & 0.022 \\
+129 & C$_3$H$_5$NO$_2$  & 7/32 (22\%) & 20/56 (36\%) & 2 & $-3.4\times10^{-5}$ & 0.068 \\
+16  & C$_3$H$_5$NO$_2$  & 9/32 (28\%) & 7/56 (13\%) & 1 & $-5.3\times10^{-5}$ & 0.013 \\
+100 & C$_3$H$_5$NO$_2$  & 9/32 (28\%) & 12/56 (21\%) & 1 & $-4\times10^{-6}$ & 0.023 \\
+147 & C$_3$H$_5$NO$_2$  & 9/32 (28\%) & 12/56 (21\%) & 1 & $-2\times10^{-6}$ & 0.079 \\
+183 & C$_3$H$_8$N$_2$O  & 9/32 (28\%) & 6/56 (11\%) & 2 & $-7\times10^{-6}$ & 0.015 \\
+193 & C$_5$H$_5$NO      & 10/32 (31\%) & 20/56 (36\%) & 1 & $-1.2\times10^{-4}$ & 0.033 \\
+228 & C$_5$H$_5$NO      & 10/32 (31\%) & 10/56 (18\%) & 2 & $-1.2\times10^{-4}$ & 0.003 \\
+277 & C$_5$H$_5$NO      & 10/32 (31\%) & 7/56 (13\%) & 2 & $-1\times10^{-6}$ & 0.040 \\
 \bottomrule
 \end{tabular}
-\end{center}
+\end{table}
 
-Sample~179 appears as hardest in both v10 (1/48, 2.1\%) and v11 (5/32, 15.6\%).
-Its convergence rate \emph{improved} from 2\% to 16\% with PLS+20k configs,
-but remains hard.  Sample~183, one of v10c's hardest (6/56, 10.7\%), is still
-difficult in v11 (9/32, 28.1\%) but benefits from PLS.
+\textbf{Molecular pattern}: Only three molecular formulae appear:
+C$_3$H$_5$NO$_2$ (samples 16, 100, 129, 147), C$_5$H$_5$NO (199, 193,
+228, 277), and C$_3$H$_8$N$_2$O (179, 183).  These are all nitrogen- and
+oxygen-containing small organic molecules, suggesting the Hessian noise
+floor is particularly problematic near N--O bond rearrangement coordinates.
 
-Samples~184 and~210, the hardest in v10c (4/56 each), are \emph{not} among
-v11's hardest, suggesting they benefit from the all-PLS grid.
-The v11 hardest samples share a common spectral signature: multiple
-near-zero negative eigenvalues ($|\lambda| < 10^{-4}$) with very low gradient
-overlap ($<0.1$)---the blind-mode population.
+Sample~179 is hardest in both v10c (14\%) and v11 (16\%).  Sample~16
+worsens from v10c (13\%) relative to the expanded v11 grid because its
+SCINE crash at $n=0.5$ (8 of 8 GQT configs) effectively removes half
+the grid.  Samples~184 and~210, the hardest in v10c (4/56, 7\% each),
+are \emph{not} among v11's hardest, confirming they benefit from the all-PLS grid.
+
+All 10 samples converge only at low noise levels: 9/10 have their
+best convergence at $n=0.5$; only sample~16 converges more readily
+at $n=1.0$--$2.0$ (9 configs) than at $n=0.5$ (0 configs, due to SCINE
+crashes in GQT and the sample being intrinsically hard for GQT).
+
+\subsubsection{Rescued by 20k Steps vs.\ Permanently Hard}
+\label{sec:rescued-vs-hard}
+
+For the champion configuration (RFO+Schlegel+PLS), every sample at each
+noise level was classified as \emph{easy} (converges at 10k), \emph{rescued
+by 20k} (fails at 10k, converges at 20k), or \emph{permanently hard}
+(fails at both 10k and 20k):
+
+\begin{table}[h]
+\centering
+\caption{Sample classification by 10k/20k convergence (RFO+Schlegel+PLS).
+  $N=287$ samples per noise level (minus SCINE errors).}
+\label{tab:rescued-vs-hard}
+\begin{tabular}{ccccc}
+\toprule
+Noise & Easy (10k) & Rescued (20k) & Perm.\ hard & Rescued median step \\
+\midrule
+0.5\,\AA & 256 & 16 & 15 & 13{,}280 \\
+1.0\,\AA & 225 & 20 & 42 & 13{,}312 \\
+1.5\,\AA & 175 & 47 & 65 & 14{,}604 \\
+2.0\,\AA & 124 & 59 & 104 & 13{,}677 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The rescued population grows from 16 at $n=0.5$ to 59 at $n=2.0$, while the
+permanently hard population grows from 15 to 104.  Median convergence step
+for rescued samples is remarkably constant at $\sim$13{,}500 across all noise
+levels, suggesting a common oscillation-damping timescale.
+
+At $n=2.0$, the 59 rescued samples span a wide convergence range:
+6 converge just past 10k (steps 10{,}021--10{,}538), while 5 converge near
+the 20k wall (steps 19{,}260--19{,}908), including sample~100 at step~19{,}908.
+This implies that even 20k steps barely suffices for the slowest oscillators.
+
+\textbf{Verification}: 10k and 20k trajectories are identical for the first
+10k steps (confirmed by energy comparison at steps 0, 100, 1000, 5000, 9999
+for samples 179 and 183).  The 20k benefit is purely from extra steps, not
+from a different trajectory.
+
+\textbf{Failure wall}: Nearly all permanently hard samples hit the 20k step
+limit (104/104 at $n=2.0$, 64/65 at $n=1.5$).  None stop early due to
+stagnation detection---they are actively making progress, just too slowly
+to converge.
+
+\subsubsection{Trajectory Analysis}
+\label{sec:trajectory-analysis}
+
+Diagnostic trajectory data (per-step eigenvalues, forces, trust radius, PLS
+activity) was extracted for key samples at $n=2.0$ with RFO+Schlegel+PLS.
+Three representative trajectories illustrate the failure mechanisms:
+
+\paragraph{Sample 179 (permanently hard, 5/32 converges).}
+At $n=2.0$: starts with $\lambda_\text{min}=-8.25$, 16 negative eigenvalues,
+force = 1.59\,eV/\AA.  After 10k steps: $\lambda_\text{min}=-0.090$,
+9 negative eigenvalues, force = 0.036.  After 20k: $\lambda_\text{min}=-0.091$,
+8 negative eigenvalues, force = 0.034.  \textbf{No eigenvalue zero-crossings}
+in either 10k or 20k trajectory.  Trust radius at floor (0.01\,\AA) for
+97--98\% of the trajectory.  PLS applied in 730/10{,}000 (7.3\%) and
+1{,}716/20{,}000 (8.6\%) steps.  This is not oscillation but \textbf{genuine
+stagnation in a deep saddle basin}: the molecule has strongly negative
+eigenvalues that the optimizer slowly reduces from $-8.25$ to $-0.09$ over
+20k steps, but never reaches zero.  Even 100k steps would likely be
+insufficient without a qualitatively different escape mechanism.
+
+\paragraph{Sample 183 (rescued at step 17{,}560).}
+At $n=2.0$: starts with $\lambda_\text{min}=-3.88$, 13 negative eigenvalues,
+force = 1.78.  At step 10{,}000 (end of 10k run): $\lambda_\text{min}=-4.85
+\times10^{-4}$, 4 negative eigenvalues, force = 0.018.  With 20k: converges
+at step 17{,}560 when $\lambda_\text{min}$ crosses zero.  PLS is heavily
+active: applied in 6{,}053/17{,}561 (34.5\%) of steps.  Trust radius at floor
+for 90\% of the trajectory.  This sample represents the \textbf{slow
+oscillation-damping} profile: negative eigenvalues slowly decrease in
+magnitude from $O(1)$ to $O(10^{-4})$ over $\sim$10k steps, then eventually
+cross zero by step $\sim$17k.
+
+\paragraph{Sample 228 (rescued at step 16{,}563).}
+Similar to 183: starts at $\lambda_\text{min}=-8.54$, 12 negative eigenvalues.
+At step 10{,}000: $\lambda_\text{min}=-1.3\times10^{-3}$, 3 negative
+eigenvalues.  Converges at step 16{,}563 when eigenvalues finally cross zero.
+PLS applied 24\% of steps.
+
+\textbf{Common pattern}: The rescued samples share a profile of monotonic
+eigenvalue improvement (not oscillation in the classical sense) from
+$O(1)$ negative eigenvalues to $O(10^{-4})$ over $\sim$10k steps, then
+slow final convergence to zero over an additional 3--10k steps.  The
+permanently hard samples (sample~179) have this same trajectory but at a
+slower rate, never reaching the zero crossing within 20k steps.
 
 \subsubsection{Consolidated Best-Ever Table}
 \label{sec:best-ever}
@@ -1564,9 +1869,17 @@ $n \geq 2.0$\,\AA\ (within $\pm$3\,pts of RFO+PLS).
   \item \textbf{Persistently hard samples}: In v11, samples 179, 199, 129
     are hardest (5--7/32 configs converge).  These share a common spectral
     signature: multiple near-zero negative eigenvalues with very low
-    gradient overlap ($<0.1$).  Structural analysis needed: are these
-    multi-fragment dissociation, ring-opening, or electronically unusual
-    reactions?
+    gradient overlap ($<0.1$).  \emph{Partially resolved:}
+    Table~\ref{tab:hardest-10} reveals only three molecular formulae
+    among the 10 hardest samples: C$_3$H$_5$NO$_2$, C$_5$H$_5$NO, and
+    C$_3$H$_8$N$_2$O---all nitrogen+oxygen-containing organics.
+    Trajectory analysis (Section~\ref{sec:trajectory-analysis}) shows
+    permanently hard samples like~179 have strongly negative eigenvalues
+    ($\lambda_\text{min} = -0.09$ at step 20k) that decrease monotonically
+    but never reach zero, unlike rescued samples which cross zero at
+    $\sim$13{,}500--17{,}500 steps.
+    Structural analysis of the specific N--O bond rearrangement coordinates
+    is still needed.
 
   \item \textbf{Why does PLS help RFO so much more than GQT?}
     RFO+Schlegel+PLS gains +22--34\,pts over bare RFO, while GQT+PLS gains
@@ -1605,10 +1918,15 @@ $n \geq 2.0$\,\AA\ (within $\pm$3\,pts of RFO+PLS).
     \emph{Resolved}: not a primary driver of failure.
 
   \item \textbf{Optimal step budget}: v11 shows 20k steps rescues
-    primarily oscillating failures (74\% of rescued samples).  Is there
-    a point of diminishing returns?  Testing 30k or 50k steps would
-    reveal whether the remaining oscillating failures at 20k eventually
-    resolve or are truly trapped.
+    primarily oscillating failures (74\% of rescued samples).
+    At $n=2.0$, the rescued-sample convergence steps are distributed
+    roughly uniformly over 10k--20k (not concentrated near 10k),
+    and 5 samples converge between steps 19{,}260 and 19{,}908.
+    Testing 30k or 50k steps would reveal whether the 104 permanently
+    hard samples at $n=2.0$ eventually resolve or are truly trapped.
+    Trajectory analysis (Section~\ref{sec:trajectory-analysis}) suggests
+    the latter: permanently hard samples have qualitatively slower
+    eigenvalue convergence, not just insufficient steps.
 
   \item \textbf{Why does lower trust floor hurt?}  v11 shows floor
     0.005\,\AA\ is catastrophic ($-$10 to $-$30\,pts).  The

@@ -229,6 +229,14 @@ def run_single_sample(
                 blind_kick_force_thresh=params.get("blind_kick_force_thresh", 0.1),
                 blind_kick_patience=params.get("blind_kick_patience", 100),
                 kick_eigvec_index=params.get("kick_eigvec_index", 0),
+                # v12b
+                adaptive_kick_scale=params.get("adaptive_kick_scale", False),
+                adaptive_kick_C=params.get("adaptive_kick_C", 0.1),
+                blind_kick_probe=params.get("blind_kick_probe", False),
+                late_escape=params.get("late_escape", False),
+                late_escape_after=params.get("late_escape_after", 15000),
+                late_escape_alpha=params.get("late_escape_alpha", 0.1),
+                late_escape_cooldown=params.get("late_escape_cooldown", 500),
             )
         elif method == "pic_arc":
             result, trajectory = run_pic_arc(
@@ -308,6 +316,7 @@ def run_single_sample(
                         "arc_gdiis_accepts": result.get("arc_gdiis_accepts", 0),
                         "total_osc_kicks": result.get("total_osc_kicks", 0),
                         "total_blind_kicks": result.get("total_blind_kicks", 0),
+                        "total_late_escapes": result.get("total_late_escapes", 0),
                         "trajectory": trajectory,
                     },
                     f,
@@ -774,6 +783,38 @@ def main() -> None:
              "1=second-longest (ablation).",
     )
 
+    # --- v12b improvement flags ---
+    parser.add_argument(
+        "--adaptive-kick-scale", action="store_true", default=False,
+        help="v12b: scale kick magnitude with |lambda_min|^{1/2} instead of fixed fraction.",
+    )
+    parser.add_argument(
+        "--adaptive-kick-C", type=float, default=0.1,
+        help="v12b: multiplier for adaptive kick: mag = C * |eval|^{1/2} (default 0.1).",
+    )
+    parser.add_argument(
+        "--blind-kick-probe", action="store_true", default=False,
+        help="v12b: line-probe along blind eigvec at increasing magnitudes, "
+             "accept first point where n_neg decreases.",
+    )
+    parser.add_argument(
+        "--late-escape", action="store_true", default=False,
+        help="v12b: aggressive displacement along most negative eigvec after "
+             "late-escape-after steps, accept if n_neg decreases.",
+    )
+    parser.add_argument(
+        "--late-escape-after", type=int, default=15000,
+        help="v12b: step threshold for late escape (default 15000).",
+    )
+    parser.add_argument(
+        "--late-escape-alpha", type=float, default=0.1,
+        help="v12b: displacement magnitude for late escape in Angstrom (default 0.1).",
+    )
+    parser.add_argument(
+        "--late-escape-cooldown", type=int, default=500,
+        help="v12b: steps between late escapes (default 500).",
+    )
+
     # --- PIC-ARC flags ---
     parser.add_argument(
         "--trust-radius-init", type=float, default=0.5,
@@ -937,6 +978,14 @@ def main() -> None:
         "blind_kick_force_thresh": args.blind_kick_force_thresh,
         "blind_kick_patience": args.blind_kick_patience,
         "kick_eigvec_index": args.kick_eigvec_index,
+        # v12b additions
+        "adaptive_kick_scale": args.adaptive_kick_scale,
+        "adaptive_kick_C": args.adaptive_kick_C,
+        "blind_kick_probe": args.blind_kick_probe,
+        "late_escape": args.late_escape,
+        "late_escape_after": args.late_escape_after,
+        "late_escape_alpha": args.late_escape_alpha,
+        "late_escape_cooldown": args.late_escape_cooldown,
         # PIC-ARC additions
         "trust_radius_init": args.trust_radius_init,
         "sigma_init": args.sigma_init,

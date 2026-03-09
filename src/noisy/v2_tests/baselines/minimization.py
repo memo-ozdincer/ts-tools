@@ -1975,6 +1975,15 @@ def run_newton_raphson(
     blind_kick_patience: int = 100,      # consecutive steps before trigger
     # --- v12 shared kick options ---
     kick_eigvec_index: int = 0,          # 0=most negative, 1=second most (ablation)
+    # --- v12b improvements ---
+    adaptive_kick_scale: bool = False,   # scale kick magnitude with |λ_min|^{1/2}
+    adaptive_kick_C: float = 0.1,        # multiplier: kick = C * |λ_min|^{1/2}, clamped to [floor, 10*floor]
+    blind_kick_probe: bool = False,      # line-probe along blind eigvec at increasing magnitudes
+    blind_kick_probe_factors: Optional[List[float]] = None,  # probe distances as multiples of trust_radius_floor
+    late_escape: bool = False,           # aggressive displacement after late_escape_after steps
+    late_escape_after: int = 15000,      # step threshold for late escape
+    late_escape_alpha: float = 0.1,      # displacement magnitude (Å)
+    late_escape_cooldown: int = 500,     # steps between late escapes
 ) -> Tuple[Dict[str, Any], list]:
     """Newton-Raphson optimization to find energy minimum.
 
@@ -2117,12 +2126,17 @@ def run_newton_raphson(
         arc_gdiis = _GDIISExtrapolator(max_size=gdiis_buffer_size, min_size=3)
 
     # v12 kick state
-    mode_tracker = ModeTracker(match_threshold=0.5) if (osc_kick or blind_kick) else None
+    mode_tracker = ModeTracker(match_threshold=0.5) if (osc_kick or blind_kick or late_escape) else None
     osc_kick_consec = 0          # consecutive oscillation detections
     osc_kick_cooldown_counter = 0  # steps since last osc kick
     blind_kick_cooldown_counter = 0  # steps since last blind kick
     total_osc_kicks = 0
     total_blind_kicks = 0
+
+    # v12b state
+    late_escape_cooldown_counter = 0
+    total_late_escapes = 0
+    _probe_factors = blind_kick_probe_factors or [1.0, 2.0, 5.0, 10.0, 20.0]
 
     # Evaluate initial state
     out = predict_fn(coords, atomic_nums, do_hessian=True, require_grad=False)
@@ -2358,9 +2372,10 @@ def run_newton_raphson(
                 result_dict["arc_gdiis_accepts"] = arc_gdiis_accepts
             if use_rfo:
                 result_dict["optimizer_mode"] = "rfo"
-            if osc_kick or blind_kick:
+            if osc_kick or blind_kick or late_escape:
                 result_dict["total_osc_kicks"] = total_osc_kicks
                 result_dict["total_blind_kicks"] = total_blind_kicks
+                result_dict["total_late_escapes"] = total_late_escapes
             return result_dict, trajectory
 
         # ---------------------------------------------------------------
@@ -3036,7 +3051,15 @@ def run_newton_raphson(
 
                 if kick_mode is not None:
                     kick_vec = kick_mode["eigvec"].to(dtype=coords.dtype, device=coords.device)
-                    kick_mag = osc_kick_scale * trust_radius_floor
+                    if adaptive_kick_scale:
+                        # v12b: scale with |λ_min|^{1/2}, clamped to [floor, 10*floor]
+                        abs_eval = abs(kick_mode["eigenvalue"])
+                        kick_mag = max(
+                            trust_radius_floor,
+                            min(adaptive_kick_C * abs_eval ** 0.5, 10.0 * trust_radius_floor),
+                        )
+                    else:
+                        kick_mag = osc_kick_scale * trust_radius_floor
 
                     # Sign: follow gradient component direction
                     _grad_for_kick = -forces.reshape(-1)
@@ -3098,45 +3121,79 @@ def run_newton_raphson(
                 if (blind_mode is not None
                         and blind_mode["blind_age"] >= blind_kick_patience):
                     blind_vec = blind_mode["eigvec"].to(dtype=coords.dtype, device=coords.device)
-                    blind_mag = blind_kick_scale * trust_radius_floor
 
-                    # Try both +/- directions, pick lower energy
-                    disp_pos = (blind_mag * blind_vec).reshape(-1, 3)
-                    disp_neg = (-blind_mag * blind_vec).reshape(-1, 3)
-                    coords_pos = coords + disp_pos
-                    coords_neg = coords + disp_neg
-
-                    valid_pos = _min_interatomic_distance(coords_pos) >= min_interatomic_dist
-                    valid_neg = _min_interatomic_distance(coords_neg) >= min_interatomic_dist
+                    if adaptive_kick_scale:
+                        abs_eval = abs(blind_mode["eigenvalue"])
+                        blind_mag = max(
+                            trust_radius_floor,
+                            min(adaptive_kick_C * abs_eval ** 0.5, 10.0 * trust_radius_floor),
+                        )
+                    else:
+                        blind_mag = blind_kick_scale * trust_radius_floor
 
                     best_kick_coords = None
                     best_kick_out = None
                     best_kick_sign = 0.0
                     best_kick_energy = float("inf")
+                    best_kick_mag = blind_mag
+                    probe_n_neg_improved = False
 
-                    if valid_pos:
-                        out_pos = predict_fn(
-                            coords_pos, atomic_nums,
-                            do_hessian=True, require_grad=False,
-                        )
-                        e_pos = _to_float(out_pos["energy"])
-                        if e_pos < best_kick_energy:
-                            best_kick_energy = e_pos
-                            best_kick_coords = coords_pos
-                            best_kick_out = out_pos
-                            best_kick_sign = 1.0
+                    if blind_kick_probe:
+                        # v12b: line-probe at increasing magnitudes,
+                        # accept first point where n_neg decreases
+                        for pf in _probe_factors:
+                            pmag = pf * trust_radius_floor
+                            for psign in [1.0, -1.0]:
+                                pcoords = coords + (psign * pmag * blind_vec).reshape(-1, 3)
+                                if _min_interatomic_distance(pcoords) < min_interatomic_dist:
+                                    continue
+                                pout = predict_fn(
+                                    pcoords, atomic_nums,
+                                    do_hessian=True, require_grad=False,
+                                )
+                                pforces = pout["forces"]
+                                if pforces.dim() == 3 and pforces.shape[0] == 1:
+                                    pforces = pforces[0]
+                                pevals, _, _ = get_vib_evals_evecs(
+                                    pout["hessian"], pcoords, atomsymbols,
+                                    purify_hessian=purify_hessian,
+                                )
+                                pn_neg = int((pevals < 0.0).sum().item())
+                                pe = _to_float(pout["energy"])
 
-                    if valid_neg:
-                        out_neg = predict_fn(
-                            coords_neg, atomic_nums,
-                            do_hessian=True, require_grad=False,
-                        )
-                        e_neg = _to_float(out_neg["energy"])
-                        if e_neg < best_kick_energy:
-                            best_kick_energy = e_neg
-                            best_kick_coords = coords_neg
-                            best_kick_out = out_neg
-                            best_kick_sign = -1.0
+                                if pn_neg < n_neg:
+                                    # n_neg decreased — accept immediately
+                                    best_kick_coords = pcoords
+                                    best_kick_out = pout
+                                    best_kick_sign = psign
+                                    best_kick_energy = pe
+                                    best_kick_mag = pmag
+                                    probe_n_neg_improved = True
+                                    break
+                                elif pe < best_kick_energy:
+                                    best_kick_coords = pcoords
+                                    best_kick_out = pout
+                                    best_kick_sign = psign
+                                    best_kick_energy = pe
+                                    best_kick_mag = pmag
+                            if probe_n_neg_improved:
+                                break
+                    else:
+                        # Original v12: try ±v at fixed magnitude
+                        for bsign in [1.0, -1.0]:
+                            bcoords = coords + (bsign * blind_mag * blind_vec).reshape(-1, 3)
+                            if _min_interatomic_distance(bcoords) < min_interatomic_dist:
+                                continue
+                            bout = predict_fn(
+                                bcoords, atomic_nums,
+                                do_hessian=True, require_grad=False,
+                            )
+                            be = _to_float(bout["energy"])
+                            if be < best_kick_energy:
+                                best_kick_energy = be
+                                best_kick_coords = bcoords
+                                best_kick_out = bout
+                                best_kick_sign = bsign
 
                     if best_kick_coords is not None:
                         coords = best_kick_coords.detach()
@@ -3150,7 +3207,7 @@ def run_newton_raphson(
 
                         step_record["blind_kick"] = {
                             "fired": True,
-                            "kick_mag": blind_mag,
+                            "kick_mag": best_kick_mag,
                             "kick_sign": best_kick_sign,
                             "mode_blind_age": blind_mode["blind_age"],
                             "mode_eval": blind_mode["eigenvalue"],
@@ -3158,6 +3215,70 @@ def run_newton_raphson(
                             "eigvec_index": kick_eigvec_index,
                             "energy_before": energy,
                             "energy_after": best_kick_energy,
+                            "probe": blind_kick_probe,
+                            "n_neg_improved": probe_n_neg_improved,
+                        }
+
+        # ---------------------------------------------------------------
+        # v12b: Late-stage aggressive escape
+        # ---------------------------------------------------------------
+        if late_escape and mode_tracker is not None:
+            late_escape_cooldown_counter = max(0, late_escape_cooldown_counter - 1)
+
+            if (step >= late_escape_after
+                    and n_neg > 0
+                    and late_escape_cooldown_counter == 0):
+                # Select mode: longest stuck negative mode
+                if kick_eigvec_index == 0:
+                    late_mode = mode_tracker.longest_stuck()
+                else:
+                    late_mode = mode_tracker.second_longest_stuck()
+
+                if late_mode is not None:
+                    late_vec = late_mode["eigvec"].to(dtype=coords.dtype, device=coords.device)
+
+                    # Try both directions, accept if n_neg decreases
+                    best_late_coords = None
+                    best_late_out = None
+                    best_late_sign = 0.0
+                    best_late_n_neg = n_neg
+
+                    for lsign in [1.0, -1.0]:
+                        lcoords = coords + (lsign * late_escape_alpha * late_vec).reshape(-1, 3)
+                        if _min_interatomic_distance(lcoords) < min_interatomic_dist:
+                            continue
+                        lout = predict_fn(
+                            lcoords, atomic_nums,
+                            do_hessian=True, require_grad=False,
+                        )
+                        levals, _, _ = get_vib_evals_evecs(
+                            lout["hessian"], lcoords, atomsymbols,
+                            purify_hessian=purify_hessian,
+                        )
+                        ln_neg = int((levals < 0.0).sum().item())
+
+                        if ln_neg < best_late_n_neg:
+                            best_late_n_neg = ln_neg
+                            best_late_coords = lcoords
+                            best_late_out = lout
+                            best_late_sign = lsign
+
+                    if best_late_coords is not None and best_late_n_neg < n_neg:
+                        coords = best_late_coords.detach()
+                        out = best_late_out
+
+                        current_trust_radius = min(2.0 * trust_radius_floor, max_atom_disp)
+                        late_escape_cooldown_counter = late_escape_cooldown
+                        total_late_escapes += 1
+
+                        step_record["late_escape"] = {
+                            "fired": True,
+                            "alpha": late_escape_alpha,
+                            "sign": best_late_sign,
+                            "mode_age": late_mode["age"],
+                            "mode_eval": late_mode["eigenvalue"],
+                            "n_neg_before": n_neg,
+                            "n_neg_after": best_late_n_neg,
                         }
 
         actual_step_disp = float(capped_disp.reshape(-1, 3).norm(dim=1).max().item())
@@ -3206,7 +3327,8 @@ def run_newton_raphson(
         timeout_result["arc_gdiis_accepts"] = arc_gdiis_accepts
     if use_rfo:
         timeout_result["optimizer_mode"] = "rfo"
-    if osc_kick or blind_kick:
+    if osc_kick or blind_kick or late_escape:
         timeout_result["total_osc_kicks"] = total_osc_kicks
         timeout_result["total_blind_kicks"] = total_blind_kicks
+        timeout_result["total_late_escapes"] = total_late_escapes
     return timeout_result, trajectory

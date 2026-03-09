@@ -1,6 +1,7 @@
 # Ignore only the top-level sella/ directory (Sella library)
 # Not src/experiments/Sella/ (case-insensitive on macOS)
 /sella_repository
+/mar8
 /hip_repository
 hip_repository
 sella_repository

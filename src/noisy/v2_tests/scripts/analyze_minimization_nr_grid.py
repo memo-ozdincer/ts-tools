@@ -123,6 +123,18 @@ COMBO_RE_RFO_V10 = re.compile(
     r"(?:_pls(?P<pls>))?"
     r"_pg(?P<pg>true|false)_ph(?P<ph>true|false)$"
 )
+# v12: n<noise>_rfo_pls[_ok][_bk][_ev<idx>]_<steps>k
+COMBO_RE_RFO_V12 = re.compile(
+    r"n(?P<noise>[^_]+)_rfo_pls"
+    r"(?:_osc_kick(?P<ok>))?"
+    r"(?:_blind_kick(?P<bk>))?"
+    r"(?:_both_kicks(?P<both>))?"
+    r"(?:_eigvec(?P<ev>[^_]+))?"
+    r"(?:_adaptive(?P<adaptive>))?"
+    r"(?:_probe(?P<probe>))?"
+    r"(?:_late(?P<late>))?"
+    r"_(?P<steps>\d+)k$"
+)
 # v7: n<noise>_mad<v>_se<v>_sc<tr|ls>[_mw<v>][_pls]_pg<bool>_ph<bool>
 COMBO_RE_SHIFTED_V7 = re.compile(
     r"n(?P<noise>[^_]+)_mad(?P<mad>[^_]+)_se(?P<se>[^_]+)"
@@ -341,6 +353,45 @@ def _parse_combo_tag(combo_tag: str) -> Optional[Dict[str, Any]]:
             "gdiis_late_force_threshold": _safe_float(m.group("glf") or "0", 0),
             "relaxed_eval_threshold": _safe_float(m.group("re")),
             "accept_relaxed": m.group("ar") == "1",
+        }
+
+    # v12 RFO (has _rfo_pls_ prefix with kick tags, try before v10b)
+    m = COMBO_RE_RFO_V12.fullmatch(combo_tag)
+    if m:
+        return {
+            "mad": 1.3,
+            "nr_threshold": 0.0,
+            "lm_mu": 0.0,
+            "shift_epsilon": 0.0,
+            "anneal_force_threshold": 0.0,
+            "stagnation_window": 0,
+            "escape_alpha": 0.0,
+            "lm_mu_anneal_factor": 0.0,
+            "neg_mode_line_search": False,
+            "project_gradient_and_v": True,
+            "purify_hessian": False,
+            **_v4_defaults,
+            "optimizer_mode": "rfo",
+            "noise_level": _safe_float(m.group("noise")),
+            "step_control": "trust_region",
+            "max_nr_weight": 0.0,
+            "crossover_mu_max": 0.0,
+            "crossover_n_neg_ref": 0.0,
+            "crossover_force_ref": 0.0,
+            "gdiis_buffer_size": 0,
+            "gdiis_late_force_threshold": 0.0,
+            "schlegel_trust_update": False,
+            "trust_radius_floor": 0.01,
+            "n_steps_tag": int(m.group("steps")) * 1000,
+            "relaxed_eval_threshold": 0.01,
+            "accept_relaxed": True,
+            "polynomial_linesearch": True,
+            "osc_kick": m.group("ok") is not None or m.group("both") is not None,
+            "blind_kick": m.group("bk") is not None or m.group("both") is not None,
+            "kick_eigvec_index": int(m.group("ev") or "0"),
+            "adaptive_kick": m.group("adaptive") is not None,
+            "blind_probe": m.group("probe") is not None,
+            "late_escape": m.group("late") is not None,
         }
 
     # v10b RFO (has _rfo discriminator, try before v9)
