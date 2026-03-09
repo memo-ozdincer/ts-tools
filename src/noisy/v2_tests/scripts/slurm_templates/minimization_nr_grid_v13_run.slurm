@@ -1,39 +1,45 @@
 #!/bin/bash
-#SBATCH --job-name=min_nr_v12b
+#SBATCH --job-name=min_nr_v13
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=192
 #SBATCH --gpus-per-node=0
-#SBATCH --time=05:00:00
-#SBATCH --output=/scratch/memoozd/ts-tools-scratch/logs/min_nr_v12b_%j.out
-#SBATCH --error=/scratch/memoozd/ts-tools-scratch/logs/min_nr_v12b_%j.err
+#SBATCH --time=12:00:00
+#SBATCH --output=/scratch/memoozd/ts-tools-scratch/logs/min_nr_v13_%j.out
+#SBATCH --error=/scratch/memoozd/ts-tools-scratch/logs/min_nr_v13_%j.err
 #SBATCH --account=rrg-aspuru
 
 # =============================================================================
-# Newton-Raphson Minimization — v12b Quick Test
+# Newton-Raphson Minimization — v13: 50k + v12b Kicks Combined
 # =============================================================================
 #
-# v12 showed kicks fire massively but don't improve convergence at n=2.0.
-# Root cause: kick magnitudes (0.001-0.005 A) too small for deep saddles
-# (sample 179: lambda_min = -0.09 after 20k steps).
+# Summary of all breakthroughs to date:
+#   v10c: PLS (polynomial line search)         → +7 to +34 pts
+#   v11:  20k steps                             → +6 to +21 pts
+#   v12:  50k steps (no kicks)                  → +6 to +13 pts (n≤1.5)
+#   v12b: probe kicks + late escape             → +12 pts at n=2.0
 #
-# v12b improvements:
-#   1. Adaptive kick scale: mag = C * |lambda|^{1/2}, clamped to [floor, 10*floor]
-#      At |lambda|=0.09: mag = 0.1 * 0.3 = 0.03 A (30x larger than v12's 0.001 A)
-#   2. Blind-mode line probe: try 1x,2x,5x,10x,20x trust_floor along blind
-#      eigvec; accept first where n_neg decreases
-#   3. Late-stage escape: after step 15k, large displacement (0.1 A) along
-#      most negative eigvec, accept if n_neg decreases
+# Best results so far:
+#   n=0.5: 95.1% (v12, 50k)
+#   n=1.0: 95.8% (v12, 50k)
+#   n=1.5: 92.7% (v12, 50k)
+#   n=2.0: 76.0% (v12b, 20k, probe+late) — 50k never tested
 #
-# 300 samples, noise=2.0, 5 configs:
+# v13 hypothesis: 50k + v12b kicks are orthogonal wins.
+#   - 50k rescues slow convergers (pure superset of 20k, zero losses)
+#   - v12b kicks rescue stuck-in-saddle samples (probe 2.4:1, late 3.2:1)
+#   - Combined should push n=2.0 past 80%, possibly toward 90%.
 #
-# | # | Config                                  | Purpose                    |
-# |---|-----------------------------------------|----------------------------|
-# | 1 | RFO+PLS baseline                        | Control                    |
-# | 2 | v12 both_kicks (fixed scale)            | v12 reference              |
-# | 3 | v12b both_kicks + adaptive              | Adaptive kick magnitude    |
-# | 4 | v12b both_kicks + adaptive + probe      | + line probe for blind     |
-# | 5 | v12b both_kicks + adaptive + probe + late | + late-stage escape       |
+# Grid: 3 main configs × 4 noise + 3 ablations at n=2.0 = 15 combos
+#
+# | # | Config                              | Steps | Noise     | Purpose                    |
+# |---|-------------------------------------|-------|-----------|----------------------------|
+# | 1 | RFO+PLS baseline                    | 20k   | all       | Same-seed control          |
+# | 2 | RFO+PLS baseline                    | 50k   | all       | Step-count reference       |
+# | 3 | Full v12b (adaptive+probe+late)     | 50k   | all       | Main experiment            |
+# | 4 | Full v12b (adaptive+probe+late)     | 20k   | 2.0 only  | Kick effect control        |
+# | 5 | Adaptive+probe (no late)            | 50k   | 2.0 only  | Does 50k replace late?     |
+# | 6 | Probe+late (no adaptive)            | 50k   | 2.0 only  | Is adaptive needed at 50k? |
 #
 # =============================================================================
 
@@ -75,12 +81,12 @@ export MPLBACKEND=Agg
 
 # Data paths
 H5_PATH="/project/rrg-aspuru/memoozd/data/transition1x.h5"
-OUT_DIR="${SCRATCH_DIR}/runs/min_nr_v12b_quick_${SLURM_JOB_ID}"
+OUT_DIR="${SCRATCH_DIR}/runs/min_nr_v13_${SLURM_JOB_ID}"
 
 mkdir -p "$OUT_DIR"
 
 # =============================================================================
-# Config: 300 samples, noise=2.0
+# Fixed configuration
 # =============================================================================
 MAX_SAMPLES=300
 SCINE_FUNCTIONAL="DFTB0"
@@ -90,22 +96,29 @@ LOG_SPECTRUM_K=10
 MAD="1.3"
 RELAXED_EVAL_THRESHOLD="0.01"
 NOISE_SEED="${SLURM_JOB_ID:-$(date +%s)}"
-NOISE="2.0"
 
+# Parallel worker config
 THREADS_PER_WORKER="${THREADS_PER_WORKER:-4}"
 N_WORKERS=$((TOTAL_CPUS / THREADS_PER_WORKER))
 if [ "$N_WORKERS" -lt 1 ]; then N_WORKERS=1; fi
 
 echo "=============================================="
-echo "Newton-Raphson — v12b Quick Test"
+echo "Newton-Raphson Minimization — v13"
 echo "=============================================="
 echo "Date:         $(date)"
 echo "SLURM_JOB_ID: $SLURM_JOB_ID"
 echo "Node:         $(hostname)"
 echo "CPUs:         $TOTAL_CPUS"
 echo "Workers:      $N_WORKERS  (${THREADS_PER_WORKER} threads each)"
-echo "MAX_SAMPLES:  $MAX_SAMPLES"
-echo "NOISE:        $NOISE"
+echo "=============================================="
+echo "Fixed config:"
+echo "  MAD:                $MAD"
+echo "  NOISE_SEED:         $NOISE_SEED"
+echo "  MAX_SAMPLES:        $MAX_SAMPLES"
+echo "  FORCE_CONVERGED:    $FORCE_CONVERGED"
+echo "  LOG_SPECTRUM_K:     $LOG_SPECTRUM_K"
+echo "  RELAXED_THRESHOLD:  $RELAXED_EVAL_THRESHOLD"
+echo "Configs:  15 (3 x 4 noise + 3 ablations at n=2.0)"
 echo "=============================================="
 
 export PYTHONPATH="$PROJECT_DIR:$PYTHONPATH"
@@ -113,18 +126,23 @@ export PYTHONPATH="$PROJECT_DIR:$PYTHONPATH"
 COMBO=0
 FAILED=0
 
+# =============================================================================
+# Helper: run RFO + PLS config with optional kicks
+# Usage: run_config <noise> <tag> <n_steps> <extra_flags...>
+# =============================================================================
 run_config() {
-    local tag="$1"
-    local n_steps="$2"
-    shift 2
+    local noise_level="$1"
+    local tag="$2"
+    local n_steps="$3"
+    shift 3
     local extra_flags="$*"
 
-    local start_from="midpoint_rt_noise${NOISE}A"
+    local start_from="midpoint_rt_noise${noise_level}A"
     local run_out="${OUT_DIR}/${tag}"
     mkdir -p "$run_out"
 
     COMBO=$((COMBO + 1))
-    echo "[combo ${COMBO}]  ${tag}  (noise=${NOISE}A, steps=${n_steps})"
+    echo "[combo ${COMBO}]  ${tag}  (noise=${noise_level}A, steps=${n_steps})"
 
     if python "$PROJECT_DIR/src/noisy/v2_tests/runners/run_minimization_parallel.py" \
             --h5-path "$H5_PATH" \
@@ -156,52 +174,8 @@ run_config() {
     echo ""
 }
 
-# =============================================================================
-# 5 configs, noise=2.0 only
-# =============================================================================
-
-# Config 1: Baseline (control)
-run_config "n${NOISE}_rfo_pls_20k" "20000"
-
-# Config 2: v12 both kicks, fixed scale (reference)
-run_config "n${NOISE}_rfo_pls_both_kicks_20k" "20000" \
-    --osc-kick \
-    --osc-kick-scale 0.1 \
-    --osc-kick-patience 3 \
-    --osc-kick-cooldown 50 \
-    --blind-kick \
-    --blind-kick-scale 0.5 \
-    --blind-kick-overlap-thresh 0.1 \
-    --blind-kick-force-thresh 0.1 \
-    --blind-kick-patience 100
-
-# Config 3: v12b adaptive kick scaling
-run_config "n${NOISE}_rfo_pls_both_kicks_adaptive_20k" "20000" \
-    --osc-kick \
-    --osc-kick-patience 3 \
-    --osc-kick-cooldown 50 \
-    --blind-kick \
-    --blind-kick-overlap-thresh 0.1 \
-    --blind-kick-force-thresh 0.1 \
-    --blind-kick-patience 100 \
-    --adaptive-kick-scale \
-    --adaptive-kick-C 0.1
-
-# Config 4: v12b adaptive + line probe
-run_config "n${NOISE}_rfo_pls_both_kicks_adaptive_probe_20k" "20000" \
-    --osc-kick \
-    --osc-kick-patience 3 \
-    --osc-kick-cooldown 50 \
-    --blind-kick \
-    --blind-kick-overlap-thresh 0.1 \
-    --blind-kick-force-thresh 0.1 \
-    --blind-kick-patience 100 \
-    --adaptive-kick-scale \
-    --adaptive-kick-C 0.1 \
-    --blind-kick-probe
-
-# Config 5: v12b adaptive + probe + late escape (full v12b)
-run_config "n${NOISE}_rfo_pls_both_kicks_adaptive_probe_late_20k" "20000" \
+# Full v12b kick flags (adaptive + probe + late escape)
+FULL_V12B_FLAGS="\
     --osc-kick \
     --osc-kick-patience 3 \
     --osc-kick-cooldown 50 \
@@ -215,13 +189,79 @@ run_config "n${NOISE}_rfo_pls_both_kicks_adaptive_probe_late_20k" "20000" \
     --late-escape \
     --late-escape-after 15000 \
     --late-escape-alpha 0.1 \
+    --late-escape-cooldown 500"
+
+# =============================================================================
+# Main grid: 3 configs × 4 noise levels = 12 combos
+# =============================================================================
+
+for NOISE in "0.5" "1.0" "1.5" "2.0"; do
+
+    # Config 1: RFO+PLS baseline, 20k (same-seed control)
+    run_config "$NOISE" "n${NOISE}_rfo_pls_20k" \
+        "20000"
+
+    # Config 2: RFO+PLS baseline, 50k (step-count reference)
+    run_config "$NOISE" "n${NOISE}_rfo_pls_50k" \
+        "50000"
+
+    # Config 3: Full v12b at 50k (THE main experiment)
+    run_config "$NOISE" "n${NOISE}_rfo_pls_both_kicks_adaptive_probe_late_50k" \
+        "50000" \
+        $FULL_V12B_FLAGS
+
+done
+
+# =============================================================================
+# n=2.0 ablations: 3 configs
+# =============================================================================
+
+NOISE="2.0"
+
+# Config 4: Full v12b at 20k (kick effect control, reproduces v12b)
+run_config "$NOISE" "n${NOISE}_rfo_pls_both_kicks_adaptive_probe_late_20k" \
+    "20000" \
+    $FULL_V12B_FLAGS
+
+# Config 5: Adaptive + probe, NO late escape, 50k
+# Question: does 50k make late escape unnecessary?
+run_config "$NOISE" "n${NOISE}_rfo_pls_both_kicks_adaptive_probe_50k" \
+    "50000" \
+    --osc-kick \
+    --osc-kick-patience 3 \
+    --osc-kick-cooldown 50 \
+    --blind-kick \
+    --blind-kick-overlap-thresh 0.1 \
+    --blind-kick-force-thresh 0.1 \
+    --blind-kick-patience 100 \
+    --adaptive-kick-scale \
+    --adaptive-kick-C 0.1 \
+    --blind-kick-probe
+
+# Config 6: Probe + late, NO adaptive scaling, 50k
+# Question: is adaptive scaling needed at 50k? (was marginal at 20k)
+run_config "$NOISE" "n${NOISE}_rfo_pls_both_kicks_probe_late_50k" \
+    "50000" \
+    --osc-kick \
+    --osc-kick-scale 0.1 \
+    --osc-kick-patience 3 \
+    --osc-kick-cooldown 50 \
+    --blind-kick \
+    --blind-kick-scale 0.5 \
+    --blind-kick-overlap-thresh 0.1 \
+    --blind-kick-force-thresh 0.1 \
+    --blind-kick-patience 100 \
+    --blind-kick-probe \
+    --late-escape \
+    --late-escape-after 15000 \
+    --late-escape-alpha 0.1 \
     --late-escape-cooldown 500
 
 # =============================================================================
 # Summary
 # =============================================================================
 echo "=============================================="
-echo "v12b quick test completed at $(date)"
+echo "v13 grid completed at $(date)"
 echo "  Total combinations: $COMBO"
 echo "  Successful:         $((COMBO - FAILED))"
 echo "  Failed:             $FAILED"
@@ -229,7 +269,9 @@ echo "  Noise seed:         $NOISE_SEED"
 echo "  Results:            $OUT_DIR"
 echo "=============================================="
 
+# =============================================================================
 # Analysis
+# =============================================================================
 ANALYSIS_DIR="${OUT_DIR}/analysis"
 mkdir -p "$ANALYSIS_DIR"
 
@@ -238,7 +280,7 @@ python "$PROJECT_DIR/src/noisy/v2_tests/scripts/analyze_minimization_nr_grid.py"
     --grid-dir "$OUT_DIR" \
     --result-glob "*/minimization_newton_raphson_*_results.json" \
     --output-dir "$ANALYSIS_DIR" \
-    --top-k 5 > "${ANALYSIS_DIR}/report.txt" 2>&1 || true
+    --top-k 15 > "${ANALYSIS_DIR}/report.txt" 2>&1 || true
 
 echo "Running failure autopsy ..."
 AUTOPSY_DIR="${OUT_DIR}/autopsy"

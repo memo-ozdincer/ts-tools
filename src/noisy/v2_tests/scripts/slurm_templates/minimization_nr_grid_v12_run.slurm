@@ -47,7 +47,8 @@
 #
 # =============================================================================
 
-set -e
+# Note: no set -e — individual combo failures are caught by run_config().
+# set -e causes NFS "stale file handle" on echo to kill the entire run.
 
 mkdir -p /scratch/memoozd/ts-tools-scratch/logs
 

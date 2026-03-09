@@ -23,7 +23,7 @@
 #
 # =============================================================================
 
-set -e
+# Note: no set -e — individual combo failures are caught by run_config().
 
 mkdir -p /scratch/memoozd/ts-tools-scratch/logs
 

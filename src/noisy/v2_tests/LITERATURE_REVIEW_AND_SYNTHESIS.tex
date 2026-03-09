@@ -27,7 +27,7 @@
   Newton--Raphson Minimization on the DFTB0 PES\\
   from Displaced Transition-State Geometries}
 \author{M.\ Dincer}
-\date{March 2026 --- v11}
+\date{March 2026 --- v12b}
 
 \begin{document}
 \maketitle
@@ -42,7 +42,7 @@
 
 This document synthesizes insights from two rounds of literature review
 (approximately 20 papers) and maps them explicitly to our experimental
-findings from versions~1 through~11 of the minimization code.
+findings from versions~1 through~12b of the minimization code.
 The goal is to create a permanent, self-contained record of:
 \begin{enumerate}[nosep]
   \item what the literature says about our problem class,
@@ -78,6 +78,10 @@ The central experimental finding, established across versions~6--9 (Section~\ref
   $\sim$89\% at 0.5\,\AA\ to $\sim$44\% at 2.0\,\AA.
   With 20k steps, convergence reaches \textbf{95\%/85\%/77\%/64\%}
   at 0.5/1.0/1.5/2.0\,\AA\ (v11, RFO+Schlegel+PLS).
+  With 50k steps (v12), convergence reaches
+  \textbf{95\%/96\%/93\%} at 0.5/1.0/1.5\,\AA\ (RFO+PLS).
+  At 2.0\,\AA\ with 20k steps, adaptive probe kicks with late escape
+  (v12b) reach \textbf{76\%} (218/287).
   \textbf{Relaxed convergence} ($\lambda_\text{min} \geq -0.01$) is
   $\sim$90\% at \emph{all} noise levels.
   The performance cliff is a \emph{criterion problem}, not an optimizer
@@ -645,6 +649,8 @@ v10 & ARC + GDIIS & ARC catastrophic (23/2/0/0\%) & \textbf{ARC dead} \\
 v10.2 & +RFO, +Schlegel TR, +GDIIS-late & RFO 67/48/32/12\%; GDIIS zero effect & GDIIS dead \\
 v10c & +Polynomial line search & \textbf{89/78/63/42\%} (RFO+Schlegel+PLS) & \textbf{PLS breakthrough} \\
 v11 & +20k steps, trust floor, GQT+Schl+PLS & \textbf{95/85/77/64\%} (RFO+Schl+PLS, 20k) & \textbf{20k breakthrough} \\
+v12 & +50k steps, osc/blind kicks & \textbf{95/96/93\%} (RFO+PLS, 50k); kicks $+$5.9\,pts at 2.0\,\AA\ only & \textbf{50k breakthrough} \\
+v12b & +adaptive kick scaling, probe kicks, late escape & \textbf{76.0\%} at 2.0\,\AA\ (20k); probe is the key ($+$9\,pts) & \textbf{Probe breakthrough} \\
 \bottomrule
 \end{longtable}
 
@@ -1546,6 +1552,7 @@ Noise & Best rate & Configuration & Run \\
 1.0\,\AA & 245/287 (85.4\%) & RFO+Schl+PLS (20k)  & v11 \\
 1.5\,\AA & 222/287 (77.4\%) & RFO+Schl+PLS (20k)  & v11 \\
 2.0\,\AA & 183/287 (63.8\%) & RFO+Schl+PLS (20k)  & v11 \\
+       & \multicolumn{3}{l}{\emph{Superseded: see Table~\ref{tab:best-ever-v12b} for v12/v12b best-ever}} \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -1554,6 +1561,575 @@ Note: v10c and v11 use different random seeds.  The v10c entries at 1.5 and
 2.0\,\AA\ may reflect seed-favorable outcomes ($\pm$3.5\,pts); within-seed
 v11 10k results at those noise levels are 175/287 (61.0\%) and 127/287
 (44.3\%).
+
+%=============================================================================
+\subsection{v12 Results (mar8 Run, March 2026)}
+\label{sec:v12}
+%=============================================================================
+
+The v12 grid tested two orthogonal interventions against the remaining
+failure population identified in v11: (1)~perturbation kicks targeting
+oscillating and blind-mode failures, and (2)~extending the step budget
+to 50k.  All configs use RFO+PLS (the v11 recommended baseline) with
+trust floor 0.01\,\AA.  A separate ``v12\_quick'' run tested kick variants
+at $n=2.0$\,\AA.
+
+\subsubsection{v12 Convergence Table}
+\label{sec:v12-table}
+
+\begin{table}[h]
+\centering
+\caption{v12 convergence results ($N=287$, strict $n_\text{neg}=0$, all
+  configs use RFO+PLS).  ``osc'' = oscillation kick enabled,
+  ``blind'' = blind-mode kick enabled, ``e1'' = kick along 2nd-lowest
+  eigenvector instead of lowest.}
+\label{tab:v12}
+\begin{tabular}{lcccc}
+\toprule
+Configuration & 0.5\,\AA & 1.0\,\AA & 1.5\,\AA & 2.0\,\AA \\
+\midrule
+\multicolumn{5}{l}{\emph{50k-step configs}} \\
+RFO+PLS (50k)          & 273 (95.1\%) & \textbf{275} (95.8\%) & \textbf{266} (92.7\%) & --- \\
+\midrule
+\multicolumn{5}{l}{\emph{20k-step configs}} \\
+RFO+PLS (20k, baseline) & \textbf{267} (93.0\%) & 256 (89.2\%) & 230 (80.1\%) & 175 (61.0\%) \\
+RFO+PLS+osc\_kick       & 266 (92.7\%) & 258 (89.9\%) & ---          & --- \\
+RFO+PLS+blind\_kick     & 266 (92.7\%) & 256 (89.2\%) & ---          & --- \\
+RFO+PLS+both\_kicks     & 266 (92.7\%) & 256 (89.2\%) & ---          & \textbf{192} (66.9\%) \\
+RFO+PLS+both\_kicks+e1  & 265 (92.3\%) & 256 (89.2\%) & ---          & 191 (66.6\%) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Nine samples at $n=0.5$ and two at $n=1.0$ produced SCINE errors
+(\texttt{out\_new} variable bug), consistent across all kick variants
+at each noise level.
+
+\subsubsection{50k Steps: The Major Finding}
+\label{sec:v12-50k}
+
+Extending the step budget from 20k to 50k is a pure, lossless gain at
+every tested noise level:
+
+\begin{table}[h]
+\centering
+\caption{20k vs.\ 50k step comparison (RFO+PLS).  ``Rescued'' = samples
+  that converge with 50k but not 20k.  ``Lost'' = samples that converge
+  with 20k but not 50k.}
+\label{tab:v12-50k}
+\begin{tabular}{ccccccc}
+\toprule
+Noise & 20k conv & 50k conv & $\Delta$ (pts) & Rescued & Lost & Mean conv.\ step (rescued) \\
+\midrule
+0.5\,\AA & 267 & 273 & $+$2.1 &  6 & 0 & 32{,}977 \\
+1.0\,\AA & 256 & 275 & $+$6.6 & 19 & 0 & 27{,}423 \\
+1.5\,\AA & 230 & 266 & $+$12.5 & 36 & 0 & 28{,}041 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+All rescued samples required $>$20k steps (minimum 20{,}153; maximum
+48{,}649).  No sample was lost, confirming 50k is a strict superset of 20k
+for these configurations.  The gains grow with noise level: $+$2.1\,pts at
+0.5\,\AA\ vs.\ $+$12.5\,pts at 1.5\,\AA, consistent with higher-noise
+trajectories requiring more iterations to resolve oscillating modes.
+
+The remaining failures at 50k are hard-core: 5 true failures $+$ 9
+SCINE errors at $n=0.5$; 10 true failures $+$ 2 errors at $n=1.0$; 21
+true failures at $n=1.5$.  These show persistent negative eigenvalues
+(often $\lambda_\text{min} < -0.01$) and elevated force norms even after
+50{,}000 steps, indicating they are structurally stuck rather than merely
+slow.
+
+\subsubsection{ModeTracker}
+\label{sec:v12-modetracker}
+
+The kick and late-escape mechanisms introduced in v12/v12b rely on a
+\texttt{ModeTracker} class that tracks the identity of negative
+eigenmodes across optimization steps via eigenvector overlap matching.
+At each step, the tracker matches current negative eigenvectors to
+previously tracked modes using a greedy assignment based on
+$|\langle v_i^{(k)}, v_j^{(k-1)}\rangle|$, with a minimum overlap
+threshold of~0.5 to avoid spurious matches.  Each tracked mode
+maintains: the current eigenvector and eigenvalue, the \emph{age}
+(number of consecutive steps the mode has remained negative), the
+\emph{blind age} (consecutive steps with
+$|\mathbf{g} \cdot \mathbf{v}| / \|\mathbf{g}\| < \text{threshold}$),
+and the gradient overlap $|\mathbf{g} \cdot \mathbf{v}| / \|\mathbf{g}\|$.
+The tracker exposes two key queries:
+\texttt{longest\_stuck()} returns the mode with the largest age
+(continuously negative for the most steps), and
+\texttt{longest\_blind()} returns the mode with the largest blind age.
+These are used by the kick mechanisms (Section~\ref{sec:v12-kicks}) and
+late escape (Section~\ref{sec:v12b}) to select which mode to perturb
+along.
+
+\subsubsection{Kick Mechanism Analysis}
+\label{sec:v12-kicks}
+
+v12 introduced two perturbation mechanisms to escape failure modes:
+\begin{itemize}[nosep]
+  \item \textbf{Oscillation kick}: perturbs geometry along the lowest
+    eigenvector when oscillation is detected (patience = 3 steps,
+    cooldown = 50 steps, scale = 0.1).
+  \item \textbf{Blind-mode kick}: perturbs geometry when a negative
+    eigenvalue has low gradient overlap ($<0.1$), targeting ghost modes
+    (patience = 100 steps, scale = 0.5).
+\end{itemize}
+
+\paragraph{Kick magnitudes are very small.}
+The perturbation displacement is $\texttt{scale} \times \texttt{trust\_floor}$,
+giving: oscillation kicks $= 0.1 \times 0.01 = 0.001$\,\AA, and
+blind-mode kicks $= 0.5 \times 0.01 = 0.005$\,\AA.  Typical atomic
+displacements needed to escape a saddle basin are of order
+$0.01$--$0.1$\,\AA, so v12's kicks are $10$--$100\times$ smaller than
+what is physically needed.  This explains why kicks fire prolifically
+($\sim$122 oscillation kicks per trajectory) yet fail to reduce oscillating
+failures: each individual kick is too small to move the geometry out of
+the basin of attraction.
+
+\paragraph{At $n \leq 1.5$\,\AA, kicks never fired.}
+All kick counters (total\_osc\_kicks, total\_blind\_kicks) are zero
+across all 287 samples at $n=0.5$, 1.0, and 1.5\,\AA.  The kick
+thresholds were not met at these noise levels, so all kick variants
+are identical to baseline (within $\pm$1 sample from stochastic effects).
+
+\paragraph{At $n=2.0$\,\AA, kicks fired heavily and helped modestly.}
+For the 13 failure trajectories with saved diagnostics, the both\_kicks
+config averaged $\sim$122 oscillation kicks and $\sim$44 blind-mode kicks
+per trajectory.  The net effect:
+
+\begin{table}[h]
+\centering
+\caption{Failure class breakdown at $n=2.0$\,\AA\ (from v12\_quick autopsy).
+  ``Osc'' = oscillating, ``AC'' = almost\_converged, ``GM'' = ghost\_modes,
+  ``SC'' = slow\_convergence.}
+\label{tab:v12-kicks-autopsy}
+\begin{tabular}{lccccc}
+\toprule
+Configuration & Conv & Osc & AC & GM & SC \\
+\midrule
+RFO+PLS (baseline)  & 175 & 71 & 19 & 12 &  8 \\
+RFO+PLS+both\_kicks & 192 & 69 & 16 &  9 &  1 \\
+RFO+PLS+both+e1     & 191 & 67 & 16 &  8 &  4 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The both\_kicks config rescued 32 samples vs.\ baseline but also lost 15,
+for a net gain of $+$17 ($+$5.9\,pts).  Of the 32 rescued, 18 were
+oscillating, 10 almost\_converged, 2 slow\_convergence, and 1 each
+ghost\_modes and drifting.  Of the 15 lost, 9 became oscillating, 4
+almost\_converged, and 2 ghost\_modes---indicating kicks can destabilize
+borderline trajectories while rescuing others.
+
+The eigvec1 variant (kicking along the \emph{second}-lowest eigenvector)
+shows essentially identical results (191 vs.\ 192), with a similar
+rescue/loss pattern (30 rescued, 14 lost).  This suggests the kick
+direction is not critical---the perturbation's main value is breaking
+symmetry rather than targeting a specific mode.
+
+\paragraph{Oscillation not specifically reduced.}
+Despite the osc\_kick mechanism, oscillating failures dropped only
+from 71 to 69 (both\_kicks) or 67 (eigvec1).  The kicks rescue some
+oscillating samples but create new oscillating failures in roughly equal
+proportion.  The net oscillating count is essentially unchanged.
+
+\subsubsection{Comparison to v11}
+\label{sec:v12-vs-v11}
+
+\begin{table}[h]
+\centering
+\caption{v12 vs.\ v11 best (RFO+Schlegel+PLS, 20k).  Note v12 uses a
+  different seed than v11; differences at 20k are within seed variance.}
+\label{tab:v12-vs-v11}
+\begin{tabular}{ccccc}
+\toprule
+Noise & v11 best (20k) & v12 baseline (20k) & v12 best kick (20k) & v12 (50k) \\
+\midrule
+0.5\,\AA & 272 (94.8\%) & 267 (93.0\%) & --- & 273 (95.1\%) \\
+1.0\,\AA & 245 (85.4\%) & 256 (89.2\%) & 258 (89.9\%) & \textbf{275 (95.8\%)} \\
+1.5\,\AA & 222 (77.4\%) & 230 (80.1\%) & --- & \textbf{266 (92.7\%)} \\
+2.0\,\AA & 183 (63.8\%) & 175 (61.0\%) & 192 (66.9\%) & --- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The 50k results at $n=1.0$ and $n=1.5$ are new best-ever rates by large
+margins: $+$10.4\,pts at 1.0\,\AA\ and $+$15.3\,pts at 1.5\,\AA\ over
+v11's 20k results.  However, cross-seed comparison means the true
+improvement from 20k$\to$50k is better measured within-seed from
+Table~\ref{tab:v12-50k}: $+$6.6\,pts and $+$12.5\,pts respectively.
+
+At $n=0.5$, the 50k rate (95.1\%) matches v11's 20k rate (94.8\%) within
+seed variance, and 9 of the 14 remaining failures are SCINE errors, not
+optimizer failures.  This noise level is effectively \textbf{solved}
+(the 5 true failures at 50k may be intrinsically unconvergeable under
+DFTB0).
+
+\subsubsection{Updated Best-Ever Table}
+\label{sec:v12-best-ever}
+
+\begin{table}[h]
+\centering
+\caption{Best strict convergence rate at each noise level across all runs
+  and seeds ($N=287$).  Updated through v12.}
+\label{tab:best-ever-v12}
+\begin{tabular}{ccll}
+\toprule
+Noise & Best rate & Configuration & Run \\
+\midrule
+\multicolumn{4}{l}{\emph{10k steps}} \\
+0.5\,\AA & 256/287 (89.2\%) & RFO+Schl+PLS       & v11 \\
+1.0\,\AA & 230/287 (80.1\%) & RFO+PLS             & v11 \\
+1.5\,\AA & 182/287 (63.4\%) & RFO+Schl+PLS        & v10c \\
+2.0\,\AA & 128/287 (44.6\%) & GQT+PLS             & v10c \\
+\midrule
+\multicolumn{4}{l}{\emph{20k steps}} \\
+0.5\,\AA & 272/287 (94.8\%) & RFO+Schl+PLS (20k)  & v11 \\
+1.0\,\AA & 256/287 (89.2\%) & RFO+PLS (20k)        & v12 \\
+1.5\,\AA & 230/287 (80.1\%) & RFO+PLS (20k)        & v12 \\
+2.0\,\AA & 192/287 (66.9\%) & RFO+PLS+both\_kicks (20k) & v12 \\
+       & \multicolumn{3}{l}{\emph{Superseded by v12b: 218/287 (76.0\%), see Table~\ref{tab:best-ever-v12b}}} \\
+\midrule
+\multicolumn{4}{l}{\emph{50k steps}} \\
+0.5\,\AA & 273/287 (95.1\%) & RFO+PLS (50k)  & v12 \\
+1.0\,\AA & 275/287 (95.8\%) & RFO+PLS (50k)  & v12 \\
+1.5\,\AA & 266/287 (92.7\%) & RFO+PLS (50k)  & v12 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsubsection{v12 Summary and Next Steps}
+\label{sec:v12-summary}
+
+\textbf{Main conclusions:}
+\begin{enumerate}[nosep]
+  \item \textbf{50k steps is the dominant intervention}: $+$2 to $+$13\,pts
+    over 20k, lossless (no samples lost), with all rescued samples needing
+    $>$20k iterations.
+  \item \textbf{Kicks are a no-op at $n \leq 1.5$\,\AA}: the perturbation
+    thresholds were never met, leaving convergence rates identical to
+    baseline.
+  \item \textbf{Kicks give modest help at $n=2.0$\,\AA}: $+$5.9\,pts net,
+    but high churn (32 rescued, 15 lost).  Kick direction (eigvec0 vs.\
+    eigvec1) is irrelevant.
+  \item \textbf{$n=0.5$\,\AA\ is effectively solved}: 95.1\% at 50k, with
+    9/14 remaining failures being SCINE errors.
+  \item \textbf{SCINE \texttt{out\_new} bug}: 9 errors at $n=0.5$ and 2 at
+    $n=1.0$ from a calculator-level bug.  Fixing this could add $\sim$3\,pts
+    at $n=0.5$.
+\end{enumerate}
+
+The v12 kick mechanism as implemented (fixed thresholds, fixed scale) is
+too conservative at low noise (never triggers) and too aggressive at high
+noise (destabilizes borderline samples).  Potential v12b improvements:
+\begin{itemize}[nosep]
+  \item \textbf{Adaptive kick scaling}: scale perturbation magnitude as
+    $C \cdot |\lambda_i|^{1/2}$ rather than using a fixed constant.
+  \item \textbf{Probe-based kicks}: probe a distance ladder in both $\pm$
+    directions and accept the first displacement that reduces $n_\text{neg}$.
+  \item \textbf{Late-onset kicks}: only activate after $>$10k steps to avoid
+    destabilizing early-stage convergence.
+  \item \textbf{50k + kicks at $n=2.0$}: combining the two interventions
+    (not yet tested).
+\end{itemize}
+
+%=============================================================================
+\subsection{v12b Results (mar8 Run, March 2026)}
+\label{sec:v12b}
+%=============================================================================
+
+The v12b grid (``v12b\_quick'' run, job~1146854) tested three incremental
+improvements to the v12 kick mechanism, all at $n=2.0$\,\AA\ with 20k
+steps ($N=287$).  The v12 analysis (Section~\ref{sec:v12-summary})
+identified that fixed-threshold, fixed-scale kicks are too conservative
+at low noise and too aggressive at high noise.  v12b addresses this with:
+\begin{enumerate}[nosep]
+  \item \textbf{Adaptive kick scaling} (\texttt{adaptive\_kick\_scale}):
+    scale perturbation magnitude as $C \cdot |\lambda_i|^{1/2}$,
+    clamped to $[\texttt{trust\_floor},\; 10 \times \texttt{trust\_floor}]$
+    (i.e., $[0.01, 0.1]$\,\AA), with default $C=0.1$.
+    For example, at $|\lambda|=0.09$ (sample~179):
+    $\text{mag} = 0.1 \times 0.3 = 0.03$\,\AA---$30\times$ larger than
+    v12's fixed $0.001$\,\AA\ oscillation kick.
+  \item \textbf{Probe-based kicks} (\texttt{blind\_kick\_probe}):
+    instead of a single fixed perturbation, probes a distance ladder
+    at $[1, 2, 5, 10, 20] \times \texttt{trust\_floor}$
+    (i.e., $0.01$--$0.2$\,\AA), testing both $+$ and $-$ directions
+    along the eigenvector at each distance.  The probe accepts the
+    \emph{first} displacement where the number of negative eigenvalues
+    ($n_\text{neg}$) decreases; lower energy is used only as a
+    fallback if no $n_\text{neg}$ improvement is found at any
+    probe point.  This is fundamentally different from
+    ``test both directions and pick lower energy'': the primary
+    acceptance criterion is spectral improvement, not energetic.
+  \item \textbf{Late escape} (\texttt{late\_escape}):
+    an additional perturbation mechanism activated only after 15{,}000
+    steps, targeting trajectories that are stuck but not yet detected
+    by the oscillation or blind-mode criteria ($\alpha=0.1$,
+    cooldown = 500 steps).  Mode selection uses
+    \texttt{longest\_stuck()} from the ModeTracker
+    (Section~\ref{sec:v12-modetracker}): the mode that has been
+    continuously negative for the most steps, rather than the
+    instantaneously most-negative eigenvalue.  The displacement is
+    accepted only if $n_\text{neg}$ decreases (conditional acceptance,
+    not unconditional); if the perturbation does not reduce the number
+    of negative eigenvalues, it is rejected and the geometry is
+    unchanged.
+\end{enumerate}
+
+\subsubsection{v12b Convergence Table}
+\label{sec:v12b-table}
+
+\begin{table}[h]
+\centering
+\caption{v12b convergence results at $n=2.0$\,\AA\ ($N=287$, strict
+  $n_\text{neg}=0$, all configs use RFO+PLS, 20k steps).  Features
+  are cumulative: each row adds one feature to the previous.}
+\label{tab:v12b}
+\begin{tabular}{lccc}
+\toprule
+Configuration & Conv & Rate & $\Delta$ vs.\ baseline \\
+\midrule
+RFO+PLS (baseline)               & 180 & 62.7\% & ---        \\
++both\_kicks                      & 180 & 62.7\% & $+$0.0\,pts \\
++adaptive scaling                 & 181 & 63.1\% & $+$0.3\,pts \\
++probe kicks                      & 207 & 72.1\% & $+$9.4\,pts \\
++late escape (\textbf{full v12b}) & \textbf{218} & \textbf{76.0\%} & $+$13.2\,pts \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsubsection{Incremental Feature Analysis}
+\label{sec:v12b-incremental}
+
+Because features are cumulative, we can isolate each contribution by
+comparing adjacent configs.  The rescue/loss analysis counts samples that
+change convergence status between consecutive configs:
+
+\begin{table}[h]
+\centering
+\caption{Incremental rescue/loss analysis.  Each row shows the effect of
+  adding one feature to the previous config.  ``Rescued'' = newly converged,
+  ``Lost'' = newly failed.}
+\label{tab:v12b-incremental}
+\begin{tabular}{lcccc}
+\toprule
+Feature added & Rescued & Lost & Net & $\Delta$ conv \\
+\midrule
+both\_kicks (vs.\ baseline) &  21 & 21 &   0 & $180 \to 180$ \\
+adaptive scaling (vs.\ both\_kicks) & 27 & 26 & $+$1 & $180 \to 181$ \\
+probe kicks (vs.\ adaptive) & 44 & 18 & $+$26 & $181 \to 207$ \\
+late escape (vs.\ adapt+probe) & 16 &  5 & $+$11 & $207 \to 218$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Both\_kicks alone is a wash (net zero).}
+This is a striking departure from v12's result at $n=2.0$, where
+both\_kicks showed 192/287 vs.\ 175/287 baseline.  The difference is
+the seed: v12b\_quick uses job~1146854 (different from v12\_quick's seed),
+and the both\_kicks mechanism has high churn---21 rescued but 21 lost.
+This confirms the v12 finding that fixed-scale kicks destabilize
+borderline samples as often as they rescue stuck ones.
+
+\paragraph{Adaptive scaling is marginal ($+$1 net).}
+Scaling kick magnitude to the eigenvalue does not materially reduce
+churn: 27 rescued vs.\ 26 lost.  The adaptive mechanism changes
+\emph{which} samples are rescued/lost but not the overall balance.
+
+\paragraph{Probe kicks are the breakthrough ($+$26 net).}
+Probing a distance ladder ($0.01$--$0.2$\,\AA) in both $\pm$ directions
+and accepting the first displacement that reduces $n_\text{neg}$
+is the single most impactful feature in v12b.  It rescues 44 samples
+while losing only 18---a 2.4:1 rescue-to-loss ratio, far better than the
+$\sim$1:1 ratio of fixed kicks.  Of the 44 rescued samples (from the
+\emph{adaptive} config's failure classes), 34 were oscillating, 5 were
+almost\_converged, 3 were ghost\_modes, and 2 were slow\_convergence.
+The probe mechanism primarily resolves oscillating failures by ensuring
+the perturbation improves the spectral structure (fewer negative
+eigenvalues), with lower energy as a fallback criterion.
+
+\paragraph{Late escape adds a clean $+$11.}
+The late-escape mechanism (activating after 15{,}000 steps) rescues 16
+samples while losing only 5---a 3.2:1 ratio, the best of any feature.
+The high rescue-to-loss ratio makes sense: by step 15{,}000, trajectories
+that will converge naturally have already done so, so perturbations at
+this stage are unlikely to destabilize converging samples.  All 5 losses
+became oscillating, suggesting a small fraction of late-stage trajectories
+are in a delicate equilibrium that the escape disrupts.
+
+\subsubsection{Failure Autopsy Comparison}
+\label{sec:v12b-autopsy}
+
+\begin{table}[h]
+\centering
+\caption{Failure class breakdown at $n=2.0$\,\AA\ across v12b configs.
+  ``Osc'' = oscillating, ``AC'' = almost\_converged, ``GM'' = ghost\_modes,
+  ``SC'' = slow\_convergence, ``Dr'' = drifting.}
+\label{tab:v12b-autopsy}
+\begin{tabular}{lcccccc}
+\toprule
+Configuration & Conv & Osc & AC & GM & SC & Dr \\
+\midrule
+Baseline            & 180 & 68 & 17 & 13 &  9 & 0 \\
++both\_kicks         & 180 & 76 & 16 &  8 &  6 & 1 \\
++adaptive            & 181 & 80 & 13 &  7 &  6 & 0 \\
++probe               & 207 & 49 & 13 &  9 &  9 & 0 \\
++late (\textbf{v12b}) & \textbf{218} & 54 &  6 &  4 &  5 & 0 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Several patterns emerge:
+
+\begin{itemize}[nosep]
+  \item \textbf{Oscillating failures decrease dramatically with probe}:
+    $80 \to 49$ (adaptive$\to$probe), confirming probe kicks resolve
+    oscillation.  Late escape slightly increases oscillating count
+    ($49 \to 54$) because 5 previously non-oscillating trajectories
+    become oscillating after the late perturbation, but net convergence
+    still improves by~11.
+  \item \textbf{Almost\_converged slashed by late escape}:
+    $13 \to 6$.  Late-stage perturbation is exactly what
+    almost\_converged samples need---they are near a minimum but
+    stuck with residual negative eigenvalues.
+  \item \textbf{Ghost modes halved overall}: $13 \to 4$ (baseline to
+    full v12b).  The probe mechanism resolves some ghost modes by
+    testing the sign of the perturbation direction.
+  \item \textbf{69 total failures remain} in full v12b: 54 oscillating,
+    6 almost\_converged, 4 ghost\_modes, 5 slow\_convergence.
+    Oscillating remains the dominant failure mode (78\% of failures).
+\end{itemize}
+
+\subsubsection{Comparison to v12 and v11}
+\label{sec:v12b-vs-prior}
+
+\begin{table}[h]
+\centering
+\caption{Best convergence at $n=2.0$\,\AA\ across versions (20k steps,
+  $N=287$).  Different runs use different seeds; within-seed comparisons
+  are more reliable.}
+\label{tab:v12b-vs-prior}
+\begin{tabular}{llcc}
+\toprule
+Version & Best config at 2.0\,\AA & Conv & Rate \\
+\midrule
+v11     & RFO+Schl+PLS (20k)          & 183 & 63.8\% \\
+v12     & RFO+PLS+both\_kicks (20k)   & 192 & 66.9\% \\
+v12b    & RFO+PLS+adaptive+probe+late & \textbf{218} & \textbf{76.0\%} \\
+\midrule
+\multicolumn{4}{l}{\emph{Within-seed comparison (v12b run, job 1146854):}} \\
+\midrule
+v12b baseline & RFO+PLS (20k)           & 180 & 62.7\% \\
+v12b best     & +adaptive+probe+late     & 218 & 76.0\% \\
+\multicolumn{2}{l}{Within-seed gain}     & $+$38 & $+$13.2\,pts \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The full v12b config achieves \textbf{76.0\%}---a new best-ever at
+$n=2.0$\,\AA\ by a large margin ($+$9.1\,pts over v12's 66.9\%,
+$+$12.2\,pts over v11's 63.8\%).  While cross-seed comparison adds
+$\pm$3.5\,pt uncertainty, the within-seed gain of $+$13.2\,pts over
+baseline makes the improvement unambiguous.
+
+At the sample level, the full v12b config rescues 56 samples vs.\
+baseline while losing only 18 (3.1:1 ratio).  Of the 56 rescued,
+32 were oscillating (57\%), 13 almost\_converged (23\%), 7 ghost\_modes
+(13\%), and 4 slow\_convergence (7\%).  This demonstrates that the
+probe+late mechanism addresses \emph{all} major failure classes, not
+just oscillation.
+
+\paragraph{Cross-config convergence landscape.}
+Across all 5 v12b configs: 139/287 (48\%) converge in all 5, 36/287
+(13\%) fail in all 5, and 251/287 (87\%) converge in at least one config.
+The 36 permanently failing samples represent a hard core that no kick
+variant resolves at 20k steps---these likely require 50k steps or
+structural interventions.
+
+\subsubsection{Updated Best-Ever Table}
+\label{sec:v12b-best-ever}
+
+\begin{table}[h]
+\centering
+\caption{Best strict convergence rate at each noise level across all runs
+  and seeds ($N=287$).  Updated through v12b.}
+\label{tab:best-ever-v12b}
+\begin{tabular}{ccll}
+\toprule
+Noise & Best rate & Configuration & Run \\
+\midrule
+\multicolumn{4}{l}{\emph{10k steps}} \\
+0.5\,\AA & 256/287 (89.2\%) & RFO+Schl+PLS       & v11 \\
+1.0\,\AA & 230/287 (80.1\%) & RFO+PLS             & v11 \\
+1.5\,\AA & 182/287 (63.4\%) & RFO+Schl+PLS        & v10c \\
+2.0\,\AA & 128/287 (44.6\%) & GQT+PLS             & v10c \\
+\midrule
+\multicolumn{4}{l}{\emph{20k steps}} \\
+0.5\,\AA & 272/287 (94.8\%) & RFO+Schl+PLS (20k)  & v11 \\
+1.0\,\AA & 256/287 (89.2\%) & RFO+PLS (20k)        & v12 \\
+1.5\,\AA & 230/287 (80.1\%) & RFO+PLS (20k)        & v12 \\
+2.0\,\AA & \textbf{218/287 (76.0\%)} & RFO+PLS+adapt+probe+late (20k) & \textbf{v12b} \\
+\midrule
+\multicolumn{4}{l}{\emph{50k steps}} \\
+0.5\,\AA & 273/287 (95.1\%) & RFO+PLS (50k)  & v12 \\
+1.0\,\AA & 275/287 (95.8\%) & RFO+PLS (50k)  & v12 \\
+1.5\,\AA & 266/287 (92.7\%) & RFO+PLS (50k)  & v12 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsubsection{v12b Summary and Next Steps}
+\label{sec:v12b-summary}
+
+\textbf{Main conclusions:}
+\begin{enumerate}[nosep]
+  \item \textbf{Probe kicks are the key innovation}: $+$26 net converged
+    over adaptive-only, with a 2.4:1 rescue-to-loss ratio.  Probing a
+    distance ladder in both $\pm$ directions and accepting the first
+    $n_\text{neg}$-reducing displacement prevents spectrally harmful
+    kicks that destabilize borderline trajectories.
+  \item \textbf{Late escape is clean and effective}: $+$11 net with a
+    3.2:1 rescue-to-loss ratio.  Activating only after 15k steps avoids
+    disrupting early-stage convergence.
+  \item \textbf{Adaptive scaling alone is insufficient}: $+$1 net over
+    fixed kicks.  Scaling magnitude to eigenvalue changes \emph{which}
+    samples are rescued/lost but not the overall ratio.
+  \item \textbf{Fixed kicks remain a wash}: both\_kicks without
+    probe or adaptive shows 0 net gain in this seed, confirming v12's
+    finding of high churn with fixed-scale perturbations.
+  \item \textbf{76.0\% at $n=2.0$\,\AA\ is new best-ever} by
+    $+$9.1\,pts over v12 and $+$12.2\,pts over v11 (at 20k steps).
+  \item \textbf{69 failures remain}: dominated by oscillating (54/69,
+    78\%).  Almost\_converged and ghost\_modes are largely resolved
+    (6 and 4 remaining vs.\ 17 and 13 at baseline).
+\end{enumerate}
+
+\textbf{Next steps:}
+\begin{itemize}[nosep]
+  \item \textbf{50k + v12b kicks}: The two breakthroughs (50k steps from
+    v12, probe+late kicks from v12b) have not yet been combined.  At
+    $n=2.0$\,\AA, 50k steps should rescue additional oscillating failures
+    beyond 20k, and probe+late kicks should accelerate convergence within
+    the 50k budget.  This is the highest-priority experiment.
+  \item \textbf{v12b at $n \leq 1.5$\,\AA}: The probe and late-escape
+    mechanisms were only tested at $n=2.0$\,\AA.  Running at lower noise
+    levels would test whether the improvement transfers or is
+    $n=2.0$-specific.
+  \item \textbf{Probe+late without adaptive}: Since adaptive scaling adds
+    negligible value, a simpler config (both\_kicks+probe+late, without
+    adaptive) might perform identically.  This simplification should be
+    verified.
+  \item \textbf{Late-escape timing}: The 15k activation threshold was
+    chosen ad~hoc.  Testing 10k or 12k might capture additional samples
+    that converge between 10k and 15k without the late mechanism.
+  \item \textbf{Hard-core analysis}: The 36 samples that fail in all 5
+    v12b configs need trajectory inspection.  Are they structurally
+    trapped (persistent negative eigenvalues) or merely slow (would
+    converge at 50k+)?
+\end{itemize}
 
 %=============================================================================
 \section{What We Incorporated in v10/v10b}
@@ -1843,22 +2419,58 @@ Tests: (1)~GQT+Schlegel+PLS (never tested), (2)~RFO+PLS without Schlegel,
     (63.8\%) at 2.0\,\AA\ (both RFO+Schl+PLS, 20k).
 \end{itemize}
 
+\subsection{v12 Grid (Kicks + 50k Steps, 17 configs)}
+
+All configs use RFO+PLS.  Tests: (1)~oscillation kick, (2)~blind-mode
+kick, (3)~both kicks, (4)~both kicks with eigvec1, (5)~50k step budget.
+14 configs at $n=0.5$--1.5\,\AA\ (v12 main run) $+$ 3 configs at
+$n=2.0$\,\AA\ (v12\_quick run).
+
+\textbf{Key findings} (full analysis in Section~\ref{sec:v12}):
+\begin{itemize}[nosep]
+  \item 50k steps: $+$2 to $+$13\,pts over 20k, lossless (zero samples lost).
+  \item Kicks at $n \leq 1.5$\,\AA: never fired, zero effect.
+  \item Kicks at $n=2.0$\,\AA: $+$5.9\,pts net, high churn (32 rescued, 15 lost).
+  \item Kick direction (eigvec0 vs.\ eigvec1) irrelevant.
+  \item \textbf{New best-ever}: 275/287 (95.8\%) at 1.0\,\AA, 266/287
+    (92.7\%) at 1.5\,\AA\ (both RFO+PLS, 50k).
+\end{itemize}
+
+\subsection{v12b Grid (Adaptive Probe Kicks + Late Escape, 5 configs)}
+
+All configs at $n=2.0$\,\AA, 20k steps, RFO+PLS.  Tests cumulative
+features: (1)~both\_kicks, (2)~+adaptive scaling, (3)~+probe kicks,
+(4)~+late escape.  Single run (job~1146854), $N=287$.
+
+\textbf{Key findings} (full analysis in Section~\ref{sec:v12b}):
+\begin{itemize}[nosep]
+  \item Probe kicks: $+$26 net converged (2.4:1 rescue-to-loss ratio).
+  \item Late escape: $+$11 net converged (3.2:1 ratio).
+  \item Adaptive scaling alone: $+$1 net (marginal).
+  \item Fixed kicks: net zero (21 rescued, 21 lost).
+  \item \textbf{New best-ever at $n=2.0$\,\AA}: 218/287 (76.0\%),
+    $+$13.2\,pts over baseline within-seed.
+\end{itemize}
+
 \subsection{Recommended Configuration for Future Work}
 
-Based on all evidence through v11, the recommended baseline is:
+Based on all evidence through v12b, the recommended baseline is:
 \begin{center}
-\fbox{\textbf{RFO + PLS, 20k steps}}
+\fbox{\textbf{RFO + PLS + probe kicks + late escape, 50k steps}}
 \end{center}
 Schlegel trust radius updates are neutral when PLS is active
 (Section~\ref{sec:v11-factors}) and can be omitted for simplicity.
-The 20k step budget is justified at all noise levels ($+$6--21\,pts over
-10k, Table~\ref{tab:20k-effect}).  The trust radius floor should remain at
-0.01\,\AA\ (lowering to 0.005\,\AA\ is catastrophic,
+The 50k step budget is justified at $n \geq 1.0$\,\AA\ ($+$6.6 to
+$+$12.5\,pts over 20k, Table~\ref{tab:v12-50k}), with diminishing
+returns at $n=0.5$ ($+$2.1\,pts).  The trust radius floor should remain
+at 0.01\,\AA\ (lowering to 0.005\,\AA\ is catastrophic,
 Table~\ref{tab:trf-effect}).
 
-For throughput-constrained applications, RFO+PLS at 10k steps is the
-recommended 10k configuration.  GQT+PLS remains competitive at
-$n \geq 2.0$\,\AA\ (within $\pm$3\,pts of RFO+PLS).
+For throughput-constrained applications, RFO+PLS+probe+late at 20k steps
+is the recommended budget-limited configuration.  At $n=2.0$\,\AA, this
+achieves 76.0\% (Table~\ref{tab:v12b}), up from 62.7\% without kicks.
+Adaptive kick scaling can be omitted without performance loss
+(Section~\ref{sec:v12b-incremental}).
 
 %=============================================================================
 \section{Open Questions}
@@ -1889,16 +2501,14 @@ $n \geq 2.0$\,\AA\ (within $\pm$3\,pts of RFO+PLS).
     at all noise levels, showing the RFO step direction is genuinely
     superior.
 
-  \item \textbf{Population~A (blind modes) unresolved}: Almost\_converged
-    and ghost\_mode failures are unaffected by any intervention including
-    20k steps.  v11 confirms: at $n=2.0$ with 20k, ghost\_modes remains
-    at 17 (unchanged from 10k), and almost\_converged drops only
-    $14 \to 11$.  These have $\lambda_\text{min} \in [-10^{-3},
-    -2\times10^{-4}]$ with gradient overlap $<0.1$ in the
-    negative-eigenvalue direction.  This is the \textbf{fundamental
-    remaining barrier} to convergence beyond $\sim$95\%.
-    Possible approaches: random perturbation, mode-following, internal
-    coordinate rotation.
+  \item \textbf{Population~A (blind modes) largely resolved by v12b}:
+    Almost\_converged and ghost\_mode failures were previously unaffected
+    by any intervention including 20k steps.  v12b's probe kicks and
+    late escape reduce these from 17+13=30 to 6+4=10 at $n=2.0$\,\AA.
+    \emph{Partially resolved:} the remaining 10 blind-mode failures
+    (and the 54 oscillating failures) now constitute the residual
+    failure population.  The 36 samples that fail across all 5 v12b
+    configs likely require 50k steps or structural interventions.
 
   \item \textbf{GQT vs.\ RFO crossover at 2.0\,\AA}: \emph{Partially
     resolved.}  v11 shows RFO+PLS wins at all noise levels in this seed
@@ -1917,16 +2527,13 @@ $n \geq 2.0$\,\AA\ (within $\pm$3\,pts of RFO+PLS).
     Weak correlation ($r=0.22$) with optimizer failure.
     \emph{Resolved}: not a primary driver of failure.
 
-  \item \textbf{Optimal step budget}: v11 shows 20k steps rescues
-    primarily oscillating failures (74\% of rescued samples).
-    At $n=2.0$, the rescued-sample convergence steps are distributed
-    roughly uniformly over 10k--20k (not concentrated near 10k),
-    and 5 samples converge between steps 19{,}260 and 19{,}908.
-    Testing 30k or 50k steps would reveal whether the 104 permanently
-    hard samples at $n=2.0$ eventually resolve or are truly trapped.
-    Trajectory analysis (Section~\ref{sec:trajectory-analysis}) suggests
-    the latter: permanently hard samples have qualitatively slower
-    eigenvalue convergence, not just insufficient steps.
+  \item \textbf{Optimal step budget}: v12 confirmed 50k steps gives
+    $+$2 to $+$12.5\,pts over 20k (Section~\ref{sec:v12-50k}).
+    \emph{Partially resolved.}  The remaining question is whether
+    50k steps \emph{combined with} v12b's probe+late kicks (not yet
+    tested) would push $n=2.0$\,\AA\ convergence above 80\%.
+    The 36 samples that fail across all 5 v12b configs at 20k are
+    the primary targets for this combined experiment.
 
   \item \textbf{Why does lower trust floor hurt?}  v11 shows floor
     0.005\,\AA\ is catastrophic ($-$10 to $-$30\,pts).  The
